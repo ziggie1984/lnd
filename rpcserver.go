@@ -853,7 +853,15 @@ func (r *rpcServer) Start() error {
 	// Now spin up a network listener for each requested port and start a
 	// goroutine that serves REST with the created mux there.
 	for _, restEndpoint := range r.cfg.RESTListeners {
-		lis, err := lncfg.TLSListenOnAddress(restEndpoint, r.tlsCfg)
+		var (
+			lis net.Listener
+			err error
+		)
+		if !r.cfg.DisableTLS {
+			lis, err = lncfg.TLSListenOnAddress(restEndpoint, r.tlsCfg)
+		} else {
+			lis, err = net.Listen("tcp", restEndpoint.String())
+		}
 		if err != nil {
 			ltndLog.Errorf("gRPC proxy unable to listen on %s",
 				restEndpoint)

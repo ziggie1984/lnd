@@ -1017,7 +1017,8 @@ func loadConfig() (*config, error) {
 	if err != nil {
 		return nil, err
 	}
-
+    
+    if activeNetParams.Params.Name != "regtest" {
 	// For each of the RPC listeners (REST+gRPC), we'll ensure that users
 	// have specified a safe combo for authentication. If not, we'll bail
 	// out with an error.
@@ -1039,6 +1040,7 @@ func loadConfig() (*config, error) {
 			return nil, err
 		}
 	}
+    }
 
 	// Remove the listening addresses specified if listening is disabled.
 	if cfg.DisableListen {

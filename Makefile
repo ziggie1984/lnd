@@ -23,6 +23,9 @@ ANDROID_BUILD := $(ANDROID_BUILD_DIR)/Lndmobile.aar
 
 COMMIT := $(shell git describe --tags --dirty)
 
+COMMIT := $(subst -dirty,-fresh-btcpay,$(COMMIT))
+LDFLAGS := -ldflags "-X $(PKG)/build.Commit=$(COMMIT)"
+
 GO_VERSION := $(shell go version | sed -nre 's/^[^0-9]*(([0-9]+\.)*[0-9]+).*/\1/p')
 GO_VERSION_MINOR := $(shell echo $(GO_VERSION) | cut -d. -f2)
 

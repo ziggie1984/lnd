@@ -28,6 +28,9 @@ ANDROID_BUILD := $(ANDROID_BUILD_DIR)/Lndmobile.aar
 COMMIT := $(shell git describe --tags --dirty)
 COMMIT_HASH := $(shell git rev-parse HEAD)
 
+COMMIT := $(subst -dirty,-fresh-btcpay,$(COMMIT))
+LDFLAGS := -ldflags "-X $(PKG)/build.Commit=$(COMMIT)"
+
 BTCD_COMMIT := $(shell cat go.mod | \
 		grep $(BTCD_PKG) | \
 		head -n1 | \

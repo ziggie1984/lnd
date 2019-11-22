@@ -21,7 +21,8 @@ IOS_BUILD := $(IOS_BUILD_DIR)/Lndmobile.framework
 ANDROID_BUILD_DIR := $(MOBILE_BUILD_DIR)/android
 ANDROID_BUILD := $(ANDROID_BUILD_DIR)/Lndmobile.aar
 
-COMMIT := $(shell git describe --abbrev=40 --dirty)
+COMMIT_INFO := $(shell git describe --abbrev=40 --dirty)
+COMMIT := $(subst -dirty,-fresh-btcpay,$(COMMIT_INFO))
 LDFLAGS := -ldflags "-X $(PKG)/build.Commit=$(COMMIT)"
 
 BTCD_COMMIT := $(shell cat go.mod | \

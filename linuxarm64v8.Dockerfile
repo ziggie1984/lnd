@@ -1,4 +1,4 @@
-FROM golang:1.11.5-stretch as builder
+FROM golang:1.13.10-stretch as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.

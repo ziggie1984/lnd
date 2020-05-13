@@ -17,7 +17,7 @@ WORKDIR /go/src/github.com/lightningnetwork/lnd
 COPY . .
 
 RUN make \
-&&  make install
+&&  make install tags="signrpc walletrpc chainrpc invoicesrpc routerrpc"
 
 # Force the builder machine to take make an arm runtime image. This is fine as long as the builder does not run any program
 FROM arm32v7/debian:stretch-slim as final

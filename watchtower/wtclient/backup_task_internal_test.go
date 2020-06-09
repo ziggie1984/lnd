@@ -16,6 +16,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/watchtower/blob"
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
@@ -86,7 +87,7 @@ func genTaskTest(
 	toLocalAmt int64,
 	toRemoteAmt int64,
 	blobType blob.Type,
-	sweepFeeRate lnwallet.SatPerKWeight,
+	sweepFeeRate chainfee.SatPerKWeight,
 	rewardScript []byte,
 	expSweepAmt int64,
 	expRewardAmt int64,
@@ -120,8 +121,8 @@ func genTaskTest(
 		BreachTransaction: breachTxn,
 		KeyRing: &lnwallet.CommitmentKeyRing{
 			RevocationKey: revPK,
-			DelayKey:      toLocalPK,
-			NoDelayKey:    toRemotePK,
+			ToLocalKey:    toLocalPK,
+			ToRemoteKey:   toRemotePK,
 		},
 		RemoteDelay: csvDelay,
 	}
@@ -564,9 +565,9 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	}
 
 	keyRing := test.breachInfo.KeyRing
-	expToLocalPK := keyRing.DelayKey.SerializeCompressed()
+	expToLocalPK := keyRing.ToLocalKey.SerializeCompressed()
 	expRevPK := keyRing.RevocationKey.SerializeCompressed()
-	expToRemotePK := keyRing.NoDelayKey.SerializeCompressed()
+	expToRemotePK := keyRing.ToRemoteKey.SerializeCompressed()
 
 	// Assert that the blob contained the serialized revocation and to-local
 	// pubkeys.

@@ -14,7 +14,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,15 +58,16 @@ const (
 	// pending channels permitted per peer.
 	DefaultMaxPendingChannels = 1
 
-	defaultNoSeedBackup             = false
-	defaultTrickleDelay             = 90 * 1000
-	defaultChanStatusSampleInterval = time.Minute
-	defaultChanEnableTimeout        = 19 * time.Minute
-	defaultChanDisableTimeout       = 20 * time.Minute
-	defaultMaxLogFiles              = 3
-	defaultMaxLogFileSize           = 10
-	defaultMinBackoff               = time.Second
-	defaultMaxBackoff               = time.Hour
+	defaultNoSeedBackup                  = false
+	defaultPaymentsExpirationGracePeriod = time.Duration(0)
+	defaultTrickleDelay                  = 90 * 1000
+	defaultChanStatusSampleInterval      = time.Minute
+	defaultChanEnableTimeout             = 19 * time.Minute
+	defaultChanDisableTimeout            = 20 * time.Minute
+	defaultMaxLogFiles                   = 3
+	defaultMaxLogFileSize                = 10
+	defaultMinBackoff                    = time.Second
+	defaultMaxBackoff                    = time.Hour
 
 	defaultTorSOCKSPort            = 9050
 	defaultTorDNSHost              = "soa.nodes.lightning.directory"
@@ -167,7 +167,8 @@ type chainConfig struct {
 
 	DefaultNumChanConfs int                 `long:"defaultchanconfs" description:"The default number of confirmations a channel must have before it's considered open. If this is not set, we will scale the value according to the channel size."`
 	DefaultRemoteDelay  int                 `long:"defaultremotedelay" description:"The default number of blocks we will require our channel counterparty to wait before accessing its funds in case of unilateral close. If this is not set, we will scale the value according to the channel size."`
-	MinHTLC             lnwire.MilliSatoshi `long:"minhtlc" description:"The smallest HTLC we are willing to forward on our channels, in millisatoshi"`
+	MinHTLCIn           lnwire.MilliSatoshi `long:"minhtlc" description:"The smallest HTLC we are willing to accept on our channels, in millisatoshi"`
+	MinHTLCOut          lnwire.MilliSatoshi `long:"minhtlcout" description:"The smallest HTLC we are willing to send out on our channels, in millisatoshi"`
 	BaseFee             lnwire.MilliSatoshi `long:"basefee" description:"The base fee in millisatoshi we will charge for forwarding payments on our channels"`
 	FeeRate             lnwire.MilliSatoshi `long:"feerate" description:"The fee rate used when forwarding payments on our channels. The total fee charged is basefee + (amount * feerate / 1000000), where amount is the forwarded amount."`
 	TimeLockDelta       uint32              `long:"timelockdelta" description:"The CLTV delta we will subtract from a forwarded HTLC's timelock value"`
@@ -219,6 +220,7 @@ type torConfig struct {
 	DNS             string `long:"dns" description:"The DNS server as host:port that Tor will use for SRV queries - NOTE must have TCP resolution enabled"`
 	StreamIsolation bool   `long:"streamisolation" description:"Enable Tor stream isolation by randomizing user credentials for each connection."`
 	Control         string `long:"control" description:"The host:port that Tor is listening on for Tor control connections"`
+	TargetIPAddress string `long:"targetipaddress" description:"IP address that Tor should use as the target of the hidden service"`
 	V2              bool   `long:"v2" description:"Automatically set up a v2 onion service to listen for inbound connections"`
 	V3              bool   `long:"v3" description:"Automatically set up a v3 onion service to listen for inbound connections"`
 	PrivateKeyPath  string `long:"privatekeypath" description:"The path to the private key of the onion service being created"`
@@ -231,21 +233,24 @@ type torConfig struct {
 type config struct {
 	ShowVersion bool `short:"V" long:"version" description:"Display version information and exit"`
 
-	LndDir          string   `long:"lnddir" description:"The base directory that contains lnd's data, logs, configuration file, etc."`
-	ConfigFile      string   `short:"C" long:"configfile" description:"Path to configuration file"`
-	DataDir         string   `short:"b" long:"datadir" description:"The directory to store lnd's data within"`
-	SyncFreelist    bool     `long:"sync-freelist" description:"Whether the databases used within lnd should sync their freelist to disk. This is disabled by default resulting in improved memory performance during operation, but with an increase in startup time."`
+	LndDir       string `long:"lnddir" description:"The base directory that contains lnd's data, logs, configuration file, etc."`
+	ConfigFile   string `short:"C" long:"configfile" description:"Path to configuration file"`
+	DataDir      string `short:"b" long:"datadir" description:"The directory to store lnd's data within"`
+	SyncFreelist bool   `long:"sync-freelist" description:"Whether the databases used within lnd should sync their freelist to disk. This is disabled by default resulting in improved memory performance during operation, but with an increase in startup time."`
+
 	TLSCertPath     string   `long:"tlscertpath" description:"Path to write the TLS certificate for lnd's RPC and REST services"`
 	TLSKeyPath      string   `long:"tlskeypath" description:"Path to write the TLS private key for lnd's RPC and REST services"`
 	TLSExtraIPs     []string `long:"tlsextraip" description:"Adds an extra ip to the generated certificate"`
 	TLSExtraDomains []string `long:"tlsextradomain" description:"Adds an extra domain to the generated certificate"`
-	NoMacaroons     bool     `long:"no-macaroons" description:"Disable macaroon authentication"`
-	AdminMacPath    string   `long:"adminmacaroonpath" description:"Path to write the admin macaroon for lnd's RPC and REST services if it doesn't exist"`
-	ReadMacPath     string   `long:"readonlymacaroonpath" description:"Path to write the read-only macaroon for lnd's RPC and REST services if it doesn't exist"`
-	InvoiceMacPath  string   `long:"invoicemacaroonpath" description:"Path to the invoice-only macaroon for lnd's RPC and REST services if it doesn't exist"`
-	LogDir          string   `long:"logdir" description:"Directory to log output."`
-	MaxLogFiles     int      `long:"maxlogfiles" description:"Maximum logfiles to keep (0 for no rotation)"`
-	MaxLogFileSize  int      `long:"maxlogfilesize" description:"Maximum logfile size in MB"`
+	TLSAutoRefresh  bool     `long:"tlsautorefresh" description:"Re-generate TLS certificate and key if the IPs or domains are changed"`
+
+	NoMacaroons    bool   `long:"no-macaroons" description:"Disable macaroon authentication"`
+	AdminMacPath   string `long:"adminmacaroonpath" description:"Path to write the admin macaroon for lnd's RPC and REST services if it doesn't exist"`
+	ReadMacPath    string `long:"readonlymacaroonpath" description:"Path to write the read-only macaroon for lnd's RPC and REST services if it doesn't exist"`
+	InvoiceMacPath string `long:"invoicemacaroonpath" description:"Path to the invoice-only macaroon for lnd's RPC and REST services if it doesn't exist"`
+	LogDir         string `long:"logdir" description:"Directory to log output."`
+	MaxLogFiles    int    `long:"maxlogfiles" description:"Maximum logfiles to keep (0 for no rotation)"`
+	MaxLogFileSize int    `long:"maxlogfilesize" description:"Maximum logfile size in MB"`
 
 	// We'll parse these 'raw' string arguments into real net.Addrs in the
 	// loadConfig function. We need to expose the 'raw' strings so the
@@ -272,7 +277,7 @@ type config struct {
 
 	Profile string `long:"profile" description:"Enable HTTP profiling on given port -- NOTE port must be between 1024 and 65535"`
 
-	UnsafeDisconnect   bool   `long:"unsafe-disconnect" description:"Allows the rpcserver to intentionally disconnect from peers with open channels. USED FOR TESTING ONLY."`
+	UnsafeDisconnect   bool   `long:"unsafe-disconnect" description:"DEPRECATED: Allows the rpcserver to intentionally disconnect from peers with open channels. THIS FLAG WILL BE REMOVED IN 0.10.0"`
 	UnsafeReplay       bool   `long:"unsafe-replay" description:"Causes a link to replay the adds on its commitment txn after starting up, this enables testing of the sphinx replay logic."`
 	MaxPendingChannels int    `long:"maxpendingchannels" description:"The maximum number of incoming pending channels permitted per peer."`
 	BackupFilePath     string `long:"backupfilepath" description:"The target location of the channel backup file"`
@@ -298,10 +303,11 @@ type config struct {
 
 	NoSeedBackup bool `long:"noseedbackup" description:"If true, NO SEED WILL BE EXPOSED AND THE WALLET WILL BE ENCRYPTED USING THE DEFAULT PASSPHRASE -- EVER. THIS FLAG IS ONLY FOR TESTING AND IS BEING DEPRECATED."`
 
-	TrickleDelay             int           `long:"trickledelay" description:"Time in milliseconds between each release of announcements to the network"`
-	ChanEnableTimeout        time.Duration `long:"chan-enable-timeout" description:"The duration that a peer connection must be stable before attempting to send a channel update to reenable or cancel a pending disables of the peer's channels on the network (default: 19m)."`
-	ChanDisableTimeout       time.Duration `long:"chan-disable-timeout" description:"The duration that must elapse after first detecting that an already active channel is actually inactive and sending channel update disabling it to the network. The pending disable can be canceled if the peer reconnects and becomes stable for chan-enable-timeout before the disable update is sent. (default: 20m)"`
-	ChanStatusSampleInterval time.Duration `long:"chan-status-sample-interval" description:"The polling interval between attempts to detect if an active channel has become inactive due to its peer going offline. (default: 1m)"`
+	PaymentsExpirationGracePeriod time.Duration `long:"payments-expiration-grace-period" description:"A period to wait before force closing channels with outgoing htlcs that have timed-out and are a result of this node initiated payments."`
+	TrickleDelay                  int           `long:"trickledelay" description:"Time in milliseconds between each release of announcements to the network"`
+	ChanEnableTimeout             time.Duration `long:"chan-enable-timeout" description:"The duration that a peer connection must be stable before attempting to send a channel update to reenable or cancel a pending disables of the peer's channels on the network (default: 19m)."`
+	ChanDisableTimeout            time.Duration `long:"chan-disable-timeout" description:"The duration that must elapse after first detecting that an already active channel is actually inactive and sending channel update disabling it to the network. The pending disable can be canceled if the peer reconnects and becomes stable for chan-enable-timeout before the disable update is sent. (default: 20m)"`
+	ChanStatusSampleInterval      time.Duration `long:"chan-status-sample-interval" description:"The polling interval between attempts to detect if an active channel has become inactive due to its peer going offline. (default: 1m)"`
 
 	Alias       string `long:"alias" description:"The node alias. Used as a moniker by peers and intelligence services"`
 	Color       string `long:"color" description:"The color of the node in hex format (i.e. '#3399FF'). Used to customize node appearance in intelligence services"`
@@ -323,6 +329,10 @@ type config struct {
 	MaxChannelFeeAllocation float64 `long:"max-channel-fee-allocation" description:"The maximum percentage of total funds that can be allocated to a channel's commitment fee. This only applies for the initiator of the channel. Valid values are within [0.1, 1]."`
 
 	net tor.Net
+
+	EnableUpfrontShutdown bool `long:"enable-upfront-shutdown" description:"If true, option upfront shutdown script will be enabled. If peers that we open channels with support this feature, we will automatically set the script to which cooperative closes should be paid out to on channel open. This offers the partial protection of a channel peer disconnecting from us if cooperative close is attempted with a different script."`
+
+	AcceptKeySend bool `long:"accept-keysend" description:"If true, spontaneous payments through keysend will be accepted. [experimental]"`
 
 	Routing *routing.Conf `group:"routing" namespace:"routing"`
 
@@ -359,7 +369,8 @@ func loadConfig() (*config, error) {
 		MaxLogFiles:    defaultMaxLogFiles,
 		MaxLogFileSize: defaultMaxLogFileSize,
 		Bitcoin: &chainConfig{
-			MinHTLC:       defaultBitcoinMinHTLCMSat,
+			MinHTLCIn:     defaultBitcoinMinHTLCInMSat,
+			MinHTLCOut:    defaultBitcoinMinHTLCOutMSat,
 			BaseFee:       DefaultBitcoinBaseFeeMSat,
 			FeeRate:       DefaultBitcoinFeeRate,
 			TimeLockDelta: DefaultBitcoinTimeLockDelta,
@@ -375,7 +386,8 @@ func loadConfig() (*config, error) {
 			RPCHost: defaultRPCHost,
 		},
 		Litecoin: &chainConfig{
-			MinHTLC:       defaultLitecoinMinHTLCMSat,
+			MinHTLCIn:     defaultLitecoinMinHTLCInMSat,
+			MinHTLCOut:    defaultLitecoinMinHTLCOutMSat,
 			BaseFee:       defaultLitecoinBaseFeeMSat,
 			FeeRate:       defaultLitecoinFeeRate,
 			TimeLockDelta: defaultLitecoinTimeLockDelta,
@@ -390,6 +402,7 @@ func loadConfig() (*config, error) {
 			Dir:     defaultLitecoindDir,
 			RPCHost: defaultRPCHost,
 		},
+		UnsafeDisconnect:   true,
 		MaxPendingChannels: DefaultMaxPendingChannels,
 		NoSeedBackup:       defaultNoSeedBackup,
 		MinBackoff:         defaultMinBackoff,
@@ -409,15 +422,16 @@ func loadConfig() (*config, error) {
 				"preferential": 1.0,
 			},
 		},
-		TrickleDelay:             defaultTrickleDelay,
-		ChanStatusSampleInterval: defaultChanStatusSampleInterval,
-		ChanEnableTimeout:        defaultChanEnableTimeout,
-		ChanDisableTimeout:       defaultChanDisableTimeout,
-		Alias:                    defaultAlias,
-		Color:                    defaultColor,
-		MinChanSize:              int64(minChanFundingSize),
-		NumGraphSyncPeers:        defaultMinPeers,
-		HistoricalSyncInterval:   discovery.DefaultHistoricalSyncInterval,
+		PaymentsExpirationGracePeriod: defaultPaymentsExpirationGracePeriod,
+		TrickleDelay:                  defaultTrickleDelay,
+		ChanStatusSampleInterval:      defaultChanStatusSampleInterval,
+		ChanEnableTimeout:             defaultChanEnableTimeout,
+		ChanDisableTimeout:            defaultChanDisableTimeout,
+		Alias:                         defaultAlias,
+		Color:                         defaultColor,
+		MinChanSize:                   int64(minChanFundingSize),
+		NumGraphSyncPeers:             defaultMinPeers,
+		HistoricalSyncInterval:        discovery.DefaultHistoricalSyncInterval,
 		Tor: &torConfig{
 			SOCKS:   defaultTorSOCKS,
 			DNS:     defaultTorDNS,
@@ -954,19 +968,27 @@ func loadConfig() (*config, error) {
 
 	// Special show command to list supported subsystems and exit.
 	if cfg.DebugLevel == "show" {
-		fmt.Println("Supported subsystems", supportedSubsystems())
+		fmt.Println("Supported subsystems",
+			logWriter.SupportedSubsystems())
 		os.Exit(0)
 	}
 
 	// Initialize logging at the default logging level.
-	initLogRotator(
+	err = logWriter.InitLogRotator(
 		filepath.Join(cfg.LogDir, defaultLogFilename),
 		cfg.MaxLogFileSize, cfg.MaxLogFiles,
 	)
+	if err != nil {
+		str := "%s: log rotation setup failed: %v"
+		err = fmt.Errorf(str, funcName, err.Error())
+		fmt.Fprintln(os.Stderr, err)
+		return nil, err
+	}
 
 	// Parse, validate, and set debug log level(s).
-	if err := parseAndSetDebugLevels(cfg.DebugLevel); err != nil {
-		err := fmt.Errorf("%s: %v", funcName, err.Error())
+	err = build.ParseAndSetDebugLevels(cfg.DebugLevel, logWriter)
+	if err != nil {
+		err = fmt.Errorf("%s: %v", funcName, err.Error())
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr, usageMessage)
 		return nil, err
@@ -1141,92 +1163,6 @@ func cleanAndExpandPath(path string) string {
 	// NOTE: The os.ExpandEnv doesn't work with Windows-style %VARIABLE%,
 	// but the variables can still be expanded via POSIX-style $VARIABLE.
 	return filepath.Clean(os.ExpandEnv(path))
-}
-
-// parseAndSetDebugLevels attempts to parse the specified debug level and set
-// the levels accordingly. An appropriate error is returned if anything is
-// invalid.
-func parseAndSetDebugLevels(debugLevel string) error {
-	// When the specified string doesn't have any delimiters, treat it as
-	// the log level for all subsystems.
-	if !strings.Contains(debugLevel, ",") && !strings.Contains(debugLevel, "=") {
-		// Validate debug log level.
-		if !validLogLevel(debugLevel) {
-			str := "The specified debug level [%v] is invalid"
-			return fmt.Errorf(str, debugLevel)
-		}
-
-		// Change the logging level for all subsystems.
-		setLogLevels(debugLevel)
-
-		return nil
-	}
-
-	// Split the specified string into subsystem/level pairs while detecting
-	// issues and update the log levels accordingly.
-	for _, logLevelPair := range strings.Split(debugLevel, ",") {
-		if !strings.Contains(logLevelPair, "=") {
-			str := "The specified debug level contains an invalid " +
-				"subsystem/level pair [%v]"
-			return fmt.Errorf(str, logLevelPair)
-		}
-
-		// Extract the specified subsystem and log level.
-		fields := strings.Split(logLevelPair, "=")
-		subsysID, logLevel := fields[0], fields[1]
-
-		// Validate subsystem.
-		if _, exists := subsystemLoggers[subsysID]; !exists {
-			str := "The specified subsystem [%v] is invalid -- " +
-				"supported subsystems %v"
-			return fmt.Errorf(str, subsysID, supportedSubsystems())
-		}
-
-		// Validate log level.
-		if !validLogLevel(logLevel) {
-			str := "The specified debug level [%v] is invalid"
-			return fmt.Errorf(str, logLevel)
-		}
-
-		setLogLevel(subsysID, logLevel)
-	}
-
-	return nil
-}
-
-// validLogLevel returns whether or not logLevel is a valid debug log level.
-func validLogLevel(logLevel string) bool {
-	switch logLevel {
-	case "trace":
-		fallthrough
-	case "debug":
-		fallthrough
-	case "info":
-		fallthrough
-	case "warn":
-		fallthrough
-	case "error":
-		fallthrough
-	case "critical":
-		fallthrough
-	case "off":
-		return true
-	}
-	return false
-}
-
-// supportedSubsystems returns a sorted slice of the supported subsystems for
-// logging purposes.
-func supportedSubsystems() []string {
-	// Convert the subsystemLoggers map keys to a slice.
-	subsystems := make([]string, 0, len(subsystemLoggers))
-	for subsysID := range subsystemLoggers {
-		subsystems = append(subsystems, subsysID)
-	}
-
-	// Sort the subsystems for stable display.
-	sort.Strings(subsystems)
-	return subsystems
 }
 
 func parseRPCParams(cConfig *chainConfig, nodeConfig interface{}, net chainCode,

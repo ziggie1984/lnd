@@ -1,4 +1,4 @@
-FROM golang:1.11.5-alpine as builder
+FROM golang:1.13.10-alpine as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
@@ -14,7 +14,7 @@ WORKDIR /go/src/github.com/lightningnetwork/lnd
 COPY . .
 
 RUN make \
-&&  make install
+&&  make install tags="signrpc walletrpc chainrpc invoicesrpc routerrpc"
 
 # Start a new, final image.
 FROM alpine:3.7 as final

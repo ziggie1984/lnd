@@ -152,6 +152,11 @@ var (
 	defaultTorSOCKS   = net.JoinHostPort("localhost", strconv.Itoa(defaultTorSOCKSPort))
 	defaultTorDNS     = net.JoinHostPort(defaultTorDNSHost, strconv.Itoa(defaultTorDNSPort))
 	defaultTorControl = net.JoinHostPort("localhost", strconv.Itoa(defaultTorControlPort))
+
+	// bitcoindEsimateModes defines all the legal values for bitcoind's
+	// estimatesmartfee RPC call.
+	defaultBitcoindEstimateMode = "CONSERVATIVE"
+	bitcoindEstimateModes       = [2]string{"ECONOMICAL", defaultBitcoindEstimateMode}
 )
 
 type chainConfig struct {
@@ -200,6 +205,7 @@ type bitcoindConfig struct {
 	RPCPass        string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
 	ZMQPubRawBlock string `long:"zmqpubrawblock" description:"The address listening for ZMQ connections to deliver raw block notifications"`
 	ZMQPubRawTx    string `long:"zmqpubrawtx" description:"The address listening for ZMQ connections to deliver raw transaction notifications"`
+	EstimateMode   string `long:"estimatemode" description:"The fee estimate mode. Must be either ECONOMICAL or CONSERVATIVE."`
 }
 
 type autoPilotConfig struct {
@@ -215,15 +221,17 @@ type autoPilotConfig struct {
 }
 
 type torConfig struct {
-	Active          bool   `long:"active" description:"Allow outbound and inbound connections to be routed through Tor"`
-	SOCKS           string `long:"socks" description:"The host:port that Tor's exposed SOCKS5 proxy is listening on"`
-	DNS             string `long:"dns" description:"The DNS server as host:port that Tor will use for SRV queries - NOTE must have TCP resolution enabled"`
-	StreamIsolation bool   `long:"streamisolation" description:"Enable Tor stream isolation by randomizing user credentials for each connection."`
-	Control         string `long:"control" description:"The host:port that Tor is listening on for Tor control connections"`
-	TargetIPAddress string `long:"targetipaddress" description:"IP address that Tor should use as the target of the hidden service"`
-	V2              bool   `long:"v2" description:"Automatically set up a v2 onion service to listen for inbound connections"`
-	V3              bool   `long:"v3" description:"Automatically set up a v3 onion service to listen for inbound connections"`
-	PrivateKeyPath  string `long:"privatekeypath" description:"The path to the private key of the onion service being created"`
+	Active            bool   `long:"active" description:"Allow outbound and inbound connections to be routed through Tor"`
+	SOCKS             string `long:"socks" description:"The host:port that Tor's exposed SOCKS5 proxy is listening on"`
+	DNS               string `long:"dns" description:"The DNS server as host:port that Tor will use for SRV queries - NOTE must have TCP resolution enabled"`
+	StreamIsolation   bool   `long:"streamisolation" description:"Enable Tor stream isolation by randomizing user credentials for each connection."`
+	Control           string `long:"control" description:"The host:port that Tor is listening on for Tor control connections"`
+	TargetIPAddress   string `long:"targetipaddress" description:"IP address that Tor should use as the target of the hidden service"`
+	Password          string `long:"password" description:"The password used to arrive at the HashedControlPassword for the control port. If provided, the HASHEDPASSWORD authentication method will be used instead of the SAFECOOKIE one."`
+	V2                bool   `long:"v2" description:"Automatically set up a v2 onion service to listen for inbound connections"`
+	V3                bool   `long:"v3" description:"Automatically set up a v3 onion service to listen for inbound connections"`
+	PrivateKeyPath    string `long:"privatekeypath" description:"The path to the private key of the onion service being created"`
+	WatchtowerKeyPath string `long:"watchtowerkeypath" description:"The path to the private key of the watchtower onion service being created"`
 }
 
 // config defines the configuration options for lnd.
@@ -305,9 +313,9 @@ type config struct {
 
 	PaymentsExpirationGracePeriod time.Duration `long:"payments-expiration-grace-period" description:"A period to wait before force closing channels with outgoing htlcs that have timed-out and are a result of this node initiated payments."`
 	TrickleDelay                  int           `long:"trickledelay" description:"Time in milliseconds between each release of announcements to the network"`
-	ChanEnableTimeout             time.Duration `long:"chan-enable-timeout" description:"The duration that a peer connection must be stable before attempting to send a channel update to reenable or cancel a pending disables of the peer's channels on the network (default: 19m)."`
-	ChanDisableTimeout            time.Duration `long:"chan-disable-timeout" description:"The duration that must elapse after first detecting that an already active channel is actually inactive and sending channel update disabling it to the network. The pending disable can be canceled if the peer reconnects and becomes stable for chan-enable-timeout before the disable update is sent. (default: 20m)"`
-	ChanStatusSampleInterval      time.Duration `long:"chan-status-sample-interval" description:"The polling interval between attempts to detect if an active channel has become inactive due to its peer going offline. (default: 1m)"`
+	ChanEnableTimeout             time.Duration `long:"chan-enable-timeout" description:"The duration that a peer connection must be stable before attempting to send a channel update to reenable or cancel a pending disables of the peer's channels on the network."`
+	ChanDisableTimeout            time.Duration `long:"chan-disable-timeout" description:"The duration that must elapse after first detecting that an already active channel is actually inactive and sending channel update disabling it to the network. The pending disable can be canceled if the peer reconnects and becomes stable for chan-enable-timeout before the disable update is sent."`
+	ChanStatusSampleInterval      time.Duration `long:"chan-status-sample-interval" description:"The polling interval between attempts to detect if an active channel has become inactive due to its peer going offline."`
 
 	Alias       string `long:"alias" description:"The node alias. Used as a moniker by peers and intelligence services"`
 	Color       string `long:"color" description:"The color of the node in hex format (i.e. '#3399FF'). Used to customize node appearance in intelligence services"`
@@ -328,6 +336,8 @@ type config struct {
 
 	MaxChannelFeeAllocation float64 `long:"max-channel-fee-allocation" description:"The maximum percentage of total funds that can be allocated to a channel's commitment fee. This only applies for the initiator of the channel. Valid values are within [0.1, 1]."`
 
+	DryRunMigration bool `long:"dry-run-migration" description:"If true, lnd will abort committing a migration if it would otherwise have been successful. This leaves the database unmodified, and still compatible with the previously active version of lnd."`
+
 	net tor.Net
 
 	EnableUpfrontShutdown bool `long:"enable-upfront-shutdown" description:"If true, option upfront shutdown script will be enabled. If peers that we open channels with support this feature, we will automatically set the script to which cooperative closes should be paid out to on channel open. This offers the partial protection of a channel peer disconnecting from us if cooperative close is attempted with a different script."`
@@ -346,7 +356,9 @@ type config struct {
 
 	Watchtower *lncfg.Watchtower `group:"watchtower" namespace:"watchtower"`
 
-	LegacyProtocol *lncfg.LegacyProtocol `group:"legacyprotocol" namespace:"legacyprotocol"`
+	ProtocolOptions *lncfg.ProtocolOptions `group:"protocol" namespace:"protocol"`
+
+	AllowCircularRoute bool `long:"allow-circular-route" description:"If true, our node will allow htlc forwards that arrive and depart on the same channel."`
 }
 
 // loadConfig initializes and parses the config using a config file and command
@@ -382,8 +394,9 @@ func loadConfig() (*config, error) {
 			RPCCert: defaultBtcdRPCCertFile,
 		},
 		BitcoindMode: &bitcoindConfig{
-			Dir:     defaultBitcoindDir,
-			RPCHost: defaultRPCHost,
+			Dir:          defaultBitcoindDir,
+			RPCHost:      defaultRPCHost,
+			EstimateMode: defaultBitcoindEstimateMode,
 		},
 		Litecoin: &chainConfig{
 			MinHTLCIn:     defaultLitecoinMinHTLCInMSat,
@@ -399,8 +412,9 @@ func loadConfig() (*config, error) {
 			RPCCert: defaultLtcdRPCCertFile,
 		},
 		LitecoindMode: &bitcoindConfig{
-			Dir:     defaultLitecoindDir,
-			RPCHost: defaultRPCHost,
+			Dir:          defaultLitecoindDir,
+			RPCHost:      defaultRPCHost,
+			EstimateMode: defaultBitcoindEstimateMode,
 		},
 		UnsafeDisconnect:   true,
 		MaxPendingChannels: DefaultMaxPendingChannels,
@@ -467,7 +481,8 @@ func loadConfig() (*config, error) {
 	appName = strings.TrimSuffix(appName, filepath.Ext(appName))
 	usageMessage := fmt.Sprintf("Use %s -h to show usage", appName)
 	if preCfg.ShowVersion {
-		fmt.Println(appName, "version", build.Version())
+		fmt.Println(appName, "version", build.Version(),
+			"commit="+build.Commit)
 		os.Exit(0)
 	}
 
@@ -557,6 +572,7 @@ func loadConfig() (*config, error) {
 	cfg.BitcoindMode.Dir = cleanAndExpandPath(cfg.BitcoindMode.Dir)
 	cfg.LitecoindMode.Dir = cleanAndExpandPath(cfg.LitecoindMode.Dir)
 	cfg.Tor.PrivateKeyPath = cleanAndExpandPath(cfg.Tor.PrivateKeyPath)
+	cfg.Tor.WatchtowerKeyPath = cleanAndExpandPath(cfg.Tor.WatchtowerKeyPath)
 	cfg.Watchtower.TowerDir = cleanAndExpandPath(cfg.Watchtower.TowerDir)
 
 	// Ensure that the user didn't attempt to specify negative values for
@@ -668,6 +684,19 @@ func loadConfig() (*config, error) {
 		case cfg.Tor.V3:
 			cfg.Tor.PrivateKeyPath = filepath.Join(
 				lndDir, defaultTorV3PrivateKeyFilename,
+			)
+		}
+	}
+
+	if cfg.Tor.WatchtowerKeyPath == "" {
+		switch {
+		case cfg.Tor.V2:
+			cfg.Tor.WatchtowerKeyPath = filepath.Join(
+				cfg.Watchtower.TowerDir, defaultTorV2PrivateKeyFilename,
+			)
+		case cfg.Tor.V3:
+			cfg.Tor.WatchtowerKeyPath = filepath.Join(
+				cfg.Watchtower.TowerDir, defaultTorV3PrivateKeyFilename,
 			)
 		}
 	}
@@ -789,7 +818,6 @@ func loadConfig() (*config, error) {
 		// primary chain.
 		registeredChains.RegisterPrimaryChain(litecoinChain)
 		MaxFundingAmount = maxLtcFundingAmount
-		MaxPaymentMSat = maxLtcPaymentMSat
 
 	case cfg.Bitcoin.Active:
 		// Multiple networks can't be selected simultaneously.  Count
@@ -1204,6 +1232,15 @@ func parseRPCParams(cConfig *chainConfig, nodeConfig interface{}, net chainCode,
 			}
 		}
 
+		// Ensure that if the estimate mode is set, that it is a legal
+		// value.
+		if conf.EstimateMode != "" {
+			err := checkEstimateMode(conf.EstimateMode)
+			if err != nil {
+				return err
+			}
+		}
+
 		// If all of RPCUser, RPCPass, ZMQBlockHost, and ZMQTxHost are
 		// set, we assume those parameters are good to use.
 		if conf.RPCUser != "" && conf.RPCPass != "" &&
@@ -1443,6 +1480,18 @@ func checkZMQOptions(zmqBlockHost, zmqTxHost string) error {
 	}
 
 	return nil
+}
+
+// checkEstimateMode ensures that the provided estimate mode is legal.
+func checkEstimateMode(estimateMode string) error {
+	for _, mode := range bitcoindEstimateModes {
+		if estimateMode == mode {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("estimatemode must be one of the following: %v",
+		bitcoindEstimateModes[:])
 }
 
 // normalizeNetwork returns the common name of a network type used to create

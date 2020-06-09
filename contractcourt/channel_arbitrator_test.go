@@ -12,13 +12,22 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/coreos/bbolt"
+	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
+)
+
+const (
+	defaultTimeout = time.Second * 5
+
+	// stateTimeout is the timeout we allow when waiting for state
+	// transitions.
+	stateTimeout = time.Second * 15
 )
 
 type mockArbitratorLog struct {
@@ -74,6 +83,11 @@ func (b *mockArbitratorLog) InsertUnresolvedContracts(
 
 	b.Lock()
 	for _, resolver := range resolvers {
+		resKey := resolver.ResolverKey()
+		if resKey == nil {
+			continue
+		}
+
 		b.resolvers[resolver] = struct{}{}
 	}
 	b.Unlock()
@@ -188,6 +202,8 @@ type chanArbTestCtx struct {
 	resolutions chan []ResolutionMsg
 
 	log ArbitratorLog
+
+	sweeper *mockSweeper
 }
 
 func (c *chanArbTestCtx) CleanUp() {
@@ -221,7 +237,7 @@ func (c *chanArbTestCtx) AssertStateTransitions(expectedStates ...ArbitratorStat
 		var state ArbitratorState
 		select {
 		case state = <-newStatesChan:
-		case <-time.After(5 * time.Second):
+		case <-time.After(defaultTimeout):
 			c.t.Fatalf("new state not received")
 		}
 
@@ -266,7 +282,26 @@ func (c *chanArbTestCtx) Restart(restartClosure func(*chanArbTestCtx)) (*chanArb
 	return newCtx, nil
 }
 
-func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestCtx, error) {
+// testChanArbOption applies custom settings to a channel arbitrator config for
+// testing purposes.
+type testChanArbOption func(cfg *ChannelArbitratorConfig)
+
+// remoteInitiatorOption sets the MarkChannelClosed function in the
+// Channel Arbitrator's config.
+func withMarkClosed(markClosed func(*channeldb.ChannelCloseSummary,
+	...channeldb.ChannelStatus) error) testChanArbOption {
+
+	return func(cfg *ChannelArbitratorConfig) {
+		cfg.MarkChannelClosed = markClosed
+	}
+}
+
+// createTestChannelArbitrator returns a channel arbitrator test context which
+// contains a channel arbitrator with default values. These values can be
+// changed by providing options which overwrite the default config.
+func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
+	opts ...testChanArbOption) (*chanArbTestCtx, error) {
+
 	blockEpochs := make(chan *chainntnfs.BlockEpoch)
 	blockEpoch := &chainntnfs.BlockEpochEvent{
 		Epochs: blockEpochs,
@@ -286,6 +321,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestC
 	incubateChan := make(chan struct{})
 
 	chainIO := &mockChainIO{}
+	mockSweeper := newMockSweeper()
 	chainArbCfg := ChainArbitratorConfig{
 		ChainIO: chainIO,
 		PublishTx: func(*wire.MsgTx) error {
@@ -315,7 +351,8 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestC
 
 			return true
 		},
-		Clock: clock.NewDefaultClock(),
+		Clock:   clock.NewDefaultClock(),
+		Sweeper: mockSweeper,
 	}
 
 	// We'll use the resolvedChan to synchronize on call to
@@ -324,7 +361,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestC
 
 	// Next we'll create the matching configuration struct that contains
 	// all interfaces and methods the arbitrator needs to do its job.
-	arbCfg := ChannelArbitratorConfig{
+	arbCfg := &ChannelArbitratorConfig{
 		ChanPoint:   chanPoint,
 		ShortChanID: shortChanID,
 		BlockEpochs: blockEpoch,
@@ -332,22 +369,22 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestC
 			resolvedChan <- struct{}{}
 			return nil
 		},
-		ForceCloseChan: func() (*lnwallet.LocalForceCloseSummary, error) {
-			summary := &lnwallet.LocalForceCloseSummary{
-				CloseTx:         &wire.MsgTx{},
-				HtlcResolutions: &lnwallet.HtlcResolutions{},
-			}
-			return summary, nil
-		},
-		MarkCommitmentBroadcasted: func(_ *wire.MsgTx) error {
+		Channel: &mockChannel{},
+		MarkCommitmentBroadcasted: func(_ *wire.MsgTx, _ bool) error {
 			return nil
 		},
-		MarkChannelClosed: func(*channeldb.ChannelCloseSummary) error {
+		MarkChannelClosed: func(*channeldb.ChannelCloseSummary,
+			...channeldb.ChannelStatus) error {
 			return nil
 		},
 		IsPendingClose:        false,
 		ChainArbitratorConfig: chainArbCfg,
 		ChainEvents:           chanEvents,
+	}
+
+	// Apply all custom options to the config struct.
+	for _, option := range opts {
+		option(arbCfg)
 	}
 
 	var cleanUp func()
@@ -357,13 +394,13 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestC
 			return nil, err
 		}
 		dbPath := filepath.Join(dbDir, "testdb")
-		db, err := bbolt.Open(dbPath, 0600, nil)
+		db, err := kvdb.Create(kvdb.BoltBackendName, dbPath, true)
 		if err != nil {
 			return nil, err
 		}
 
 		backingLog, err := newBoltArbitratorLog(
-			db, arbCfg, chainhash.Hash{}, chanPoint,
+			db, *arbCfg, chainhash.Hash{}, chanPoint,
 		)
 		if err != nil {
 			return nil, err
@@ -381,7 +418,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestC
 
 	htlcSets := make(map[HtlcSetKey]htlcSet)
 
-	chanArb := NewChannelArbitrator(arbCfg, htlcSets, log)
+	chanArb := NewChannelArbitrator(*arbCfg, htlcSets, log)
 
 	return &chanArbTestCtx{
 		t:                  t,
@@ -392,6 +429,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog) (*chanArbTestC
 		blockEpochs:        blockEpochs,
 		log:                log,
 		incubationRequests: incubateChan,
+		sweeper:            mockSweeper,
 	}, nil
 }
 
@@ -424,7 +462,9 @@ func TestChannelArbitratorCooperativeClose(t *testing.T) {
 	// We set up a channel to detect when MarkChannelClosed is called.
 	closeInfos := make(chan *channeldb.ChannelCloseSummary)
 	chanArbCtx.chanArb.cfg.MarkChannelClosed = func(
-		closeInfo *channeldb.ChannelCloseSummary) error {
+		closeInfo *channeldb.ChannelCloseSummary,
+		statuses ...channeldb.ChannelStatus) error {
+
 		closeInfos <- closeInfo
 		return nil
 	}
@@ -441,7 +481,7 @@ func TestChannelArbitratorCooperativeClose(t *testing.T) {
 		if c.CloseType != channeldb.CooperativeClose {
 			t.Fatalf("expected cooperative close, got %v", c.CloseType)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("timeout waiting for channel close")
 	}
 
@@ -449,7 +489,7 @@ func TestChannelArbitratorCooperativeClose(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -504,7 +544,7 @@ func TestChannelArbitratorRemoteForceClose(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -566,7 +606,7 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 		if state != StateBroadcastCommit {
 			t.Fatalf("state during PublishTx was %v", state)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stateTimeout):
 		t.Fatalf("did not get state update")
 	}
 
@@ -576,7 +616,7 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 
 	select {
 	case <-respChan:
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -585,7 +625,7 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error force closing channel: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -610,7 +650,7 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -654,7 +694,7 @@ func TestChannelArbitratorBreachClose(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -738,7 +778,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	)
 	select {
 	case <-respChan:
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -747,7 +787,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error force closing channel: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -825,7 +865,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 			t.Fatalf("wrong htlc index: expected %v, got %v",
 				outgoingDustHtlc.HtlcIndex, msgs[0].HtlcIndex)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("resolution msgs not sent")
 	}
 
@@ -887,7 +927,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	// htlcTimeoutResolver and should send the contract off for incubation.
 	select {
 	case <-chanArbCtx.incubationRequests:
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -907,7 +947,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 			t.Fatalf("wrong htlc index: expected %v, got %v",
 				htlc.HtlcIndex, msgs[0].HtlcIndex)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("resolution msgs not sent")
 	}
 
@@ -927,7 +967,7 @@ func TestChannelArbitratorLocalForceClosePendingHtlc(t *testing.T) {
 	chanArbCtxNew.AssertStateTransitions(StateFullyResolved)
 	select {
 	case <-chanArbCtxNew.resolvedChan:
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -989,7 +1029,7 @@ func TestChannelArbitratorLocalForceCloseRemoteConfirmed(t *testing.T) {
 		if state != StateBroadcastCommit {
 			t.Fatalf("state during PublishTx was %v", state)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stateTimeout):
 		t.Fatalf("no state update received")
 	}
 
@@ -1000,7 +1040,7 @@ func TestChannelArbitratorLocalForceCloseRemoteConfirmed(t *testing.T) {
 	// Wait for a response to the force close.
 	select {
 	case <-respChan:
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -1009,7 +1049,7 @@ func TestChannelArbitratorLocalForceCloseRemoteConfirmed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error force closing channel: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -1035,7 +1075,7 @@ func TestChannelArbitratorLocalForceCloseRemoteConfirmed(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(15 * time.Second):
+	case <-time.After(stateTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -1097,7 +1137,7 @@ func TestChannelArbitratorLocalForceDoubleSpend(t *testing.T) {
 		if state != StateBroadcastCommit {
 			t.Fatalf("state during PublishTx was %v", state)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stateTimeout):
 		t.Fatalf("no state update received")
 	}
 
@@ -1108,7 +1148,7 @@ func TestChannelArbitratorLocalForceDoubleSpend(t *testing.T) {
 	// Wait for a response to the force close.
 	select {
 	case <-respChan:
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -1117,7 +1157,7 @@ func TestChannelArbitratorLocalForceDoubleSpend(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error force closing channel: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -1143,7 +1183,7 @@ func TestChannelArbitratorLocalForceDoubleSpend(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(15 * time.Second):
+	case <-time.After(stateTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -1205,7 +1245,9 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 	// Now we make the log succeed writing the resolutions, but fail when
 	// attempting to close the channel.
 	log.failLog = false
-	chanArb.cfg.MarkChannelClosed = func(*channeldb.ChannelCloseSummary) error {
+	chanArb.cfg.MarkChannelClosed = func(*channeldb.ChannelCloseSummary,
+		...channeldb.ChannelStatus) error {
+
 		return fmt.Errorf("intentional close error")
 	}
 
@@ -1264,7 +1306,7 @@ func TestChannelArbitratorPersistence(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -1328,7 +1370,7 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 		if state != StateBroadcastCommit {
 			t.Fatalf("state during PublishTx was %v", state)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stateTimeout):
 		t.Fatalf("no state update received")
 	}
 
@@ -1339,7 +1381,7 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 			t.Fatalf("unexpected error force closing channel: %v",
 				err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("no response received")
 	}
 
@@ -1363,7 +1405,7 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 	select {
 	case <-chanArbCtx.resolvedChan:
 		// Expected.
-	case <-time.After(5 * time.Second):
+	case <-time.After(defaultTimeout):
 		t.Fatalf("contract was not resolved")
 	}
 }
@@ -1457,7 +1499,8 @@ func TestChannelArbitratorCommitFailure(t *testing.T) {
 
 		closed := make(chan struct{})
 		chanArb.cfg.MarkChannelClosed = func(
-			*channeldb.ChannelCloseSummary) error {
+			*channeldb.ChannelCloseSummary,
+			...channeldb.ChannelStatus) error {
 			close(closed)
 			return nil
 		}
@@ -1467,7 +1510,7 @@ func TestChannelArbitratorCommitFailure(t *testing.T) {
 
 		select {
 		case <-closed:
-		case <-time.After(5 * time.Second):
+		case <-time.After(defaultTimeout):
 			t.Fatalf("channel was not marked closed")
 		}
 
@@ -1501,7 +1544,7 @@ func TestChannelArbitratorCommitFailure(t *testing.T) {
 		select {
 		case <-chanArbCtx.resolvedChan:
 			// Expected.
-		case <-time.After(5 * time.Second):
+		case <-time.After(defaultTimeout):
 			t.Fatalf("contract was not resolved")
 		}
 	}
@@ -1805,7 +1848,7 @@ func TestChannelArbitratorDanglingCommitForceClose(t *testing.T) {
 					t.Fatalf("wrong htlc index: expected %v, got %v",
 						htlcIndex, msgs[0].HtlcIndex)
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(defaultTimeout):
 				t.Fatalf("resolution msgs not sent")
 			}
 
@@ -1901,4 +1944,309 @@ func TestChannelArbitratorPendingExpiredHTLC(t *testing.T) {
 		StateBroadcastCommit,
 		StateCommitmentBroadcasted,
 	)
+}
+
+// TestRemoteCloseInitiator tests the setting of close initiator statuses
+// for remote force closes and breaches.
+func TestRemoteCloseInitiator(t *testing.T) {
+	// getCloseSummary returns a unilateral close summary for the channel
+	// provided.
+	getCloseSummary := func(channel *channeldb.OpenChannel) *RemoteUnilateralCloseInfo {
+		return &RemoteUnilateralCloseInfo{
+			UnilateralCloseSummary: &lnwallet.UnilateralCloseSummary{
+				SpendDetail: &chainntnfs.SpendDetail{
+					SpenderTxHash: &chainhash.Hash{},
+					SpendingTx: &wire.MsgTx{
+						TxIn:  []*wire.TxIn{},
+						TxOut: []*wire.TxOut{},
+					},
+				},
+				ChannelCloseSummary: channeldb.ChannelCloseSummary{
+					ChanPoint:         channel.FundingOutpoint,
+					RemotePub:         channel.IdentityPub,
+					SettledBalance:    btcutil.Amount(500),
+					TimeLockedBalance: btcutil.Amount(10000),
+					IsPending:         false,
+				},
+				HtlcResolutions: &lnwallet.HtlcResolutions{},
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+
+		// notifyClose sends the appropriate chain event to indicate
+		// that the channel has closed. The event subscription channel
+		// is expected to be buffered, as is the default for test
+		// channel arbitrators.
+		notifyClose func(sub *ChainEventSubscription,
+			channel *channeldb.OpenChannel)
+
+		// expectedStates is the set of states we expect the arbitrator
+		// to progress through.
+		expectedStates []ArbitratorState
+	}{
+		{
+			name: "force close",
+			notifyClose: func(sub *ChainEventSubscription,
+				channel *channeldb.OpenChannel) {
+
+				s := getCloseSummary(channel)
+				sub.RemoteUnilateralClosure <- s
+			},
+			expectedStates: []ArbitratorState{
+				StateContractClosed, StateFullyResolved,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// First, create alice's channel.
+			alice, _, cleanUp, err := lnwallet.CreateTestChannels(
+				channeldb.SingleFunderTweaklessBit,
+			)
+			if err != nil {
+				t.Fatalf("unable to create test channels: %v",
+					err)
+			}
+			defer cleanUp()
+
+			// Create a mock log which will not block the test's
+			// expected number of transitions transitions, and has
+			// no commit resolutions so that the channel will
+			// resolve immediately.
+			log := &mockArbitratorLog{
+				state: StateDefault,
+				newStates: make(chan ArbitratorState,
+					len(test.expectedStates)),
+				resolutions: &ContractResolutions{
+					CommitHash:       chainhash.Hash{},
+					CommitResolution: nil,
+				},
+			}
+
+			// Mock marking the channel as closed, we only care
+			// about setting of channel status.
+			mockMarkClosed := func(_ *channeldb.ChannelCloseSummary,
+				statuses ...channeldb.ChannelStatus) error {
+				for _, status := range statuses {
+					err := alice.State().ApplyChanStatus(status)
+					if err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+
+			chanArbCtx, err := createTestChannelArbitrator(
+				t, log, withMarkClosed(mockMarkClosed),
+			)
+			if err != nil {
+				t.Fatalf("unable to create "+
+					"ChannelArbitrator: %v", err)
+			}
+			chanArb := chanArbCtx.chanArb
+
+			if err := chanArb.Start(); err != nil {
+				t.Fatalf("unable to start "+
+					"ChannelArbitrator: %v", err)
+			}
+			defer func() {
+				if err := chanArb.Stop(); err != nil {
+					t.Fatal(err)
+				}
+			}()
+
+			// It should start out in the default state.
+			chanArbCtx.AssertState(StateDefault)
+
+			// Notify the close event.
+			test.notifyClose(chanArb.cfg.ChainEvents, alice.State())
+
+			// Check that the channel transitions as expected.
+			chanArbCtx.AssertStateTransitions(
+				test.expectedStates...,
+			)
+
+			// It should also mark the channel as resolved.
+			select {
+			case <-chanArbCtx.resolvedChan:
+				// Expected.
+			case <-time.After(defaultTimeout):
+				t.Fatalf("contract was not resolved")
+			}
+
+			// Check that alice has the status we expect.
+			if !alice.State().HasChanStatus(
+				channeldb.ChanStatusRemoteCloseInitiator,
+			) {
+				t.Fatalf("expected remote close initiator, "+
+					"got: %v", alice.State().ChanStatus())
+			}
+		})
+	}
+}
+
+// TestChannelArbitratorAnchors asserts that the commitment tx anchor is swept.
+func TestChannelArbitratorAnchors(t *testing.T) {
+	log := &mockArbitratorLog{
+		state:     StateDefault,
+		newStates: make(chan ArbitratorState, 5),
+	}
+
+	chanArbCtx, err := createTestChannelArbitrator(t, log)
+	if err != nil {
+		t.Fatalf("unable to create ChannelArbitrator: %v", err)
+	}
+	chanArb := chanArbCtx.chanArb
+	chanArb.cfg.PreimageDB = newMockWitnessBeacon()
+	chanArb.cfg.Registry = &mockRegistry{}
+
+	// Setup two pre-confirmation anchor resolutions on the mock channel.
+	chanArb.cfg.Channel.(*mockChannel).anchorResolutions =
+		[]*lnwallet.AnchorResolution{
+			{}, {},
+		}
+
+	if err := chanArb.Start(); err != nil {
+		t.Fatalf("unable to start ChannelArbitrator: %v", err)
+	}
+	defer func() {
+		if err := chanArb.Stop(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// Create htlcUpdates channel.
+	htlcUpdates := make(chan *ContractUpdate)
+
+	signals := &ContractSignals{
+		HtlcUpdates: htlcUpdates,
+		ShortChanID: lnwire.ShortChannelID{},
+	}
+	chanArb.UpdateContractSignals(signals)
+
+	errChan := make(chan error, 1)
+	respChan := make(chan *wire.MsgTx, 1)
+
+	// With the channel found, and the request crafted, we'll send over a
+	// force close request to the arbitrator that watches this channel.
+	chanArb.forceCloseReqs <- &forceCloseReq{
+		errResp: errChan,
+		closeTx: respChan,
+	}
+
+	// The force close request should trigger broadcast of the commitment
+	// transaction.
+	chanArbCtx.AssertStateTransitions(
+		StateBroadcastCommit,
+		StateCommitmentBroadcasted,
+	)
+
+	// With the commitment tx still unconfirmed, we expect sweep attempts
+	// for all three versions of the commitment transaction.
+	<-chanArbCtx.sweeper.sweptInputs
+	<-chanArbCtx.sweeper.sweptInputs
+
+	select {
+	case <-respChan:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no response received")
+	}
+
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("error force closing channel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no response received")
+	}
+
+	// Now notify about the local force close getting confirmed.
+	closeTx := &wire.MsgTx{
+		TxIn: []*wire.TxIn{
+			{
+				PreviousOutPoint: wire.OutPoint{},
+				Witness: [][]byte{
+					{0x1},
+					{0x2},
+				},
+			},
+		},
+	}
+
+	chanArb.cfg.ChainEvents.LocalUnilateralClosure <- &LocalUnilateralCloseInfo{
+		SpendDetail: &chainntnfs.SpendDetail{},
+		LocalForceCloseSummary: &lnwallet.LocalForceCloseSummary{
+			CloseTx:         closeTx,
+			HtlcResolutions: &lnwallet.HtlcResolutions{},
+			AnchorResolution: &lnwallet.AnchorResolution{
+				AnchorSignDescriptor: input.SignDescriptor{
+					Output: &wire.TxOut{
+						Value: 1,
+					},
+				},
+			},
+		},
+		ChannelCloseSummary: &channeldb.ChannelCloseSummary{},
+		CommitSet: CommitSet{
+			ConfCommitKey: &LocalHtlcSet,
+			HtlcSets:      map[HtlcSetKey][]channeldb.HTLC{},
+		},
+	}
+
+	chanArbCtx.AssertStateTransitions(
+		StateContractClosed,
+		StateWaitingFullResolution,
+	)
+
+	// We expect to only have the anchor resolver active.
+	if len(chanArb.activeResolvers) != 1 {
+		t.Fatalf("expected single resolver, instead got: %v",
+			len(chanArb.activeResolvers))
+	}
+
+	resolver := chanArb.activeResolvers[0]
+	_, ok := resolver.(*anchorResolver)
+	if !ok {
+		t.Fatalf("expected anchor resolver, got %T", resolver)
+	}
+
+	// The anchor resolver is expected to offer the anchor input to the
+	// sweeper.
+	<-chanArbCtx.sweeper.updatedInputs
+
+	// The mock sweeper immediately signals success for that input. This
+	// should transition the channel to the resolved state.
+	chanArbCtx.AssertStateTransitions(StateFullyResolved)
+	select {
+	case <-chanArbCtx.resolvedChan:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("contract was not resolved")
+	}
+}
+
+type mockChannel struct {
+	anchorResolutions []*lnwallet.AnchorResolution
+}
+
+func (m *mockChannel) NewAnchorResolutions() ([]*lnwallet.AnchorResolution,
+	error) {
+
+	return m.anchorResolutions, nil
+}
+
+func (m *mockChannel) ForceCloseChan() (*lnwallet.LocalForceCloseSummary, error) {
+	summary := &lnwallet.LocalForceCloseSummary{
+		CloseTx:         &wire.MsgTx{},
+		HtlcResolutions: &lnwallet.HtlcResolutions{},
+	}
+	return summary, nil
 }

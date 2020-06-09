@@ -45,6 +45,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/signal"
+	"github.com/lightningnetwork/lnd/tor"
 	"github.com/lightningnetwork/lnd/walletunlocker"
 	"github.com/lightningnetwork/lnd/watchtower"
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
@@ -118,7 +119,7 @@ func AdminAuthOptions() ([]grpc.DialOption, error) {
 	return opts, nil
 }
 
-// ListnerWithSignal is a net.Listner that has an additional Ready channel that
+// ListenerWithSignal is a net.Listener that has an additional Ready channel that
 // will be closed when a server starts listening.
 type ListenerWithSignal struct {
 	net.Listener
@@ -169,8 +170,9 @@ func Main(lisCfg ListenerCfg) error {
 	}()
 
 	// Show version at startup.
-	ltndLog.Infof("Version: %s, build=%s, logging=%s",
-		build.Version(), build.Deployment, build.LoggingType)
+	ltndLog.Infof("Version: %s commit=%s, build=%s, logging=%s",
+		build.Version(), build.Commit, build.Deployment,
+		build.LoggingType)
 
 	var network string
 	switch {
@@ -222,20 +224,32 @@ func Main(lisCfg ListenerCfg) error {
 		defaultGraphSubDirname,
 		normalizeNetwork(activeNetParams.Name))
 
+	ltndLog.Infof("Opening the main database, this might take a few " +
+		"minutes...")
+
 	// Open the channeldb, which is dedicated to storing channel, and
 	// network related metadata.
+	startOpenTime := time.Now()
 	chanDB, err := channeldb.Open(
 		graphDir,
 		channeldb.OptionSetRejectCacheSize(cfg.Caches.RejectCacheSize),
 		channeldb.OptionSetChannelCacheSize(cfg.Caches.ChannelCacheSize),
 		channeldb.OptionSetSyncFreelist(cfg.SyncFreelist),
+		channeldb.OptionDryRunMigration(cfg.DryRunMigration),
 	)
-	if err != nil {
-		err := fmt.Errorf("Unable to open channeldb: %v", err)
-		ltndLog.Error(err)
+	switch {
+	case err == channeldb.ErrDryRunMigrationOK:
+		ltndLog.Infof("%v, exiting", err)
+		return nil
+
+	case err != nil:
+		ltndLog.Errorf("Unable to open channeldb: %v", err)
 		return err
 	}
 	defer chanDB.Close()
+
+	openTime := time.Since(startOpenTime)
+	ltndLog.Infof("Database now open (time_to_open=%v)!", openTime)
 
 	// Only process macaroons if --no-macaroons isn't set.
 	ctx := context.Background()
@@ -466,6 +480,28 @@ func Main(lisCfg ListenerCfg) error {
 		defer towerClientDB.Close()
 	}
 
+	// If tor is active and either v2 or v3 onion services have been specified,
+	// make a tor controller and pass it into both the watchtower server and
+	// the regular lnd server.
+	var torController *tor.Controller
+	if cfg.Tor.Active && (cfg.Tor.V2 || cfg.Tor.V3) {
+		torController = tor.NewController(
+			cfg.Tor.Control, cfg.Tor.TargetIPAddress, cfg.Tor.Password,
+		)
+
+		// Start the tor controller before giving it to any other subsystems.
+		if err := torController.Start(); err != nil {
+			err := fmt.Errorf("unable to initialize tor controller: %v", err)
+			ltndLog.Error(err)
+			return err
+		}
+		defer func() {
+			if err := torController.Stop(); err != nil {
+				ltndLog.Errorf("error stopping tor controller: %v", err)
+			}
+		}()
+	}
+
 	var tower *watchtower.Standalone
 	if cfg.Watchtower.Active {
 		// Segment the watchtower directory by chain and network.
@@ -499,7 +535,7 @@ func Main(lisCfg ListenerCfg) error {
 			return err
 		}
 
-		wtConfig, err := cfg.Watchtower.Apply(&watchtower.Config{
+		wtCfg := &watchtower.Config{
 			BlockFetcher:   activeChainControl.chainIO,
 			DB:             towerDB,
 			EpochRegistrar: activeChainControl.chainNotifier,
@@ -512,7 +548,23 @@ func Main(lisCfg ListenerCfg) error {
 			NodePrivKey: towerPrivKey,
 			PublishTx:   activeChainControl.wallet.PublishTransaction,
 			ChainHash:   *activeNetParams.GenesisHash,
-		}, lncfg.NormalizeAddresses)
+		}
+
+		// If there is a tor controller (user wants auto hidden services), then
+		// store a pointer in the watchtower config.
+		if torController != nil {
+			wtCfg.TorController = torController
+			wtCfg.WatchtowerKeyPath = cfg.Tor.WatchtowerKeyPath
+
+			switch {
+			case cfg.Tor.V2:
+				wtCfg.Type = tor.V2
+			case cfg.Tor.V3:
+				wtCfg.Type = tor.V3
+			}
+		}
+
+		wtConfig, err := cfg.Watchtower.Apply(wtCfg, lncfg.NormalizeAddresses)
 		if err != nil {
 			err := fmt.Errorf("Unable to configure watchtower: %v",
 				err)
@@ -536,6 +588,7 @@ func Main(lisCfg ListenerCfg) error {
 	server, err := newServer(
 		cfg.Listeners, chanDB, towerClientDB, activeChainControl,
 		idPrivKey, walletInitParams.ChansToRestore, chainedAcceptor,
+		torController,
 	)
 	if err != nil {
 		err := fmt.Errorf("Unable to create server: %v", err)

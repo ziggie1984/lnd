@@ -21,9 +21,11 @@ IOS_BUILD := $(IOS_BUILD_DIR)/Lndmobile.framework
 ANDROID_BUILD_DIR := $(MOBILE_BUILD_DIR)/android
 ANDROID_BUILD := $(ANDROID_BUILD_DIR)/Lndmobile.aar
 
-COMMIT_INFO := $(shell git describe --abbrev=40 --dirty)
-COMMIT := $(subst -dirty,-fresh-btcpay,$(COMMIT_INFO))
-LDFLAGS := -ldflags "-X $(PKG)/build.Commit=$(COMMIT)"
+COMMIT := $(shell git describe --abbrev=40 --dirty)
+COMMIT_HASH := $(shell git rev-parse HEAD)
+
+COMMIT_MSG := $(subst -dirty,-fresh-btcpay,$(COMMIT))
+LDFLAGS := -ldflags "-X $(PKG)/build.Commit=$(COMMIT_MSG)"
 
 BTCD_COMMIT := $(shell cat go.mod | \
 		grep $(BTCD_PKG) | \
@@ -39,6 +41,7 @@ GOBUILD := GO111MODULE=on go build -v
 GOINSTALL := GO111MODULE=on go install -v
 GOTEST := GO111MODULE=on go test 
 
+GOVERSION := $(shell go version | awk '{print $$3}')
 GOFILES_NOVENDOR = $(shell find . -type f -name '*.go' -not -path "./vendor/*")
 GOLIST := go list -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
 GOLISTCOVER := $(shell go list -deps -f '{{.ImportPath}}' ./... | grep '$(PKG)' | sed -e 's/^$(ESCPKG)/./')
@@ -49,10 +52,33 @@ MAKE := make
 XARGS := xargs -L 1
 
 include make/testing_flags.mk
+include make/release_flags.mk
 
 DEV_TAGS := $(if ${tags},$(DEV_TAGS) ${tags},$(DEV_TAGS))
 
-LINT = $(LINT_BIN) run -v
+# We only return the part inside the double quote here to avoid escape issues
+# when calling the external release script. The second parameter can be used to
+# add additional ldflags if needed (currently only used for the release).
+make_ldflags = $(2) -X $(PKG)/build.Commit=$(COMMIT) \
+	-X $(PKG)/build.CommitHash=$(COMMIT_HASH) \
+	-X $(PKG)/build.GoVersion=$(GOVERSION) \
+	-X $(PKG)/build.RawTags=$(shell echo $(1) | sed -e 's/ /,/g')
+
+LDFLAGS := -ldflags "$(call make_ldflags, ${tags})"
+DEV_LDFLAGS := -ldflags "$(call make_ldflags, $(DEV_TAGS))"
+ITEST_LDFLAGS := -ldflags "$(call make_ldflags, $(ITEST_TAGS))"
+
+# For the release, we want to remove the symbol table and debug information (-s)
+# and omit the DWARF symbol table (-w). Also we clear the build ID.
+RELEASE_LDFLAGS := $(call make_ldflags, $(RELEASE_TAGS), -s -w -buildid=)
+
+# Linting uses a lot of memory, so keep it under control by limiting the number
+# of workers if requested.
+ifneq ($(workers),)
+LINT_WORKERS = --concurrency=$(workers)
+endif
+
+LINT = $(LINT_BIN) run -v $(LINT_WORKERS)
 
 GREEN := "\\033[0;32m"
 NC := "\\033[0m"
@@ -90,18 +116,23 @@ btcd:
 
 build:
 	@$(call print, "Building debug lnd and lncli.")
-	$(GOBUILD) -tags="$(DEV_TAGS)" -o lnd-debug $(LDFLAGS) $(PKG)/cmd/lnd
-	$(GOBUILD) -tags="$(DEV_TAGS)" -o lncli-debug $(LDFLAGS) $(PKG)/cmd/lncli
+	$(GOBUILD) -tags="$(DEV_TAGS)" -o lnd-debug $(DEV_LDFLAGS) $(PKG)/cmd/lnd
+	$(GOBUILD) -tags="$(DEV_TAGS)" -o lncli-debug $(DEV_LDFLAGS) $(PKG)/cmd/lncli
 
 build-itest:
 	@$(call print, "Building itest lnd and lncli.")
-	$(GOBUILD) -tags="$(ITEST_TAGS)" -o lnd-itest $(LDFLAGS) $(PKG)/cmd/lnd
-	$(GOBUILD) -tags="$(ITEST_TAGS)" -o lncli-itest $(LDFLAGS) $(PKG)/cmd/lncli
+	$(GOBUILD) -tags="$(ITEST_TAGS)" -o lnd-itest $(ITEST_LDFLAGS) $(PKG)/cmd/lnd
+	$(GOBUILD) -tags="$(ITEST_TAGS)" -o lncli-itest $(ITEST_LDFLAGS) $(PKG)/cmd/lncli
 
 install:
 	@$(call print, "Installing lnd and lncli.")
 	$(GOINSTALL) -tags="${tags}" $(LDFLAGS) $(PKG)/cmd/lnd
 	$(GOINSTALL) -tags="${tags}" $(LDFLAGS) $(PKG)/cmd/lncli
+
+release:
+	@$(call print, "Releasing lnd and lncli binaries.")
+	$(VERSION_CHECK)
+	./build/release/release.sh build-release "$(VERSION_TAG)" "$(BUILD_SYSTEM)" "$(RELEASE_TAGS)" "$(RELEASE_LDFLAGS)"
 
 scratch: build
 
@@ -175,6 +206,14 @@ rpc:
 	@$(call print, "Compiling protos.")
 	cd ./lnrpc; ./gen_protos.sh
 
+rpc-format:
+	@$(call print, "Formatting protos.")
+	cd ./lnrpc; find . -name "*.proto" | xargs clang-format --style=file -i
+
+rpc-check: rpc
+	@$(call print, "Verifying protos.")
+	if test -n "$$(git describe --dirty | grep dirty)"; then echo "Protos not properly formatted or not compiled with v3.4.0"; git status; git diff; exit 1; fi
+
 mobile-rpc:
 	@$(call print, "Creating mobile RPC from protos.")
 	cd ./mobile; ./gen_bindings.sh
@@ -224,6 +263,8 @@ clean:
 	lint \
 	list \
 	rpc \
+	rpc-format \
+	rpc-check \
 	mobile-rpc \
 	vendor \
 	ios \

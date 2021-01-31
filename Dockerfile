@@ -1,4 +1,10 @@
-FROM golang:1.14.5-alpine as builder
+# If you change this value, please change it in the following files as well:
+# /.travis.yml
+# /dev.Dockerfile
+# /make/builder.Dockerfile
+# /.github/workflows/main.yml
+# /.github/workflows/release.yml
+FROM golang:1.15.6-alpine as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.

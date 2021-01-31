@@ -12,8 +12,11 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet/chancloser"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/pool"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -22,10 +25,6 @@ var (
 
 	// p2wshAddress is a valid pay to witness script hash address.
 	p2wshAddress = "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3"
-
-	// timeout is a timeout value to use for tests which need ot wait for
-	// a return value on a channel.
-	timeout = time.Second * 5
 )
 
 // TestPeerChannelClosureAcceptFeeResponder tests the shutdown responder's
@@ -33,8 +32,10 @@ var (
 func TestPeerChannelClosureAcceptFeeResponder(t *testing.T) {
 	t.Parallel()
 
-	notifier := &mockNotifier{
-		confChannel: make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 	broadcastTxChan := make(chan *wire.MsgTx)
 
@@ -126,7 +127,7 @@ func TestPeerChannelClosureAcceptFeeResponder(t *testing.T) {
 	}
 
 	// Alice should be waiting in a goroutine for a confirmation.
-	notifier.confChannel <- &chainntnfs.TxConfirmation{}
+	notifier.ConfChan <- &chainntnfs.TxConfirmation{}
 }
 
 // TestPeerChannelClosureAcceptFeeInitiator tests the shutdown initiator's
@@ -134,8 +135,10 @@ func TestPeerChannelClosureAcceptFeeResponder(t *testing.T) {
 func TestPeerChannelClosureAcceptFeeInitiator(t *testing.T) {
 	t.Parallel()
 
-	notifier := &mockNotifier{
-		confChannel: make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 	broadcastTxChan := make(chan *wire.MsgTx)
 
@@ -245,7 +248,7 @@ func TestPeerChannelClosureAcceptFeeInitiator(t *testing.T) {
 	}
 
 	// Alice should be waiting on a single confirmation for the coop close tx.
-	notifier.confChannel <- &chainntnfs.TxConfirmation{}
+	notifier.ConfChan <- &chainntnfs.TxConfirmation{}
 }
 
 // TestPeerChannelClosureFeeNegotiationsResponder tests the shutdown
@@ -254,8 +257,10 @@ func TestPeerChannelClosureAcceptFeeInitiator(t *testing.T) {
 func TestPeerChannelClosureFeeNegotiationsResponder(t *testing.T) {
 	t.Parallel()
 
-	notifier := &mockNotifier{
-		confChannel: make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 	broadcastTxChan := make(chan *wire.MsgTx)
 
@@ -437,7 +442,7 @@ func TestPeerChannelClosureFeeNegotiationsResponder(t *testing.T) {
 	}
 
 	// Alice should be waiting on a single confirmation for the coop close tx.
-	notifier.confChannel <- &chainntnfs.TxConfirmation{}
+	notifier.ConfChan <- &chainntnfs.TxConfirmation{}
 }
 
 // TestPeerChannelClosureFeeNegotiationsInitiator tests the shutdown
@@ -446,8 +451,10 @@ func TestPeerChannelClosureFeeNegotiationsResponder(t *testing.T) {
 func TestPeerChannelClosureFeeNegotiationsInitiator(t *testing.T) {
 	t.Parallel()
 
-	notifier := &mockNotifier{
-		confChannel: make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 	broadcastTxChan := make(chan *wire.MsgTx)
 
@@ -642,7 +649,7 @@ func TestPeerChannelClosureFeeNegotiationsInitiator(t *testing.T) {
 	}
 
 	// Alice should be waiting on a single confirmation for the coop close tx.
-	notifier.confChannel <- &chainntnfs.TxConfirmation{}
+	notifier.ConfChan <- &chainntnfs.TxConfirmation{}
 }
 
 // TestChooseDeliveryScript tests that chooseDeliveryScript correctly errors
@@ -779,8 +786,10 @@ func TestCustomShutdownScript(t *testing.T) {
 		test := test
 
 		t.Run(test.name, func(t *testing.T) {
-			notifier := &mockNotifier{
-				confChannel: make(chan *chainntnfs.TxConfirmation),
+			notifier := &mock.ChainNotifier{
+				SpendChan: make(chan *chainntnfs.SpendDetail),
+				EpochChan: make(chan *chainntnfs.BlockEpoch),
+				ConfChan:  make(chan *chainntnfs.TxConfirmation),
 			}
 			broadcastTxChan := make(chan *wire.MsgTx)
 
@@ -847,6 +856,130 @@ func TestCustomShutdownScript(t *testing.T) {
 				t.Fatalf("expected delivery script: %x, got: %x",
 					test.expectedScript, shutdownMsg.Address)
 			}
+		})
+	}
+}
+
+// TestStaticRemoteDowngrade tests that we downgrade our static remote feature
+// bit to optional if we have legacy channels with a peer. This ensures that
+// we can stay connected to peers that don't support the feature bit that we
+// have channels with.
+func TestStaticRemoteDowngrade(t *testing.T) {
+	t.Parallel()
+
+	var (
+		// We set the same legacy feature bits for all tests, since
+		// these are not relevant to our test scenario
+		rawLegacy = lnwire.NewRawFeatureVector(
+			lnwire.UpfrontShutdownScriptOptional,
+		)
+		legacy = lnwire.NewFeatureVector(rawLegacy, nil)
+
+		legacyCombinedOptional = lnwire.NewRawFeatureVector(
+			lnwire.UpfrontShutdownScriptOptional,
+			lnwire.StaticRemoteKeyOptional,
+		)
+
+		rawFeatureOptional = lnwire.NewRawFeatureVector(
+			lnwire.StaticRemoteKeyOptional,
+		)
+
+		featureOptional = lnwire.NewFeatureVector(
+			rawFeatureOptional, nil,
+		)
+
+		rawFeatureRequired = lnwire.NewRawFeatureVector(
+			lnwire.StaticRemoteKeyRequired,
+		)
+
+		featureRequired = lnwire.NewFeatureVector(
+			rawFeatureRequired, nil,
+		)
+	)
+
+	tests := []struct {
+		name         string
+		legacy       bool
+		features     *lnwire.FeatureVector
+		expectedInit *lnwire.Init
+	}{
+		{
+			name:     "no legacy channel, static optional",
+			legacy:   false,
+			features: featureOptional,
+			expectedInit: &lnwire.Init{
+				GlobalFeatures: rawLegacy,
+				Features:       rawFeatureOptional,
+			},
+		},
+		{
+			name:     "legacy channel, static optional",
+			legacy:   true,
+			features: featureOptional,
+			expectedInit: &lnwire.Init{
+				GlobalFeatures: rawLegacy,
+				Features:       rawFeatureOptional,
+			},
+		},
+		{
+			name:     "no legacy channel, static required",
+			legacy:   false,
+			features: featureRequired,
+			expectedInit: &lnwire.Init{
+				GlobalFeatures: rawLegacy,
+				Features:       rawFeatureRequired,
+			},
+		},
+
+		// In this case we need to flip our required bit to optional,
+		// this should also propagate to the legacy set of feature bits
+		// so we have proper consistency: a bit isn't set to optional
+		// in one field and required in the other.
+		{
+			name:     "legacy channel, static required",
+			legacy:   true,
+			features: featureRequired,
+			expectedInit: &lnwire.Init{
+				GlobalFeatures: legacyCombinedOptional,
+				Features:       rawFeatureOptional,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			writeBufferPool := pool.NewWriteBuffer(
+				pool.DefaultWriteBufferGCInterval,
+				pool.DefaultWriteBufferExpiryInterval,
+			)
+
+			writePool := pool.NewWrite(
+				writeBufferPool, 1, timeout,
+			)
+			require.NoError(t, writePool.Start())
+
+			mockConn := newMockConn(t, 1)
+
+			p := Brontide{
+				cfg: Config{
+					LegacyFeatures: legacy,
+					Features:       test.features,
+					Conn:           mockConn,
+					WritePool:      writePool,
+				},
+			}
+
+			var b bytes.Buffer
+			_, err := lnwire.WriteMessage(&b, test.expectedInit, 0)
+			require.NoError(t, err)
+
+			// Send our init message, assert that we write our expected message
+			// and shutdown our write pool.
+			require.NoError(t, p.sendInitMsg(test.legacy))
+			mockConn.assertWrite(b.Bytes())
+			require.NoError(t, writePool.Stop())
 		})
 	}
 }

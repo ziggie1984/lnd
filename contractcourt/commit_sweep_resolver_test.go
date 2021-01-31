@@ -10,6 +10,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/sweep"
@@ -17,7 +18,7 @@ import (
 
 type commitSweepResolverTestContext struct {
 	resolver           *commitSweepResolver
-	notifier           *mockNotifier
+	notifier           *mock.ChainNotifier
 	sweeper            *mockSweeper
 	resolverResultChan chan resolveResult
 	t                  *testing.T
@@ -26,10 +27,10 @@ type commitSweepResolverTestContext struct {
 func newCommitSweepResolverTestContext(t *testing.T,
 	resolution *lnwallet.CommitOutputResolution) *commitSweepResolverTestContext {
 
-	notifier := &mockNotifier{
-		epochChan: make(chan *chainntnfs.BlockEpoch),
-		spendChan: make(chan *chainntnfs.SpendDetail),
-		confChan:  make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 
 	sweeper := newMockSweeper()
@@ -83,7 +84,7 @@ func (i *commitSweepResolverTestContext) resolve() {
 }
 
 func (i *commitSweepResolverTestContext) notifyEpoch(height int32) {
-	i.notifier.epochChan <- &chainntnfs.BlockEpoch{
+	i.notifier.EpochChan <- &chainntnfs.BlockEpoch{
 		Height: height,
 	}
 }
@@ -102,17 +103,19 @@ func (i *commitSweepResolverTestContext) waitForResult() {
 }
 
 type mockSweeper struct {
-	sweptInputs   chan input.Input
-	updatedInputs chan wire.OutPoint
-	sweepTx       *wire.MsgTx
-	sweepErr      error
+	sweptInputs       chan input.Input
+	updatedInputs     chan wire.OutPoint
+	sweepTx           *wire.MsgTx
+	sweepErr          error
+	createSweepTxChan chan *wire.MsgTx
 }
 
 func newMockSweeper() *mockSweeper {
 	return &mockSweeper{
-		sweptInputs:   make(chan input.Input),
-		updatedInputs: make(chan wire.OutPoint),
-		sweepTx:       &wire.MsgTx{},
+		sweptInputs:       make(chan input.Input),
+		updatedInputs:     make(chan wire.OutPoint),
+		sweepTx:           &wire.MsgTx{},
+		createSweepTxChan: make(chan *wire.MsgTx),
 	}
 }
 
@@ -132,7 +135,9 @@ func (s *mockSweeper) SweepInput(input input.Input, params sweep.Params) (
 func (s *mockSweeper) CreateSweepTx(inputs []input.Input, feePref sweep.FeePreference,
 	currentBlockHeight uint32) (*wire.MsgTx, error) {
 
-	return nil, nil
+	// We will wait for the test to supply the sweep tx to return.
+	sweepTx := <-s.createSweepTxChan
+	return sweepTx, nil
 }
 
 func (s *mockSweeper) RelayFeePerKW() chainfee.SatPerKWeight {
@@ -189,7 +194,7 @@ func TestCommitSweepResolverNoDelay(t *testing.T) {
 
 	spendTx := &wire.MsgTx{}
 	spendHash := spendTx.TxHash()
-	ctx.notifier.confChan <- &chainntnfs.TxConfirmation{
+	ctx.notifier.ConfChan <- &chainntnfs.TxConfirmation{
 		Tx: spendTx,
 	}
 
@@ -267,7 +272,7 @@ func testCommitSweepResolverDelay(t *testing.T, sweepErr error) {
 
 	ctx.resolve()
 
-	ctx.notifier.confChan <- &chainntnfs.TxConfirmation{
+	ctx.notifier.ConfChan <- &chainntnfs.TxConfirmation{
 		BlockHeight: testInitialBlockHeight - 1,
 	}
 

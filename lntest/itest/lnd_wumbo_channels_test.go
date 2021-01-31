@@ -1,5 +1,3 @@
-// +build rpctest
-
 package itest
 
 import (
@@ -7,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd"
+	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lntest"
 )
 
@@ -50,7 +48,7 @@ func testWumboChannels(net *lntest.NetworkHarness, t *harnessTest) {
 		t.Fatalf("unable to connect peers: %v", err)
 	}
 
-	chanAmt := lnd.MaxBtcFundingAmount + 1
+	chanAmt := funding.MaxBtcFundingAmount + 1
 	_, err = net.OpenChannel(
 		ctxb, wumboNode, miniNode, lntest.OpenChannelParams{
 			Amt: chanAmt,
@@ -62,7 +60,7 @@ func testWumboChannels(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// The test should indicate a failure due to the channel being too
 	// large.
-	if !strings.Contains(err.Error(), "channel too large") {
+	if !strings.Contains(err.Error(), "exceeds maximum chan size") {
 		t.Fatalf("channel should be rejected due to size, instead "+
 			"error was: %v", err)
 	}

@@ -4,27 +4,24 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"math/rand"
 	"net"
 	"os"
+	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/wallet/txauthor"
-	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -32,10 +29,15 @@ import (
 	"github.com/lightningnetwork/lnd/queue"
 	"github.com/lightningnetwork/lnd/shachain"
 	"github.com/lightningnetwork/lnd/ticker"
+	"github.com/stretchr/testify/require"
 )
 
 const (
 	broadcastHeight = 100
+
+	// timeout is a timeout value to use for tests which need to wait for
+	// a return value on a channel.
+	timeout = time.Second * 5
 )
 
 var (
@@ -102,252 +104,6 @@ var (
 // noUpdate is a function which can be used as a parameter in createTestPeer to
 // call the setup code with no custom values on the channels set up.
 var noUpdate = func(a, b *channeldb.OpenChannel) {}
-
-type mockSigner struct {
-	key *btcec.PrivateKey
-}
-
-func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) (input.Signature, error) {
-	amt := signDesc.Output.Value
-	witnessScript := signDesc.WitnessScript
-	privKey := m.key
-
-	if !privKey.PubKey().IsEqual(signDesc.KeyDesc.PubKey) {
-		return nil, fmt.Errorf("incorrect key passed")
-	}
-
-	switch {
-	case signDesc.SingleTweak != nil:
-		privKey = input.TweakPrivKey(privKey,
-			signDesc.SingleTweak)
-	case signDesc.DoubleTweak != nil:
-		privKey = input.DeriveRevocationPrivKey(privKey,
-			signDesc.DoubleTweak)
-	}
-
-	sig, err := txscript.RawTxInWitnessSignature(tx, signDesc.SigHashes,
-		signDesc.InputIndex, amt, witnessScript, signDesc.HashType,
-		privKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return btcec.ParseDERSignature(sig[:len(sig)-1], btcec.S256())
-}
-
-func (m *mockSigner) ComputeInputScript(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) (*input.Script, error) {
-
-	// TODO(roasbeef): expose tweaked signer from lnwallet so don't need to
-	// duplicate this code?
-
-	privKey := m.key
-
-	switch {
-	case signDesc.SingleTweak != nil:
-		privKey = input.TweakPrivKey(privKey,
-			signDesc.SingleTweak)
-	case signDesc.DoubleTweak != nil:
-		privKey = input.DeriveRevocationPrivKey(privKey,
-			signDesc.DoubleTweak)
-	}
-
-	witnessScript, err := txscript.WitnessSignature(tx, signDesc.SigHashes,
-		signDesc.InputIndex, signDesc.Output.Value, signDesc.Output.PkScript,
-		signDesc.HashType, privKey, true)
-	if err != nil {
-		return nil, err
-	}
-
-	return &input.Script{
-		Witness: witnessScript,
-	}, nil
-}
-
-var _ input.Signer = (*mockSigner)(nil)
-
-type mockChainIO struct {
-	bestHeight int32
-}
-
-func (m *mockChainIO) GetBestBlock() (*chainhash.Hash, int32, error) {
-	return nil, m.bestHeight, nil
-}
-
-func (*mockChainIO) GetUtxo(op *wire.OutPoint, _ []byte,
-	heightHint uint32, _ <-chan struct{}) (*wire.TxOut, error) {
-	return nil, nil
-}
-
-func (*mockChainIO) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
-	return nil, nil
-}
-
-func (*mockChainIO) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) {
-	return nil, nil
-}
-
-var _ lnwallet.BlockChainIO = (*mockChainIO)(nil)
-
-type mockWalletController struct {
-	rootKey       *btcec.PrivateKey
-	publishedTxns chan *wire.MsgTx
-}
-
-func (*mockWalletController) FetchInputInfo(prevOut *wire.OutPoint) (
-	*lnwallet.Utxo, error) {
-
-	return nil, nil
-}
-
-func (*mockWalletController) ConfirmedBalance(confs int32) (btcutil.Amount,
-	error) {
-
-	return 0, nil
-}
-
-func (m *mockWalletController) NewAddress(addrType lnwallet.AddressType,
-	change bool) (btcutil.Address, error) {
-
-	addr, _ := btcutil.NewAddressPubKey(
-		m.rootKey.PubKey().SerializeCompressed(), &chaincfg.MainNetParams,
-	)
-	return addr, nil
-}
-
-func (*mockWalletController) LastUnusedAddress(addrType lnwallet.AddressType) (
-	btcutil.Address, error) {
-
-	return nil, nil
-}
-
-func (*mockWalletController) IsOurAddress(a btcutil.Address) bool {
-	return false
-}
-
-func (*mockWalletController) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, label string) (*wire.MsgTx, error) {
-
-	return nil, nil
-}
-
-func (*mockWalletController) CreateSimpleTx(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, dryRun bool) (*txauthor.AuthoredTx, error) {
-
-	return nil, nil
-}
-
-func (*mockWalletController) ListUnspentWitness(minconfirms,
-	maxconfirms int32) ([]*lnwallet.Utxo, error) {
-
-	return nil, nil
-}
-
-func (*mockWalletController) ListTransactionDetails(startHeight,
-	endHeight int32) ([]*lnwallet.TransactionDetail, error) {
-
-	return nil, nil
-}
-
-func (*mockWalletController) LockOutpoint(o wire.OutPoint) {}
-
-func (*mockWalletController) UnlockOutpoint(o wire.OutPoint) {}
-
-func (m *mockWalletController) PublishTransaction(tx *wire.MsgTx,
-	label string) error {
-	m.publishedTxns <- tx
-	return nil
-}
-
-func (*mockWalletController) LabelTransaction(hash chainhash.Hash,
-	label string, overwrite bool) error {
-
-	return nil
-}
-
-func (*mockWalletController) SubscribeTransactions() (
-	lnwallet.TransactionSubscription, error) {
-
-	return nil, nil
-}
-
-func (*mockWalletController) IsSynced() (bool, int64, error) {
-	return false, 0, nil
-}
-
-func (*mockWalletController) Start() error {
-	return nil
-}
-
-func (*mockWalletController) Stop() error {
-	return nil
-}
-
-func (*mockWalletController) BackEnd() string {
-	return ""
-}
-
-func (*mockWalletController) LeaseOutput(wtxmgr.LockID,
-	wire.OutPoint) (time.Time, error) {
-
-	return time.Now(), nil
-}
-
-func (*mockWalletController) ReleaseOutput(wtxmgr.LockID, wire.OutPoint) error {
-	return nil
-}
-
-func (*mockWalletController) GetRecoveryInfo() (bool, float64, error) {
-	return false, 0, nil
-}
-
-var _ lnwallet.WalletController = (*mockWalletController)(nil)
-
-type mockNotifier struct {
-	confChannel chan *chainntnfs.TxConfirmation
-}
-
-func (m *mockNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
-	_ []byte, numConfs, heightHint uint32) (*chainntnfs.ConfirmationEvent,
-	error) {
-
-	return &chainntnfs.ConfirmationEvent{
-		Confirmed: m.confChannel,
-	}, nil
-}
-
-func (m *mockNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint, _ []byte,
-	heightHint uint32) (*chainntnfs.SpendEvent, error) {
-
-	return &chainntnfs.SpendEvent{
-		Spend:  make(chan *chainntnfs.SpendDetail),
-		Cancel: func() {},
-	}, nil
-}
-
-func (m *mockNotifier) RegisterBlockEpochNtfn(
-	bestBlock *chainntnfs.BlockEpoch) (*chainntnfs.BlockEpochEvent, error) {
-
-	return &chainntnfs.BlockEpochEvent{
-		Epochs: make(chan *chainntnfs.BlockEpoch),
-		Cancel: func() {},
-	}, nil
-}
-
-func (m *mockNotifier) Start() error {
-	return nil
-}
-
-func (m *mockNotifier) Stop() error {
-	return nil
-}
-
-func (m *mockNotifier) Started() bool {
-	return true
-}
-
-var _ chainntnfs.ChainNotifier = (*mockNotifier)(nil)
 
 // createTestPeer creates a channel between two nodes, and returns a peer for
 // one of the nodes, together with the channel seen from both nodes. It takes
@@ -575,8 +331,8 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		os.RemoveAll(alicePath)
 	}
 
-	aliceSigner := &mockSigner{aliceKeyPriv}
-	bobSigner := &mockSigner{bobKeyPriv}
+	aliceSigner := &mock.SingleSigner{Privkey: aliceKeyPriv}
+	bobSigner := &mock.SingleSigner{Privkey: bobKeyPriv}
 
 	alicePool := lnwallet.NewSigPool(1, aliceSigner)
 	channelAlice, err := lnwallet.NewLightningChannel(
@@ -596,13 +352,13 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 	}
 	_ = bobPool.Start()
 
-	chainIO := &mockChainIO{
-		bestHeight: broadcastHeight,
+	chainIO := &mock.ChainIO{
+		BestHeight: broadcastHeight,
 	}
 	wallet := &lnwallet.LightningWallet{
-		WalletController: &mockWalletController{
-			rootKey:       aliceKeyPriv,
-			publishedTxns: publTx,
+		WalletController: &mock.WalletController{
+			RootKey:               aliceKeyPriv,
+			PublishedTransactions: publTx,
 		},
 	}
 
@@ -692,4 +448,57 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 	go alicePeer.channelManager()
 
 	return alicePeer, channelBob, cleanUpFunc, nil
+}
+
+type mockMessageConn struct {
+	t *testing.T
+
+	// MessageConn embeds our interface so that the mock does not need to
+	// implement every function. The mock will panic if an unspecified function
+	// is called.
+	MessageConn
+
+	// writtenMessages is a channel that our mock pushes written messages into.
+	writtenMessages chan []byte
+}
+
+func newMockConn(t *testing.T, expectedMessages int) *mockMessageConn {
+	return &mockMessageConn{
+		t:               t,
+		writtenMessages: make(chan []byte, expectedMessages),
+	}
+}
+
+// SetWriteDeadline mocks setting write deadline for our conn.
+func (m *mockMessageConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+// Flush mocks a message conn flush.
+func (m *mockMessageConn) Flush() (int, error) {
+	return 0, nil
+}
+
+// WriteMessage mocks sending of a message on our connection. It will push
+// the bytes sent into the mock's writtenMessages channel.
+func (m *mockMessageConn) WriteMessage(msg []byte) error {
+	select {
+	case m.writtenMessages <- msg:
+	case <-time.After(timeout):
+		m.t.Fatalf("timeout sending message: %v", msg)
+	}
+
+	return nil
+}
+
+// assertWrite asserts that our mock as had WriteMessage called with the byte
+// slice we expect.
+func (m *mockMessageConn) assertWrite(expected []byte) {
+	select {
+	case actual := <-m.writtenMessages:
+		require.Equal(m.t, expected, actual)
+
+	case <-time.After(timeout):
+		m.t.Fatalf("timeout waiting for write: %v", expected)
+	}
 }

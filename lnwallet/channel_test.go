@@ -683,14 +683,37 @@ func testCommitHTLCSigTieBreak(t *testing.T, restart bool) {
 	}
 }
 
+// TestCooperativeChannelClosure checks that the coop close process finishes
+// with an agreement from both parties, and that the final balances of the
+// close tx check out.
 func TestCooperativeChannelClosure(t *testing.T) {
+	t.Run("tweakless", func(t *testing.T) {
+		testCoopClose(t, &coopCloseTestCase{
+			chanType: channeldb.SingleFunderTweaklessBit,
+		})
+	})
+	t.Run("anchors", func(t *testing.T) {
+		testCoopClose(t, &coopCloseTestCase{
+			chanType: channeldb.SingleFunderTweaklessBit |
+				channeldb.AnchorOutputsBit,
+			anchorAmt: anchorSize * 2,
+		})
+	})
+}
+
+type coopCloseTestCase struct {
+	chanType  channeldb.ChannelType
+	anchorAmt btcutil.Amount
+}
+
+func testCoopClose(t *testing.T, testCase *coopCloseTestCase) {
 	t.Parallel()
 
 	// Create a test channel which will be used for the duration of this
 	// unittest. The channel will be funded evenly with Alice having 5 BTC,
 	// and Bob having 5 BTC.
 	aliceChannel, bobChannel, cleanUp, err := CreateTestChannels(
-		channeldb.SingleFunderTweaklessBit,
+		testCase.chanType,
 	)
 	if err != nil {
 		t.Fatalf("unable to create test channels: %v", err)
@@ -707,7 +730,7 @@ func TestCooperativeChannelClosure(t *testing.T) {
 		bobChannel.channelState.LocalCommitment.FeePerKw,
 	)
 
-	// We'll store with both Alice and Bob creating a new close proposal
+	// We'll start with both Alice and Bob creating a new close proposal
 	// with the same fee.
 	aliceFee := aliceChannel.CalcFee(aliceFeeRate)
 	aliceSig, _, _, err := aliceChannel.CreateCloseProposal(
@@ -728,7 +751,7 @@ func TestCooperativeChannelClosure(t *testing.T) {
 	// With the proposals created, both sides should be able to properly
 	// process the other party's signature. This indicates that the
 	// transaction is well formed, and the signatures verify.
-	aliceCloseTx, _, err := bobChannel.CompleteCooperativeClose(
+	aliceCloseTx, bobTxBalance, err := bobChannel.CompleteCooperativeClose(
 		bobSig, aliceSig, bobDeliveryScript, aliceDeliveryScript,
 		bobFee,
 	)
@@ -737,7 +760,7 @@ func TestCooperativeChannelClosure(t *testing.T) {
 	}
 	bobCloseSha := aliceCloseTx.TxHash()
 
-	bobCloseTx, _, err := aliceChannel.CompleteCooperativeClose(
+	bobCloseTx, aliceTxBalance, err := aliceChannel.CompleteCooperativeClose(
 		aliceSig, bobSig, aliceDeliveryScript, bobDeliveryScript,
 		aliceFee,
 	)
@@ -748,6 +771,32 @@ func TestCooperativeChannelClosure(t *testing.T) {
 
 	if bobCloseSha != aliceCloseSha {
 		t.Fatalf("alice and bob close transactions don't match: %v", err)
+	}
+
+	// Finally, make sure the final balances are correct from both's
+	// perspective.
+	aliceBalance := aliceChannel.channelState.LocalCommitment.
+		LocalBalance.ToSatoshis()
+
+	// The commit balance have had the initiator's (Alice) commitfee and
+	// any anchors subtracted, so add that back to the final expected
+	// balance. Alice also pays the coop close fee, so that must be
+	// subtracted.
+	commitFee := aliceChannel.channelState.LocalCommitment.CommitFee
+	expBalanceAlice := aliceBalance + commitFee +
+		testCase.anchorAmt - bobFee
+	if aliceTxBalance != expBalanceAlice {
+		t.Fatalf("expected balance %v got %v", expBalanceAlice,
+			aliceTxBalance)
+	}
+
+	// Bob is not the initiator, so his final balance should simply be
+	// equal to the latest commitment balance.
+	expBalanceBob := bobChannel.channelState.LocalCommitment.
+		LocalBalance.ToSatoshis()
+	if bobTxBalance != expBalanceBob {
+		t.Fatalf("expected bob's balance to be %v got %v",
+			expBalanceBob, bobTxBalance)
 	}
 }
 
@@ -2181,11 +2230,11 @@ func TestCooperativeCloseDustAdherence(t *testing.T) {
 			"got %v", 2, len(closeTx.TxOut))
 	}
 
-	// We'll reset the channel states before proceeding to our nest test.
+	// We'll reset the channel states before proceeding to our next test.
 	resetChannelState()
 
 	// Next we'll modify the current balances and dust limits such that
-	// Bob's current balance is above _below_ his dust limit.
+	// Bob's current balance is _below_ his dust limit.
 	aliceBal := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
 	bobBal := lnwire.NewMSatFromSatoshis(250)
 	setBalances(aliceBal, bobBal)
@@ -2228,9 +2277,24 @@ func TestCooperativeCloseDustAdherence(t *testing.T) {
 			int64(closeTx.TxOut[0].Value))
 	}
 
-	// Finally, we'll modify the current balances and dust limits such that
-	// Alice's current balance is _below_ his her limit.
+	// We'll modify the current balances and dust limits such that
+	// Alice's current balance is too low to pay the proposed fee.
 	setBalances(bobBal, aliceBal)
+	resetChannelState()
+
+	// Attempting to close with this fee now should fail, since Alice
+	// cannot afford it.
+	_, _, _, err = aliceChannel.CreateCloseProposal(
+		aliceFee, aliceDeliveryScript, bobDeliveryScript,
+	)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+
+	// Finally, we'll modify the current balances and dust limits such that
+	// Alice's balance after paying the coop fee is _below_ her dust limit.
+	lowBalance := lnwire.NewMSatFromSatoshis(aliceFee) + 1000
+	setBalances(lowBalance, aliceBal)
 	resetChannelState()
 
 	// Our final attempt at another cooperative channel closure. It should
@@ -5267,6 +5331,140 @@ func TestChanAvailableBalanceNearHtlcFee(t *testing.T) {
 	checkBalance(t, expAliceBalance, expBobBalance)
 }
 
+// TestChanCommitWeightDustHtlcs checks that we correctly calculate the
+// commitment weight when some HTLCs are dust.
+func TestChanCommitWeightDustHtlcs(t *testing.T) {
+	t.Parallel()
+
+	// Create a test channel which will be used for the duration of this
+	// unittest. The channel will be funded evenly with Alice having 5 BTC,
+	// and Bob having 5 BTC.
+	aliceChannel, bobChannel, cleanUp, err := CreateTestChannels(
+		channeldb.SingleFunderTweaklessBit,
+	)
+	if err != nil {
+		t.Fatalf("unable to create test channels: %v", err)
+	}
+	defer cleanUp()
+
+	aliceDustlimit := lnwire.NewMSatFromSatoshis(
+		aliceChannel.channelState.LocalChanCfg.DustLimit,
+	)
+	bobDustlimit := lnwire.NewMSatFromSatoshis(
+		bobChannel.channelState.LocalChanCfg.DustLimit,
+	)
+
+	feeRate := chainfee.SatPerKWeight(
+		aliceChannel.channelState.LocalCommitment.FeePerKw,
+	)
+	htlcTimeoutFee := lnwire.NewMSatFromSatoshis(
+		HtlcTimeoutFee(aliceChannel.channelState.ChanType, feeRate),
+	)
+	htlcSuccessFee := lnwire.NewMSatFromSatoshis(
+		HtlcSuccessFee(aliceChannel.channelState.ChanType, feeRate),
+	)
+
+	// Helper method to add an HTLC from Alice to Bob.
+	htlcIndex := uint64(0)
+	addHtlc := func(htlcAmt lnwire.MilliSatoshi) lntypes.Preimage {
+		t.Helper()
+
+		htlc, preImage := createHTLC(int(htlcIndex), htlcAmt)
+		if _, err := aliceChannel.AddHTLC(htlc, nil); err != nil {
+			t.Fatalf("unable to add htlc: %v", err)
+		}
+		if _, err := bobChannel.ReceiveHTLC(htlc); err != nil {
+			t.Fatalf("unable to recv htlc: %v", err)
+		}
+
+		if err := ForceStateTransition(aliceChannel, bobChannel); err != nil {
+			t.Fatalf("unable to complete alice's state "+
+				"transition: %v", err)
+		}
+
+		return preImage
+	}
+
+	settleHtlc := func(preImage lntypes.Preimage) {
+		t.Helper()
+
+		err = bobChannel.SettleHTLC(preImage, htlcIndex, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("unable to settle htlc: %v", err)
+		}
+		err = aliceChannel.ReceiveHTLCSettle(preImage, htlcIndex)
+		if err != nil {
+			t.Fatalf("unable to settle htlc: %v", err)
+		}
+
+		if err := ForceStateTransition(aliceChannel, bobChannel); err != nil {
+			t.Fatalf("unable to complete alice's state "+
+				"transition: %v", err)
+		}
+		htlcIndex++
+	}
+
+	// Helper method that fetches the current remote commitment weight
+	// fromt the given channel's POV.
+	remoteCommitWeight := func(lc *LightningChannel) int64 {
+		remoteACKedIndex := lc.localCommitChain.tip().theirMessageIndex
+		htlcView := lc.fetchHTLCView(remoteACKedIndex,
+			lc.localUpdateLog.logIndex)
+
+		_, w := lc.availableCommitmentBalance(
+			htlcView, true,
+		)
+
+		return w
+	}
+
+	// Start by getting the initial remote commitment wight seen from
+	// Alice's perspective. At this point there are no HTLCs on the
+	// commitment.
+	weight1 := remoteCommitWeight(aliceChannel)
+
+	// Now add an HTLC that will be just below Bob's dustlimit.
+	// Since this is an HTLC added from Alice on Bob's commitment, we will
+	// use the HTLC success fee.
+	bobDustHtlc := bobDustlimit + htlcSuccessFee - 1
+	preimg := addHtlc(bobDustHtlc)
+
+	// Now get the current wight of the remote commitment. We expect it to
+	// not have changed, since the HTLC we added is considered dust.
+	weight2 := remoteCommitWeight(aliceChannel)
+	require.Equal(t, weight1, weight2)
+
+	// In addition, we expect this weight to result in the fee we currently
+	// see being paid on the remote commitent.
+	calcFee := feeRate.FeeForWeight(weight2)
+	remoteCommitFee := aliceChannel.channelState.RemoteCommitment.CommitFee
+	require.Equal(t, calcFee, remoteCommitFee)
+
+	// Settle the HTLC, bringing commitment weight back to base.
+	settleHtlc(preimg)
+
+	// Now we do a similar check from Bob's POV. Start with getting his
+	// current view of Alice's commitment weight.
+	weight1 = remoteCommitWeight(bobChannel)
+
+	// We'll add an HTLC from Alice to Bob, that is just above dust on
+	// Alice's commitment. Now we'll use the timeout fee.
+	aliceDustHtlc := aliceDustlimit + htlcTimeoutFee
+	preimg = addHtlc(aliceDustHtlc)
+
+	// Get the current remote commitment weight from Bob's POV, and ensure
+	// it is now heavier, since Alice added a non-dust HTLC.
+	weight2 = remoteCommitWeight(bobChannel)
+	require.Greater(t, weight2, weight1)
+
+	// Ensure the current remote commit has the expected commitfee.
+	calcFee = feeRate.FeeForWeight(weight2)
+	remoteCommitFee = bobChannel.channelState.RemoteCommitment.CommitFee
+	require.Equal(t, calcFee, remoteCommitFee)
+
+	settleHtlc(preimg)
+}
+
 // TestSignCommitmentFailNotLockedIn tests that a channel will not attempt to
 // create a new state if it doesn't yet know of the next revocation point for
 // the remote party.
@@ -7798,6 +7996,19 @@ func TestForceCloseBorkedState(t *testing.T) {
 func TestChannelMaxFeeRate(t *testing.T) {
 	t.Parallel()
 
+	assertMaxFeeRate := func(c *LightningChannel,
+		maxAlloc float64, anchorMax, expFeeRate chainfee.SatPerKWeight) {
+
+		t.Helper()
+
+		maxFeeRate := c.MaxFeeRate(maxAlloc, anchorMax)
+		if maxFeeRate != expFeeRate {
+			t.Fatalf("expected max fee rate of %v with max "+
+				"allocation of %v, got %v", expFeeRate,
+				maxAlloc, maxFeeRate)
+		}
+	}
+
 	aliceChannel, _, cleanUp, err := CreateTestChannels(
 		channeldb.SingleFunderTweaklessBit,
 	)
@@ -7806,21 +8017,32 @@ func TestChannelMaxFeeRate(t *testing.T) {
 	}
 	defer cleanUp()
 
-	assertMaxFeeRate := func(maxAlloc float64,
-		expFeeRate chainfee.SatPerKWeight) {
+	assertMaxFeeRate(aliceChannel, 1.0, 0, 690607734)
+	assertMaxFeeRate(aliceChannel, 0.001, 0, 690607)
+	assertMaxFeeRate(aliceChannel, 0.000001, 0, 690)
+	assertMaxFeeRate(aliceChannel, 0.0000001, 0, chainfee.FeePerKwFloor)
 
-		maxFeeRate := aliceChannel.MaxFeeRate(maxAlloc)
-		if maxFeeRate != expFeeRate {
-			t.Fatalf("expected max fee rate of %v with max "+
-				"allocation of %v, got %v", expFeeRate,
-				maxAlloc, maxFeeRate)
-		}
+	// Check that anchor channels are capped at their max fee rate.
+	anchorChannel, _, cleanUp, err := CreateTestChannels(
+		channeldb.SingleFunderTweaklessBit | channeldb.AnchorOutputsBit,
+	)
+	if err != nil {
+		t.Fatalf("unable to create test channels: %v", err)
 	}
+	defer cleanUp()
 
-	assertMaxFeeRate(1.0, 690607734)
-	assertMaxFeeRate(0.001, 690607)
-	assertMaxFeeRate(0.000001, 690)
-	assertMaxFeeRate(0.0000001, chainfee.FeePerKwFloor)
+	// Anchor commitments are heavier, hence will the same allocation lead
+	// to slightly lower fee rates.
+	assertMaxFeeRate(
+		anchorChannel, 1.0, chainfee.FeePerKwFloor,
+		chainfee.FeePerKwFloor,
+	)
+	assertMaxFeeRate(anchorChannel, 0.001, 1000000, 444839)
+	assertMaxFeeRate(anchorChannel, 0.001, 300000, 300000)
+	assertMaxFeeRate(anchorChannel, 0.000001, 700, 444)
+	assertMaxFeeRate(
+		anchorChannel, 0.0000001, 1000000, chainfee.FeePerKwFloor,
+	)
 }
 
 // TestChannelFeeRateFloor asserts that valid commitments can be proposed and

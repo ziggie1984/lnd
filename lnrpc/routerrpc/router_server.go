@@ -15,6 +15,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/route"
 
@@ -130,16 +131,6 @@ type Server struct {
 // gRPC service.
 var _ RouterServer = (*Server)(nil)
 
-// fileExists reports whether the named file or directory exists.
-func fileExists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
-}
-
 // New creates a new instance of the RouterServer given a configuration struct
 // that contains all external dependencies. If the target macaroon exists, and
 // we're unable to create it, then an error will be returned. We also return
@@ -155,17 +146,20 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 	}
 
 	// Now that we know the full path of the router macaroon, we can check
-	// to see if we need to create it or not.
+	// to see if we need to create it or not. If stateless_init is set
+	// then we don't write the macaroons.
 	macFilePath := cfg.RouterMacPath
-	if !fileExists(macFilePath) && cfg.MacService != nil {
+	if cfg.MacService != nil && !cfg.MacService.StatelessInit &&
+		!lnrpc.FileExists(macFilePath) {
+
 		log.Infof("Making macaroons for Router RPC Server at: %v",
 			macFilePath)
 
 		// At this point, we know that the router macaroon doesn't yet,
 		// exist, so we need to create it with the help of the main
 		// macaroon service.
-		routerMac, err := cfg.MacService.Oven.NewMacaroon(
-			context.Background(), bakery.LatestVersion, nil,
+		routerMac, err := cfg.MacService.NewMacaroon(
+			context.Background(), macaroons.DefaultRootKeyID,
 			macaroonOps...,
 		)
 		if err != nil {
@@ -177,7 +171,7 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 		}
 		err = ioutil.WriteFile(macFilePath, routerMacBytes, 0644)
 		if err != nil {
-			os.Remove(macFilePath)
+			_ = os.Remove(macFilePath)
 			return nil, nil, err
 		}
 	}
@@ -319,11 +313,13 @@ func (s *Server) EstimateRouteFee(ctx context.Context,
 	// that target amount, we'll only request a single route. Set a
 	// restriction for the default CLTV limit, otherwise we can find a route
 	// that exceeds it and is useless to us.
+	mc := s.cfg.RouterBackend.MissionControl
 	route, err := s.cfg.Router.FindRoute(
 		s.cfg.RouterBackend.SelfNode, destNode, amtMsat,
 		&routing.RestrictParams{
-			FeeLimit:  feeLimit,
-			CltvLimit: s.cfg.RouterBackend.MaxTotalTimelock,
+			FeeLimit:          feeLimit,
+			CltvLimit:         s.cfg.RouterBackend.MaxTotalTimelock,
+			ProbabilitySource: mc.GetProbability,
 		}, nil, nil, s.cfg.RouterBackend.DefaultFinalCltvDelta,
 	)
 	if err != nil {
@@ -370,6 +366,13 @@ func (s *Server) SendToRouteV2(ctx context.Context,
 			return nil, err
 		}
 		return rpcAttempt, nil
+	}
+
+	// Transform user errors to grpc code.
+	if err == channeldb.ErrPaymentInFlight ||
+		err == channeldb.ErrAlreadyPaid {
+
+		return nil, status.Error(codes.AlreadyExists, err.Error())
 	}
 
 	return nil, err
@@ -561,9 +564,17 @@ func (s *Server) BuildRoute(ctx context.Context,
 		outgoingChan = &req.OutgoingChanId
 	}
 
+	var payAddr *[32]byte
+	if len(req.PaymentAddr) != 0 {
+		var backingPayAddr [32]byte
+		copy(backingPayAddr[:], req.PaymentAddr)
+
+		payAddr = &backingPayAddr
+	}
+
 	// Build the route and return it to the caller.
 	route, err := s.cfg.Router.BuildRoute(
-		amt, hops, outgoingChan, req.FinalCltvDelta,
+		amt, hops, outgoingChan, req.FinalCltvDelta, payAddr,
 	)
 	if err != nil {
 		return nil, err

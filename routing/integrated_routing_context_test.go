@@ -65,8 +65,8 @@ func newIntegratedRoutingContext(t *testing.T) *integratedRoutingContext {
 		},
 
 		pathFindingCfg: PathFindingConfig{
-			PaymentAttemptPenalty: 1000,
-			MinProbability:        0.01,
+			AttemptCost:    1000,
+			MinProbability: 0.01,
 		},
 
 		source: source,
@@ -105,7 +105,9 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32) ([]htlcAttempt,
 	dbPath := file.Name()
 	defer os.Remove(dbPath)
 
-	db, err := kvdb.Open(kvdb.BoltBackendName, dbPath, true)
+	db, err := kvdb.Open(
+		kvdb.BoltBackendName, dbPath, true, kvdb.DefaultDBTimeout,
+	)
 	if err != nil {
 		c.t.Fatal(err)
 	}

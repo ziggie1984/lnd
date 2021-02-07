@@ -23,3 +23,4 @@ https://github.com/lightningnetwork/lnd
 ## Links
 * [BTCPayServer main repo](https://github.com/btcpayserver/btcpayserver)
 * [BTCPayServer-Docker repo](https://github.com/btcpayserver/btcpayserver-docker)
+* [BTCPayServer.Lightning](https://github.com/btcpayserver/BTCPayServer.Lightning)

@@ -70,12 +70,14 @@ func EnforceSafeAuthentication(addrs []net.Addr, macaroonsActive,
 				"with --no-macaroons specified", addr)
 		}
 
-		if !tlsActive {
-			return fmt.Errorf("detected RPC server listening on "+
-				"publicly reachable interface %v with "+
-				"encryption disabled! Refusing to start "+
-				"with --notls specified", addr)
-		}
+		// we are hiding LND behind nginx and want to start listening on all interfaces regardles of tls
+		// so that other services (like TOR) can connect
+		// if !tlsActive {
+		// 	return fmt.Errorf("detected RPC server listening on "+
+		// 		"publicly reachable interface %v with "+
+		// 		"encryption disabled! Refusing to start "+
+		// 		"with --notls specified", addr)
+		// }
 	}
 
 	return nil

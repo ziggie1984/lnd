@@ -74,3 +74,19 @@ else
     # execute initwallet call
     curl -s --cacert "$CA_CERT" -X POST -H "$MACAROON_HEADER" -d "$INITWALLET_REQ" $LND_REST_LISTEN_HOST/v1/initwallet
 fi
+
+
+if [[ "$LND_WITH_LOOP" == "true" ]]; then
+    echo "[lnd_unlock] Preparing to start Loop"
+
+    if [[ $LND_ENVIRONMENT == "regtest" ]]; then
+        echo "[lnd_unlock] Loop can't be started for regtest"
+    elif [ -f "$MACAROON_FILE" ]; then
+        sleep 3
+
+        echo "[lnd_unlock] Starting Loop"
+        ./bin/loopd --network=$2 --lnd.macaroonpath=$MACAROON_FILE --restlisten=0.0.0.0:8081 &
+    else
+        echo "[lnd_unlock] Loop can't be started without MACAROON"
+    fi
+fi

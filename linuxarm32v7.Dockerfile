@@ -19,6 +19,14 @@ COPY . .
 RUN make \
 &&  make install tags="signrpc walletrpc chainrpc invoicesrpc routerrpc"
 
+# Build loop binary
+RUN git clone --depth 1 --branch v0.14.2-beta https://github.com/lightninglabs/loop.git /go/src/github.com/lightninglabs/loop
+WORKDIR /go/src/github.com/lightninglabs/loop/cmd
+
+RUN go install ./...
+# eof
+
+
 # Force the builder machine to take make an arm runtime image. This is fine as long as the builder does not run any program
 FROM arm32v7/debian:stretch-slim as final
 
@@ -51,8 +59,13 @@ RUN mkdir "$LND_DATA" && \
 VOLUME /data
 
 # Copy the binaries from the builder image.
+# lnd
 COPY --from=builder /go/bin/linux_arm/lncli /bin/
 COPY --from=builder /go/bin/linux_arm/lnd /bin/
+# loop
+COPY --from=builder /go/bin/linux_arm/loopd /bin/
+COPY --from=builder /go/bin/linux_arm/loop /bin/
+
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 

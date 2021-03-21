@@ -8,7 +8,7 @@ sleep 2
 while
     CA_CERT="$LND_DATA/tls.cert"
     LND_WALLET_DIR="$LND_DATA/data/chain/$1/$2/"
-    MACAROON_FILE="$LND_WALLET_DIR/admin.macaroon"
+    MACAROON_FILE="$LND_DATA/admin.macaroon"
     MACAROON_HEADER="r0ckstar:dev"
     if [ -f "$MACAROON_FILE" ]; then
         MACAROON_HEADER="Grpc-Metadata-macaroon:$(xxd -p -c 10000 "$MACAROON_FILE" | tr -d ' ')"
@@ -27,7 +27,7 @@ do true; done
 # read variables after we ensured that lnd is up
 CA_CERT="$LND_DATA/tls.cert"
 LND_WALLET_DIR="$LND_DATA/data/chain/$1/$2/"
-MACAROON_FILE="$LND_WALLET_DIR/admin.macaroon"
+MACAROON_FILE="$LND_DATA/admin.macaroon"
 MACAROON_HEADER="r0ckstar:dev"
 if [ -f "$MACAROON_FILE" ]; then
     MACAROON_HEADER="Grpc-Metadata-macaroon:$(xxd -p -c 10000 "$MACAROON_FILE" | tr -d ' ')"

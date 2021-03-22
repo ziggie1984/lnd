@@ -76,7 +76,7 @@ else
 fi
 
 
-if [[ "$LND_WITH_LOOP" == "true" ]]; then
+if [ ! -z "$LND_HOST_FOR_LOOP" ]; then
     echo "[initunlocklnd] Preparing to start Loop"
 
     if [[ $LND_ENVIRONMENT == "regtest" ]]; then
@@ -85,7 +85,7 @@ if [[ "$LND_WITH_LOOP" == "true" ]]; then
         sleep 3
 
         echo "[initunlocklnd] Starting Loop"
-        ./bin/loopd --network=$2 --lnd.macaroonpath=$MACAROON_FILE --restlisten=0.0.0.0:8081 &
+        ./bin/loopd --network=$2 --lnd.macaroonpath=$MACAROON_FILE --lnd.host=$LND_HOST_FOR_LOOP --restlisten=0.0.0.0:8081 &
     else
         echo "[initunlocklnd] Loop can't be started without MACAROON"
     fi

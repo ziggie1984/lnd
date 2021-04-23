@@ -82,7 +82,7 @@ if [ ! -z "$LND_HOST_FOR_LOOP" ]; then
     if [[ $LND_ENVIRONMENT == "regtest" ]]; then
         echo "[initunlocklnd] Loop can't be started for regtest"
     elif [ -f "$MACAROON_FILE" ]; then
-        sleep 3
+        sleep 15
 
         echo "[initunlocklnd] Starting Loop"
         ./bin/loopd --network=$2 --lnd.macaroonpath=$MACAROON_FILE --lnd.host=$LND_HOST_FOR_LOOP --restlisten=0.0.0.0:8081 &

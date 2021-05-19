@@ -38,7 +38,6 @@ LNDUNLOCK_FILE=${WALLET_FILE/wallet.db/walletunlock.json}
 if [ -f "$WALLET_FILE" ]; then
     if [ ! -f "$LNDUNLOCK_FILE" ]; then
         echo "[initunlocklnd] WARNING: UNLOCK FILE DOESN'T EXIST! MIGRATE LEGACY INSTALLATION TO NEW VERSION ASAP"
-        exit 0
     else
         echo "[initunlocklnd] Wallet and Unlock files are present... parsing wallet password and unlocking lnd"
 

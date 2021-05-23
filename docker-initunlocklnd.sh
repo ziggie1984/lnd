@@ -75,6 +75,8 @@ else
 fi
 
 
+# LND unlocked, now run Loop
+
 if [ ! -z "$LND_HOST_FOR_LOOP" ]; then
     echo "[initunlocklnd] Preparing to start Loop"
 

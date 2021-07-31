@@ -555,6 +555,14 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 	}
 	payIntent.MaxParts = maxParts
 
+	// If this payment had a max shard amount specified, then we'll apply
+	// that now, which'll force us to always make payment splits smaller
+	// than this.
+	if rpcPayReq.MaxShardSizeMsat > 0 {
+		shardAmtMsat := lnwire.MilliSatoshi(rpcPayReq.MaxShardSizeMsat)
+		payIntent.MaxShardAmt = &shardAmtMsat
+	}
+
 	// Take fee limit from request.
 	payIntent.FeeLimit, err = lnrpc.UnmarshallAmt(
 		rpcPayReq.FeeLimitSat, rpcPayReq.FeeLimitMsat,
@@ -646,6 +654,10 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 			}
 
 			payIntent.Amount = *payReq.MilliSat
+		}
+
+		if !payReq.Features.HasFeature(lnwire.MPPOptional) {
+			payIntent.MaxParts = 1
 		}
 
 		copy(payIntent.PaymentHash[:], payReq.PaymentHash[:])
@@ -861,6 +873,7 @@ func (r *RouterBackend) MarshalHTLCAttempt(
 	}
 
 	rpcAttempt := &lnrpc.HTLCAttempt{
+		AttemptId:     htlc.AttemptID,
 		AttemptTimeNs: MarshalTimeNano(htlc.AttemptTime),
 		Route:         route,
 	}

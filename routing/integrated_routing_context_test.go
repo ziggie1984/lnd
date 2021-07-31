@@ -28,6 +28,7 @@ type integratedRoutingContext struct {
 	target *mockNode
 
 	amt         lnwire.MilliSatoshi
+	maxShardAmt *lnwire.MilliSatoshi
 	finalExpiry int32
 
 	mcCfg          MissionControlConfig
@@ -88,8 +89,16 @@ func (h htlcAttempt) String() string {
 
 // testPayment launches a test payment and asserts that it is completed after
 // the expected number of attempts.
-func (c *integratedRoutingContext) testPayment(maxParts uint32) ([]htlcAttempt,
-	error) {
+func (c *integratedRoutingContext) testPayment(maxParts uint32,
+	destFeatureBits ...lnwire.FeatureBit) ([]htlcAttempt, error) {
+
+	// We start out with the base set of MPP feature bits. If the caller
+	// overrides this set of bits, then we'll use their feature bits
+	// entirely.
+	baseFeatureBits := mppFeatures
+	if len(destFeatureBits) != 0 {
+		baseFeatureBits = lnwire.NewRawFeatureVector(destFeatureBits...)
+	}
 
 	var (
 		nextPid  uint64
@@ -136,10 +145,14 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32) ([]htlcAttempt,
 		FeeLimit:       lnwire.MaxMilliSatoshi,
 		Target:         c.target.pubkey,
 		PaymentAddr:    &paymentAddr,
-		DestFeatures:   lnwire.NewFeatureVector(mppFeatures, nil),
+		DestFeatures:   lnwire.NewFeatureVector(baseFeatureBits, nil),
 		Amount:         c.amt,
 		CltvLimit:      math.MaxUint32,
 		MaxParts:       maxParts,
+	}
+
+	if c.maxShardAmt != nil {
+		payment.MaxShardAmt = c.maxShardAmt
 	}
 
 	session, err := newPaymentSession(

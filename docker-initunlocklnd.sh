@@ -16,10 +16,18 @@ while
 
     STATUS_CODE=$(curl -s --cacert "$CA_CERT" -H $MACAROON_HEADER -o /dev/null -w "%{http_code}" $LND_REST_LISTEN_HOST/v1/getinfo)
     # if lnd is running it'll either return 200 if unlocked (noseedbackup=1) or 404 if it needs initialization/unlock 
-    # or 500 from version 0.13.1 onwards because it breaks with `wallet not created, create one to enable full RPC access` error
-    if [ "$STATUS_CODE" == "200" ] || [ "$STATUS_CODE" == "404" ] || [ "$STATUS_CODE" == "500" ] ; then
+    if [ "$STATUS_CODE" == "200" ] || [ "$STATUS_CODE" == "404" ] ; then
         break
-    else    
+    # or 500 from version 0.13.1 onwards because it breaks with `wallet not created, create one to enable full RPC access` error
+    elif [ "$STATUS_CODE" == "500" ] ; then
+        STATUS_CODE=$(curl -s --cacert "$CA_CERT" -H $MACAROON_HEADER $LND_REST_LISTEN_HOST/v1/state)
+        if [ "$STATUS_CODE" == "{\"state\":\"NON_EXISTING\"}" ] || [ "$STATUS_CODE" == "{\"state\":\"LOCKED\"}" ] ; then
+            break # wallet ready to be either created or unlocked
+        fi
+
+        echo "[initunlocklnd] Still waiting on LND, got response for wallet status: $STATUS_CODE ... waiting another 2 seconds..."
+        sleep 2
+    else
         echo "[initunlocklnd] LND still didn't start, got $STATUS_CODE status code back... waiting another 2 seconds..."
         sleep 2
     fi

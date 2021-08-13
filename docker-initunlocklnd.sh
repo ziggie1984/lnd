@@ -24,6 +24,8 @@ while
         if [ "$STATUS_CODE" == "{\"state\":\"NON_EXISTING\"}" ] || [ "$STATUS_CODE" == "{\"state\":\"LOCKED\"}" ] ; then
             break # wallet ready to be either created or unlocked
         fi
+        # for {\"state\":\"UNLOCKED\"}" we will depend on that previous condition with STATUS_CODE 200 or 404
+        # because even though wallet is unlocked, /v1/getinfo will still keep returning 500 until it's ready
 
         echo "[initunlocklnd] Still waiting on LND, got response for wallet status: $STATUS_CODE ... waiting another 2 seconds..."
         sleep 2

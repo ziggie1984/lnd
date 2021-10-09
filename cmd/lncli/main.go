@@ -57,6 +57,16 @@ func getWalletUnlockerClient(ctx *cli.Context) (lnrpc.WalletUnlockerClient, func
 	return lnrpc.NewWalletUnlockerClient(conn), cleanUp
 }
 
+func getStateServiceClient(ctx *cli.Context) (lnrpc.StateClient, func()) {
+	conn := getClientConn(ctx, true)
+
+	cleanUp := func() {
+		conn.Close()
+	}
+
+	return lnrpc.NewStateClient(conn), cleanUp
+}
+
 func getClient(ctx *cli.Context) (lnrpc.LightningClient, func()) {
 	conn := getClientConn(ctx, false)
 
@@ -190,7 +200,7 @@ func extractPathArgs(ctx *cli.Context) (string, string, error) {
 
 	network := strings.ToLower(ctx.GlobalString("network"))
 	switch network {
-	case "mainnet", "testnet", "regtest", "simnet":
+	case "mainnet", "testnet", "regtest", "simnet", "signet":
 	default:
 		return "", "", fmt.Errorf("unknown network: %v", network)
 	}
@@ -228,6 +238,23 @@ func extractPathArgs(ctx *cli.Context) (string, string, error) {
 	}
 
 	return tlsCertPath, macPath, nil
+}
+
+// checkNotBothSet accepts two flag names, a and b, and checks that only flag a
+// or flag b can be set, but not both. It returns the name of the flag or an
+// error.
+func checkNotBothSet(ctx *cli.Context, a, b string) (string, error) {
+	if ctx.IsSet(a) && ctx.IsSet(b) {
+		return "", fmt.Errorf(
+			"either %s or %s should be set, but not both", a, b,
+		)
+	}
+
+	if ctx.IsSet(a) {
+		return a, nil
+	}
+
+	return b, nil
 }
 
 func main() {
@@ -351,6 +378,7 @@ func main() {
 		trackPaymentCommand,
 		versionCommand,
 		profileSubCommand,
+		getStateCommand,
 	}
 
 	// Add any extra commands determined by build flags.

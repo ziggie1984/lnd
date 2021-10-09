@@ -7,7 +7,6 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
@@ -170,6 +169,12 @@ func testMultiHopHtlcAggregation(net *lntest.NetworkHarness, t *harnessTest,
 	// be cpfp'ed.
 	net.SetFeeEstimate(30000)
 
+	// We want Carol's htlcs to expire off-chain to demonstrate bob's force
+	// close. However, Carol will cancel her invoices to prevent force
+	// closes, so we shut her down for now.
+	restartCarol, err := net.SuspendNode(carol)
+	require.NoError(t.t, err)
+
 	// We'll now mine enough blocks to trigger Bob's broadcast of his
 	// commitment transaction due to the fact that the Carol's HTLCs are
 	// about to timeout. With the default outgoing broadcast delta of zero,
@@ -177,7 +182,7 @@ func testMultiHopHtlcAggregation(net *lntest.NetworkHarness, t *harnessTest,
 	numBlocks := padCLTV(
 		uint32(finalCltvDelta - lncfg.DefaultOutgoingBroadcastDelta),
 	)
-	_, err = net.Miner.Node.Generate(numBlocks)
+	_, err = net.Miner.Client.Generate(numBlocks)
 	require.NoError(t.t, err)
 
 	// Bob's force close transaction should now be found in the mempool. If
@@ -187,14 +192,14 @@ func testMultiHopHtlcAggregation(net *lntest.NetworkHarness, t *harnessTest,
 		expectedTxes = 2
 	}
 
-	bobFundingTxid, err := lnd.GetChanPointFundingTxid(bobChanPoint)
+	bobFundingTxid, err := lnrpc.GetChanPointFundingTxid(bobChanPoint)
 	require.NoError(t.t, err)
 	_, err = waitForNTxsInMempool(
-		net.Miner.Node, expectedTxes, minerMempoolTimeout,
+		net.Miner.Client, expectedTxes, minerMempoolTimeout,
 	)
 	require.NoError(t.t, err)
 	closeTx := getSpendingTxInMempool(
-		t, net.Miner.Node, minerMempoolTimeout, wire.OutPoint{
+		t, net.Miner.Client, minerMempoolTimeout, wire.OutPoint{
 			Hash:  *bobFundingTxid,
 			Index: bobChanPoint.OutputIndex,
 		},
@@ -225,6 +230,9 @@ func testMultiHopHtlcAggregation(net *lntest.NetworkHarness, t *harnessTest,
 			successOuts[op] = struct{}{}
 		}
 	}
+
+	// Once bob has force closed, we can restart carol.
+	require.NoError(t.t, restartCarol())
 
 	// Mine a block to confirm the closing transaction.
 	mineBlocks(t, net, 1, expectedTxes)
@@ -259,7 +267,7 @@ func testMultiHopHtlcAggregation(net *lntest.NetworkHarness, t *harnessTest,
 	}
 
 	txes, err := getNTxsFromMempool(
-		net.Miner.Node, expectedTxes, minerMempoolTimeout,
+		net.Miner.Client, expectedTxes, minerMempoolTimeout,
 	)
 	require.NoError(t.t, err)
 
@@ -335,13 +343,13 @@ func testMultiHopHtlcAggregation(net *lntest.NetworkHarness, t *harnessTest,
 
 	// If we then mine additional blocks, Bob can sweep his commitment
 	// output.
-	_, err = net.Miner.Node.Generate(defaultCSV - 2)
+	_, err = net.Miner.Client.Generate(defaultCSV - 2)
 	require.NoError(t.t, err)
 
 	// Find the commitment sweep.
-	bobCommitSweepHash, err := waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
+	bobCommitSweepHash, err := waitForTxInMempool(net.Miner.Client, minerMempoolTimeout)
 	require.NoError(t.t, err)
-	bobCommitSweep, err := net.Miner.Node.GetRawTransaction(bobCommitSweepHash)
+	bobCommitSweep, err := net.Miner.Client.GetRawTransaction(bobCommitSweepHash)
 	require.NoError(t.t, err)
 
 	require.Equal(
@@ -376,11 +384,11 @@ func testMultiHopHtlcAggregation(net *lntest.NetworkHarness, t *harnessTest,
 		_ = mineBlocks(t, net, 2, 1)
 	}
 
-	bobSweep, err := waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
+	bobSweep, err := waitForTxInMempool(net.Miner.Client, minerMempoolTimeout)
 	require.NoError(t.t, err)
 
 	// Make sure it spends from the second level tx.
-	secondLevelSweep, err := net.Miner.Node.GetRawTransaction(bobSweep)
+	secondLevelSweep, err := net.Miner.Client.GetRawTransaction(bobSweep)
 	require.NoError(t.t, err)
 
 	// It should be sweeping all the second-level outputs.

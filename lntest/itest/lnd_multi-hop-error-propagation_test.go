@@ -88,19 +88,14 @@ func testHtlcErrorPropagation(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Since we'd like to test some multi-hop failure scenarios, we'll
 	// introduce another node into our test network: Carol.
-	carol, err := net.NewNode("Carol", nil)
-	if err != nil {
-		t.Fatalf("unable to create new nodes: %v", err)
-	}
+	carol := net.NewNode(t.t, "Carol", nil)
 
 	// Next, we'll create a connection from Bob to Carol, and open a
 	// channel between them so we have the topology: Alice -> Bob -> Carol.
 	// The channel created will be of lower capacity that the one created
 	// above.
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	if err := net.ConnectNodes(ctxt, net.Bob, carol); err != nil {
-		t.Fatalf("unable to connect bob to carol: %v", err)
-	}
+	net.ConnectNodes(ctxt, t.t, net.Bob, carol)
 	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
 	const bobChanAmt = funding.MaxBtcFundingAmount
 	chanPointBob := openChannelAndAssert(
@@ -204,6 +199,7 @@ out:
 		FinalCltvDelta: int32(carolPayReq.CltvExpiry),
 		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
+		MaxParts:       1,
 	}
 	sendAndAssertFailure(
 		t, net.Alice,
@@ -240,6 +236,7 @@ out:
 		FinalCltvDelta: int32(carolPayReq.CltvExpiry),
 		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
+		MaxParts:       1,
 	}
 	sendAndAssertFailure(
 		t, net.Alice,
@@ -294,12 +291,15 @@ out:
 		if err != nil {
 			t.Fatalf("unable to generate carol invoice: %v", err)
 		}
+
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 		sendAndAssertSuccess(
-			t, net.Bob,
+			ctxt, t, net.Bob,
 			&routerrpc.SendPaymentRequest{
 				PaymentRequest: carolInvoice2.PaymentRequest,
 				TimeoutSeconds: 60,
 				FeeLimitMsat:   noFeeLimitMsat,
+				MaxParts:       1,
 			},
 		)
 
@@ -332,6 +332,7 @@ out:
 		PaymentRequest: carolInvoice3.PaymentRequest,
 		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
+		MaxParts:       1,
 	}
 	sendAndAssertFailure(
 		t, net.Alice,
@@ -381,6 +382,7 @@ out:
 			PaymentRequest: carolInvoice.PaymentRequest,
 			TimeoutSeconds: 60,
 			FeeLimitMsat:   noFeeLimitMsat,
+			MaxParts:       1,
 		},
 		lnrpc.PaymentFailureReason_FAILURE_REASON_NO_ROUTE,
 	)

@@ -756,6 +756,7 @@ func (f *mockChannelLink) Peer() lnpeer.Peer                            { return
 func (f *mockChannelLink) ChannelPoint() *wire.OutPoint                 { return &wire.OutPoint{} }
 func (f *mockChannelLink) Stop()                                        {}
 func (f *mockChannelLink) EligibleToForward() bool                      { return f.eligible }
+func (f *mockChannelLink) MayAddOutgoingHtlc() error                    { return nil }
 func (f *mockChannelLink) setLiveShortChanID(sid lnwire.ShortChannelID) { f.shortChanID = sid }
 func (f *mockChannelLink) UpdateShortChanID() (lnwire.ShortChannelID, error) {
 	f.eligible = true
@@ -797,6 +798,20 @@ type mockInvoiceRegistry struct {
 	cleanup func()
 }
 
+type mockChainNotifier struct {
+	chainntnfs.ChainNotifier
+}
+
+// RegisterBlockEpochNtfn mocks a successful call to register block
+// notifications.
+func (m *mockChainNotifier) RegisterBlockEpochNtfn(*chainntnfs.BlockEpoch) (
+	*chainntnfs.BlockEpochEvent, error) {
+
+	return &chainntnfs.BlockEpochEvent{
+		Cancel: func() {},
+	}, nil
+}
+
 func newMockRegistry(minDelta uint32) *mockInvoiceRegistry {
 	cdb, cleanup, err := newDB()
 	if err != nil {
@@ -805,7 +820,10 @@ func newMockRegistry(minDelta uint32) *mockInvoiceRegistry {
 
 	registry := invoices.NewRegistry(
 		cdb,
-		invoices.NewInvoiceExpiryWatcher(clock.NewDefaultClock()),
+		invoices.NewInvoiceExpiryWatcher(
+			clock.NewDefaultClock(), 0, 0, nil,
+			&mockChainNotifier{},
+		),
 		&invoices.RegistryConfig{
 			FinalCltvRejectDelta: 5,
 		},

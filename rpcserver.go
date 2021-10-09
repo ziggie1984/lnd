@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"runtime"
 	"sort"
@@ -26,9 +25,9 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcutil/psbt"
+	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/davecgh/go-spew/spew"
-	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
@@ -37,7 +36,6 @@ import (
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/chanfitness"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/channelnotifier"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/discovery"
@@ -48,6 +46,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -61,18 +60,20 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
-	"github.com/lightningnetwork/lnd/monitoring"
 	"github.com/lightningnetwork/lnd/peer"
 	"github.com/lightningnetwork/lnd/peernotifier"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/watchtower"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/tv42/zbase32"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
@@ -215,6 +216,45 @@ func stringInSlice(a string, slice []string) bool {
 		}
 	}
 	return false
+}
+
+// calculateFeeRate uses either satPerByte or satPerVByte, but not both, from a
+// request to calculate the fee rate. It provides compatibility for the
+// deprecated field, satPerByte. Once the field is safe to be removed, the
+// check can then be deleted.
+func calculateFeeRate(satPerByte, satPerVByte uint64, targetConf uint32,
+	estimator chainfee.Estimator) (chainfee.SatPerKWeight, error) {
+
+	var feeRate chainfee.SatPerKWeight
+
+	// We only allow using either the deprecated field or the new field.
+	if satPerByte != 0 && satPerVByte != 0 {
+		return feeRate, fmt.Errorf("either SatPerByte or " +
+			"SatPerVByte should be set, but not both")
+	}
+
+	// Default to satPerVByte, and overwrite it if satPerByte is set.
+	satPerKw := chainfee.SatPerKVByte(satPerVByte * 1000).FeePerKWeight()
+	if satPerByte != 0 {
+		satPerKw = chainfee.SatPerKVByte(
+			satPerByte * 1000,
+		).FeePerKWeight()
+	}
+
+	// Based on the passed fee related parameters, we'll determine an
+	// appropriate fee rate for this transaction.
+	feeRate, err := sweep.DetermineFeePerKw(
+		estimator, sweep.FeePreference{
+			ConfTarget: targetConf,
+			FeeRate:    satPerKw,
+		},
+	)
+	if err != nil {
+		return feeRate, err
+	}
+
+	return feeRate, nil
+
 }
 
 // MainRPCServerPermissions returns a mapping of the main RPC server calls to
@@ -490,34 +530,8 @@ type rpcServer struct {
 	// own independent service. This allows us to expose a set of
 	// micro-service like abstractions to the outside world for users to
 	// consume.
-	subServers []lnrpc.SubServer
-
-	// grpcServer is the main gRPC server that this RPC server, and all the
-	// sub-servers will use to register themselves and accept client
-	// requests from.
-	grpcServer *grpc.Server
-
-	// listeners is a list of listeners to use when starting the grpc
-	// server. We make it configurable such that the grpc server can listen
-	// on custom interfaces.
-	listeners []*ListenerWithSignal
-
-	// listenerCleanUp are a set of closures functions that will allow this
-	// main RPC server to clean up all the listening socket created for the
-	// server.
-	listenerCleanUp []func()
-
-	// restDialOpts are a set of gRPC dial options that the REST server
-	// proxy will use to connect to the main gRPC server.
-	restDialOpts []grpc.DialOption
-
-	// restProxyDest is the address to forward REST requests to.
-	restProxyDest string
-
-	// restListen is a function closure that allows the REST server proxy to
-	// connect to the main gRPC server to proxy all incoming requests,
-	// applying the current TLS configuration, if any.
-	restListen func(net.Addr) (net.Listener, error)
+	subServers      []lnrpc.SubServer
+	subGrpcHandlers []lnrpc.GrpcHandler
 
 	// routerBackend contains the backend implementation of the router
 	// rpc sub server.
@@ -536,34 +550,69 @@ type rpcServer struct {
 	// selfNode is our own pubkey.
 	selfNode route.Vertex
 
-	// allPermissions is a map of all registered gRPC URIs (including
-	// internal and external subservers) to the permissions they require.
-	allPermissions map[string][]bakery.Op
+	// interceptorChain is the the interceptor added to our gRPC server.
+	interceptorChain *rpcperms.InterceptorChain
+
+	// extSubserverCfg is optional and specifies the registration
+	// callback and permissions to register external gRPC subservers.
+	extSubserverCfg *RPCSubserverConfig
+
+	// extRestRegistrar  is optional and specifies the registration
+	// callback to register external REST subservers.
+	extRestRegistrar RestRegistrar
+
+	// interceptor is used to be able to request a shutdown
+	interceptor signal.Interceptor
 }
 
 // A compile time check to ensure that rpcServer fully implements the
 // LightningServer gRPC service.
 var _ lnrpc.LightningServer = (*rpcServer)(nil)
 
-// newRPCServer creates and returns a new instance of the rpcServer. The
-// rpcServer will handle creating all listening sockets needed by it, and any
-// of the sub-servers that it maintains. The set of serverOpts should be the
-// base level options passed to the grPC server. This typically includes things
-// like requiring TLS, etc.
-func newRPCServer(cfg *Config, s *server, macService *macaroons.Service,
-	subServerCgs *subRPCServerConfigs, serverOpts []grpc.ServerOption,
-	restDialOpts []grpc.DialOption, restProxyDest string,
-	atpl *autopilot.Manager, invoiceRegistry *invoices.InvoiceRegistry,
-	tower *watchtower.Standalone,
-	restListen func(net.Addr) (net.Listener, error),
-	getListeners rpcListeners,
-	chanPredicate *chanacceptor.ChainedAcceptor) (*rpcServer, error) {
+// newRPCServer creates and returns a new instance of the rpcServer. Before
+// dependencies are added, this will be an non-functioning RPC server only to
+// be used to register the LightningService with the gRPC server.
+func newRPCServer(cfg *Config, interceptorChain *rpcperms.InterceptorChain,
+	extSubserverCfg *RPCSubserverConfig,
+	extRestRegistrar RestRegistrar,
+	interceptor signal.Interceptor) *rpcServer {
+
+	// We go trhough the list of registered sub-servers, and create a gRPC
+	// handler for each. These are used to register with the gRPC server
+	// before all dependencies are available.
+	registeredSubServers := lnrpc.RegisteredSubServers()
+
+	var subServerHandlers []lnrpc.GrpcHandler
+	for _, subServer := range registeredSubServers {
+		subServerHandlers = append(
+			subServerHandlers, subServer.NewGrpcHandler(),
+		)
+	}
+
+	return &rpcServer{
+		cfg:              cfg,
+		subGrpcHandlers:  subServerHandlers,
+		interceptorChain: interceptorChain,
+		extSubserverCfg:  extSubserverCfg,
+		extRestRegistrar: extRestRegistrar,
+		quit:             make(chan struct{}, 1),
+		interceptor:      interceptor,
+	}
+}
+
+// addDeps populates all dependencies needed by the RPC server, and any
+// of the sub-servers that it maintains. When this is done, the RPC server can
+// be started, and start accepting RPC calls.
+func (r *rpcServer) addDeps(s *server, macService *macaroons.Service,
+	subServerCgs *subRPCServerConfigs, atpl *autopilot.Manager,
+	invoiceRegistry *invoices.InvoiceRegistry, tower *watchtower.Standalone,
+	chanPredicate *chanacceptor.ChainedAcceptor) error {
 
 	// Set up router rpc backend.
 	channelGraph := s.localChanDB.ChannelGraph()
 	selfNode, err := channelGraph.SourceNode()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	graph := s.localChanDB.ChannelGraph()
 	routerBackend := &routerrpc.RouterBackend{
@@ -594,16 +643,26 @@ func newRPCServer(cfg *Config, s *server, macService *macaroons.Service,
 		},
 		FindRoute:              s.chanRouter.FindRoute,
 		MissionControl:         s.missionControl,
-		ActiveNetParams:        cfg.ActiveNetParams.Params,
+		ActiveNetParams:        r.cfg.ActiveNetParams.Params,
 		Tower:                  s.controlTower,
-		MaxTotalTimelock:       cfg.MaxOutgoingCltvExpiry,
-		DefaultFinalCltvDelta:  uint16(cfg.Bitcoin.TimeLockDelta),
+		MaxTotalTimelock:       r.cfg.MaxOutgoingCltvExpiry,
+		DefaultFinalCltvDelta:  uint16(r.cfg.Bitcoin.TimeLockDelta),
 		SubscribeHtlcEvents:    s.htlcNotifier.SubscribeHtlcEvents,
 		InterceptableForwarder: s.interceptableSwitch,
+		SetChannelEnabled: func(outpoint wire.OutPoint) error {
+			return s.chanStatusMgr.RequestEnable(outpoint, true)
+		},
+		SetChannelDisabled: func(outpoint wire.OutPoint) error {
+			return s.chanStatusMgr.RequestDisable(outpoint, true)
+		},
+		SetChannelAuto: s.chanStatusMgr.RequestAuto,
 	}
 
 	genInvoiceFeatures := func() *lnwire.FeatureVector {
 		return s.featureMgr.Get(feature.SetInvoice)
+	}
+	genAmpInvoiceFeatures := func() *lnwire.FeatureVector {
+		return s.featureMgr.Get(feature.SetInvoiceAmp)
 	}
 
 	var (
@@ -617,172 +676,126 @@ func newRPCServer(cfg *Config, s *server, macService *macaroons.Service,
 	//
 	// TODO(roasbeef): extend sub-sever config to have both (local vs remote) DB
 	err = subServerCgs.PopulateDependencies(
-		cfg, s.cc, cfg.networkDir, macService, atpl, invoiceRegistry,
-		s.htlcSwitch, cfg.ActiveNetParams.Params, s.chanRouter,
+		r.cfg, s.cc, r.cfg.networkDir, macService, atpl, invoiceRegistry,
+		s.htlcSwitch, r.cfg.ActiveNetParams.Params, s.chanRouter,
 		routerBackend, s.nodeSigner, s.localChanDB, s.remoteChanDB,
 		s.sweeper, tower, s.towerClient, s.anchorTowerClient,
-		cfg.net.ResolveTCPAddr, genInvoiceFeatures, rpcsLog,
+		r.cfg.net.ResolveTCPAddr, genInvoiceFeatures,
+		genAmpInvoiceFeatures, rpcsLog,
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Now that the sub-servers have all their dependencies in place, we
 	// can create each sub-server!
-	registeredSubServers := lnrpc.RegisteredSubServers()
-	for _, subServer := range registeredSubServers {
-		subServerInstance, macPerms, err := subServer.New(subServerCgs)
+	for _, subServerInstance := range r.subGrpcHandlers {
+		subServer, macPerms, err := subServerInstance.CreateSubServer(
+			subServerCgs,
+		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		// We'll collect the sub-server, and also the set of
 		// permissions it needs for macaroons so we can apply the
 		// interceptors below.
-		subServers = append(subServers, subServerInstance)
+		subServers = append(subServers, subServer)
 		subServerPerms = append(subServerPerms, macPerms)
 	}
 
 	// Next, we need to merge the set of sub server macaroon permissions
 	// with the main RPC server permissions so we can unite them under a
 	// single set of interceptors.
-	permissions := MainRPCServerPermissions()
-	for _, subServerPerm := range subServerPerms {
-		for method, ops := range subServerPerm {
-			// For each new method:ops combo, we also ensure that
-			// non of the sub-servers try to override each other.
-			if _, ok := permissions[method]; ok {
-				return nil, fmt.Errorf("detected duplicate "+
-					"macaroon constraints for path: %v",
-					method)
-			}
-
-			permissions[method] = ops
+	for m, ops := range MainRPCServerPermissions() {
+		err := r.interceptorChain.AddPermission(m, ops)
+		if err != nil {
+			return err
 		}
 	}
 
-	// Get the listeners and server options to use for this rpc server.
-	listeners, cleanup, err := getListeners()
-	if err != nil {
-		return nil, err
+	for _, subServerPerm := range subServerPerms {
+		for method, ops := range subServerPerm {
+			err := r.interceptorChain.AddPermission(method, ops)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	// External subserver possibly need to register their own permissions
 	// and macaroon validator.
-	for _, lis := range listeners {
-		extSubserver := lis.ExternalRPCSubserverCfg
-		if extSubserver != nil {
-			macValidator := extSubserver.MacaroonValidator
-			for method, ops := range extSubserver.Permissions {
-				// For each new method:ops combo, we also ensure
-				// that non of the sub-servers try to override
-				// each other.
-				if _, ok := permissions[method]; ok {
-					return nil, fmt.Errorf("detected "+
-						"duplicate macaroon "+
-						"constraints for path: %v",
-						method)
-				}
+	if r.extSubserverCfg != nil {
+		macValidator := r.extSubserverCfg.MacaroonValidator
+		for method, ops := range r.extSubserverCfg.Permissions {
+			err := r.interceptorChain.AddPermission(method, ops)
+			if err != nil {
+				return err
+			}
 
-				permissions[method] = ops
-
-				// Give the external subservers the possibility
-				// to also use their own validator to check any
-				// macaroons attached to calls to this method.
-				// This allows them to have their own root key
-				// ID database and permission entities.
-				if macValidator != nil {
-					err := macService.RegisterExternalValidator(
-						method, macValidator,
-					)
-					if err != nil {
-						return nil, fmt.Errorf("could "+
-							"not register "+
-							"external macaroon "+
-							"validator: %v", err)
-					}
+			// Give the external subservers the possibility
+			// to also use their own validator to check any
+			// macaroons attached to calls to this method.
+			// This allows them to have their own root key
+			// ID database and permission entities.
+			if macValidator != nil {
+				err := macService.RegisterExternalValidator(
+					method, macValidator,
+				)
+				if err != nil {
+					return fmt.Errorf("could "+
+						"not register "+
+						"external macaroon "+
+						"validator: %v", err)
 				}
 			}
 		}
 	}
 
-	// If macaroons aren't disabled (a non-nil service), then we'll set up
-	// our set of interceptors which will allow us to handle the macaroon
-	// authentication in a single location.
-	macUnaryInterceptors := []grpc.UnaryServerInterceptor{}
-	macStrmInterceptors := []grpc.StreamServerInterceptor{}
-	if macService != nil {
-		unaryInterceptor := macService.UnaryServerInterceptor(permissions)
-		macUnaryInterceptors = append(macUnaryInterceptors, unaryInterceptor)
+	// Finally, with all the set up complete, add the last dependencies to
+	// the rpc server.
+	r.server = s
+	r.subServers = subServers
+	r.routerBackend = routerBackend
+	r.chanPredicate = chanPredicate
+	r.macService = macService
+	r.selfNode = selfNode.PubKeyBytes
+	return nil
+}
 
-		strmInterceptor := macService.StreamServerInterceptor(permissions)
-		macStrmInterceptors = append(macStrmInterceptors, strmInterceptor)
-	}
-
-	// Get interceptors for Prometheus to gather gRPC performance metrics.
-	// If monitoring is disabled, GetPromInterceptors() will return empty
-	// slices.
-	promUnaryInterceptors, promStrmInterceptors := monitoring.GetPromInterceptors()
-
-	// Concatenate the slices of unary and stream interceptors respectively.
-	unaryInterceptors := append(macUnaryInterceptors, promUnaryInterceptors...)
-	strmInterceptors := append(macStrmInterceptors, promStrmInterceptors...)
-
-	// We'll also add our logging interceptors as well, so we can
-	// automatically log all errors that happen during RPC calls.
-	unaryInterceptors = append(
-		unaryInterceptors, errorLogUnaryServerInterceptor(rpcsLog),
-	)
-	strmInterceptors = append(
-		strmInterceptors, errorLogStreamServerInterceptor(rpcsLog),
-	)
-
-	// If any interceptors have been set up, add them to the server options.
-	if len(unaryInterceptors) != 0 && len(strmInterceptors) != 0 {
-		chainedUnary := grpc_middleware.WithUnaryServerChain(
-			unaryInterceptors...,
-		)
-		chainedStream := grpc_middleware.WithStreamServerChain(
-			strmInterceptors...,
-		)
-		serverOpts = append(serverOpts, chainedUnary, chainedStream)
-	}
-
-	// Finally, with all the pre-set up complete,  we can create the main
-	// gRPC server, and register the main lnrpc server along side.
-	grpcServer := grpc.NewServer(serverOpts...)
-	rootRPCServer := &rpcServer{
-		cfg:             cfg,
-		restDialOpts:    restDialOpts,
-		listeners:       listeners,
-		listenerCleanUp: []func(){cleanup},
-		restProxyDest:   restProxyDest,
-		subServers:      subServers,
-		restListen:      restListen,
-		grpcServer:      grpcServer,
-		server:          s,
-		routerBackend:   routerBackend,
-		chanPredicate:   chanPredicate,
-		quit:            make(chan struct{}, 1),
-		macService:      macService,
-		selfNode:        selfNode.PubKeyBytes,
-		allPermissions:  permissions,
-	}
-	lnrpc.RegisterLightningServer(grpcServer, rootRPCServer)
+// RegisterWithGrpcServer registers the rpcServer and any subservers with the
+// root gRPC server.
+func (r *rpcServer) RegisterWithGrpcServer(grpcServer *grpc.Server) error {
+	// Register the main RPC server.
+	lnrpc.RegisterLightningServer(grpcServer, r)
 
 	// Now the main RPC server has been registered, we'll iterate through
 	// all the sub-RPC servers and register them to ensure that requests
 	// are properly routed towards them.
-	for _, subServer := range subServers {
+	for _, subServer := range r.subGrpcHandlers {
 		err := subServer.RegisterWithRootServer(grpcServer)
 		if err != nil {
-			return nil, fmt.Errorf("unable to register "+
-				"sub-server %v with root: %v",
-				subServer.Name(), err)
+			return fmt.Errorf("unable to register "+
+				"sub-server with root: %v", err)
 		}
 	}
 
-	return rootRPCServer, nil
+	// Before actually listening on the gRPC listener, give external
+	// subservers the chance to register to our gRPC server. Those external
+	// subservers (think GrUB) are responsible for starting/stopping on
+	// their own, we just let them register their services to the same
+	// server instance so all of them can be exposed on the same
+	// port/listener.
+	if r.extSubserverCfg != nil && r.extSubserverCfg.Registrar != nil {
+		registerer := r.extSubserverCfg.Registrar
+		err := registerer.RegisterGrpcSubserver(grpcServer)
+		if err != nil {
+			rpcsLog.Errorf("error registering external gRPC "+
+				"subserver: %v", err)
+		}
+	}
+
+	return nil
 }
 
 // Start launches any helper goroutines required for the rpcServer to function.
@@ -804,133 +817,46 @@ func (r *rpcServer) Start() error {
 		}
 	}
 
-	// With all the sub-servers started, we'll spin up the listeners for
-	// the main RPC server itself.
-	for _, lis := range r.listeners {
-		go func(lis *ListenerWithSignal) {
-			rpcsLog.Infof("RPC server listening on %s", lis.Addr())
+	return nil
+}
 
-			// Before actually listening on the gRPC listener, give
-			// external subservers the chance to register to our
-			// gRPC server. Those external subservers (think GrUB)
-			// are responsible for starting/stopping on their own,
-			// we just let them register their services to the same
-			// server instance so all of them can be exposed on the
-			// same port/listener.
-			extSubCfg := lis.ExternalRPCSubserverCfg
-			if extSubCfg != nil && extSubCfg.Registrar != nil {
-				registerer := extSubCfg.Registrar
-				err := registerer.RegisterGrpcSubserver(
-					r.grpcServer,
-				)
-				if err != nil {
-					rpcsLog.Errorf("error registering "+
-						"external gRPC subserver: %v",
-						err)
-				}
-			}
-
-			// Close the ready chan to indicate we are listening.
-			close(lis.Ready)
-			_ = r.grpcServer.Serve(lis)
-		}(lis)
-	}
-
-	// If Prometheus monitoring is enabled, start the Prometheus exporter.
-	if r.cfg.Prometheus.Enabled() {
-		err := monitoring.ExportPrometheusMetrics(
-			r.grpcServer, r.cfg.Prometheus,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	// The default JSON marshaler of the REST proxy only sets OrigName to
-	// true, which instructs it to use the same field names as specified in
-	// the proto file and not switch to camel case. What we also want is
-	// that the marshaler prints all values, even if they are falsey.
-	customMarshalerOption := proxy.WithMarshalerOption(
-		proxy.MIMEWildcard, &proxy.JSONPb{
-			OrigName:     true,
-			EmitDefaults: true,
-		},
-	)
-
-	// Now start the REST proxy for our gRPC server above. We'll ensure
-	// we direct LND to connect to its loopback address rather than a
-	// wildcard to prevent certificate issues when accessing the proxy
-	// externally.
-	restMux := proxy.NewServeMux(customMarshalerOption)
-	restCtx, restCancel := context.WithCancel(context.Background())
-	r.listenerCleanUp = append(r.listenerCleanUp, restCancel)
-
-	// Wrap the default grpc-gateway handler with the WebSocket handler.
-	restHandler := lnrpc.NewWebSocketProxy(restMux, rpcsLog)
+// RegisterWithRestProxy registers the RPC server and any subservers with the
+// given REST proxy.
+func (r *rpcServer) RegisterWithRestProxy(restCtx context.Context,
+	restMux *proxy.ServeMux, restDialOpts []grpc.DialOption,
+	restProxyDest string) error {
 
 	// With our custom REST proxy mux created, register our main RPC and
 	// give all subservers a chance to register as well.
 	err := lnrpc.RegisterLightningHandlerFromEndpoint(
-		restCtx, restMux, r.restProxyDest, r.restDialOpts,
+		restCtx, restMux, restProxyDest, restDialOpts,
 	)
 	if err != nil {
 		return err
 	}
-	for _, subServer := range r.subServers {
+
+	for _, subServer := range r.subGrpcHandlers {
 		err := subServer.RegisterWithRestServer(
-			restCtx, restMux, r.restProxyDest, r.restDialOpts,
+			restCtx, restMux, restProxyDest, restDialOpts,
 		)
 		if err != nil {
 			return fmt.Errorf("unable to register REST sub-server "+
-				"%v with root: %v", subServer.Name(), err)
+				"with root: %v", err)
 		}
 	}
 
 	// Before listening on any of the interfaces, we also want to give the
 	// external subservers a chance to register their own REST proxy stub
 	// with our mux instance.
-	for _, lis := range r.listeners {
-		if lis.ExternalRestRegistrar != nil {
-			err := lis.ExternalRestRegistrar.RegisterRestSubserver(
-				restCtx, restMux, r.restProxyDest,
-				r.restDialOpts,
-			)
-			if err != nil {
-				rpcsLog.Errorf("error registering "+
-					"external REST subserver: %v", err)
-			}
-		}
-	}
-
-	// Now spin up a network listener for each requested port and start a
-	// goroutine that serves REST with the created mux there.
-	for _, restEndpoint := range r.cfg.RESTListeners {
-		lis, err := r.restListen(restEndpoint)
+	if r.extRestRegistrar != nil {
+		err := r.extRestRegistrar.RegisterRestSubserver(
+			restCtx, restMux, restProxyDest, restDialOpts,
+		)
 		if err != nil {
-			ltndLog.Errorf("gRPC proxy unable to listen on %s",
-				restEndpoint)
-			return err
+			rpcsLog.Errorf("error registering "+
+				"external REST subserver: %v", err)
 		}
-
-		r.listenerCleanUp = append(r.listenerCleanUp, func() {
-			_ = lis.Close()
-		})
-
-		go func() {
-			rpcsLog.Infof("gRPC proxy started at %s", lis.Addr())
-
-			// Create our proxy chain now. A request will pass
-			// through the following chain:
-			// req ---> CORS handler --> WS proxy --->
-			//   REST proxy --> gRPC endpoint
-			corsHandler := allowCORS(restHandler, r.cfg.RestCORS)
-			err := http.Serve(lis, corsHandler)
-			if err != nil && !lnrpc.IsClosedConnError(err) {
-				rpcsLog.Error(err)
-			}
-		}()
 	}
-
 	return nil
 }
 
@@ -956,12 +882,6 @@ func (r *rpcServer) Stop() error {
 				subServer.Name(), err)
 			continue
 		}
-	}
-
-	// Finally, we can clean up all the listening sockets to ensure that we
-	// give the file descriptors back to the OS.
-	for _, cleanUp := range r.listenerCleanUp {
-		cleanUp()
 	}
 
 	return nil
@@ -1048,7 +968,7 @@ func allowCORS(handler http.Handler, origins []string) http.Handler {
 // more addresses specified in the passed payment map. The payment map maps an
 // address to a specified output value to be sent to that address.
 func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
-	feeRate chainfee.SatPerKWeight, minconf int32,
+	feeRate chainfee.SatPerKWeight, minConfs int32,
 	label string) (*chainhash.Hash, error) {
 
 	outputs, err := addrPairsToOutputs(paymentMap, r.cfg.ActiveNetParams.Params)
@@ -1059,7 +979,7 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	// We first do a dry run, to sanity check we won't spend our wallet
 	// balance below the reserved amount.
 	authoredTx, err := r.server.cc.Wallet.CreateSimpleTx(
-		outputs, feeRate, true,
+		outputs, feeRate, minConfs, true,
 	)
 	if err != nil {
 		return nil, err
@@ -1073,7 +993,7 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	// If that checks out, we're failry confident that creating sending to
 	// these outputs will keep the wallet balance above the reserve.
 	tx, err := r.server.cc.Wallet.SendOutputs(
-		outputs, feeRate, minconf, label,
+		outputs, feeRate, minConfs, label,
 	)
 	if err != nil {
 		return nil, err
@@ -1108,7 +1028,7 @@ func (r *rpcServer) ListUnspent(ctx context.Context,
 	var utxos []*lnwallet.Utxo
 	err = r.server.cc.Wallet.WithCoinSelectLock(func() error {
 		utxos, err = r.server.cc.Wallet.ListUnspentWitness(
-			minConfs, maxConfs,
+			minConfs, maxConfs, in.Account,
 		)
 		return err
 	})
@@ -1157,12 +1077,21 @@ func (r *rpcServer) EstimateFee(ctx context.Context,
 		return nil, err
 	}
 
+	// Then, we'll extract the minimum number of confirmations that each
+	// output we use to fund the transaction should satisfy.
+	minConfs, err := lnrpc.ExtractMinConfs(
+		in.GetMinConfs(), in.GetSpendUnconfirmed(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// We will ask the wallet to create a tx using this fee rate. We set
 	// dryRun=true to avoid inflating the change addresses in the db.
 	var tx *txauthor.AuthoredTx
 	wallet := r.server.cc.Wallet
 	err = wallet.WithCoinSelectLock(func() error {
-		tx, err = wallet.CreateSimpleTx(outputs, feePerKw, true)
+		tx, err = wallet.CreateSimpleTx(outputs, feePerKw, minConfs, true)
 		return err
 	})
 	if err != nil {
@@ -1177,7 +1106,10 @@ func (r *rpcServer) EstimateFee(ctx context.Context,
 	totalFee := int64(tx.TotalInput) - totalOutput
 
 	resp := &lnrpc.EstimateFeeResponse{
-		FeeSat:            totalFee,
+		FeeSat:      totalFee,
+		SatPerVbyte: uint64(feePerKw.FeePerKVByte() / 1000),
+
+		// Deprecated field.
 		FeerateSatPerByte: int64(feePerKw.FeePerKVByte() / 1000),
 	}
 
@@ -1192,14 +1124,10 @@ func (r *rpcServer) EstimateFee(ctx context.Context,
 func (r *rpcServer) SendCoins(ctx context.Context,
 	in *lnrpc.SendCoinsRequest) (*lnrpc.SendCoinsResponse, error) {
 
-	// Based on the passed fee related parameters, we'll determine an
-	// appropriate fee rate for this transaction.
-	satPerKw := chainfee.SatPerKVByte(in.SatPerByte * 1000).FeePerKWeight()
-	feePerKw, err := sweep.DetermineFeePerKw(
-		r.server.cc.FeeEstimator, sweep.FeePreference{
-			ConfTarget: uint32(in.TargetConf),
-			FeeRate:    satPerKw,
-		},
+	// Calculate an appropriate fee rate for this transaction.
+	feePerKw, err := calculateFeeRate(
+		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
+		uint32(in.TargetConf), r.server.cc.FeeEstimator,
 	)
 	if err != nil {
 		return nil, err
@@ -1277,8 +1205,9 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 		sweepTxPkg, err := sweep.CraftSweepAllTx(
 			feePerKw, lnwallet.DefaultDustLimit(),
 			uint32(bestHeight), nil, targetAddr, wallet,
-			wallet.WalletController, wallet.WalletController,
+			wallet, wallet.WalletController,
 			r.server.cc.FeeEstimator, r.server.cc.Signer,
+			minConfs,
 		)
 		if err != nil {
 			return nil, err
@@ -1311,6 +1240,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 			// allowing us to pass the reserved value check.
 			changeAddr, err := r.server.cc.Wallet.NewAddress(
 				lnwallet.WitnessPubKey, true,
+				lnwallet.DefaultAccountName,
 			)
 			if err != nil {
 				return nil, err
@@ -1328,8 +1258,9 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 			sweepTxPkg, err = sweep.CraftSweepAllTx(
 				feePerKw, lnwallet.DefaultDustLimit(),
 				uint32(bestHeight), outputs, targetAddr, wallet,
-				wallet.WalletController, wallet.WalletController,
+				wallet, wallet.WalletController,
 				r.server.cc.FeeEstimator, r.server.cc.Signer,
+				minConfs,
 			)
 			if err != nil {
 				return nil, err
@@ -1403,14 +1334,10 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 func (r *rpcServer) SendMany(ctx context.Context,
 	in *lnrpc.SendManyRequest) (*lnrpc.SendManyResponse, error) {
 
-	// Based on the passed fee related parameters, we'll determine an
-	// appropriate fee rate for this transaction.
-	satPerKw := chainfee.SatPerKVByte(in.SatPerByte * 1000).FeePerKWeight()
-	feePerKw, err := sweep.DetermineFeePerKw(
-		r.server.cc.FeeEstimator, sweep.FeePreference{
-			ConfTarget: uint32(in.TargetConf),
-			FeeRate:    satPerKw,
-		},
+	// Calculate an appropriate fee rate for this transaction.
+	feePerKw, err := calculateFeeRate(
+		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
+		uint32(in.TargetConf), r.server.cc.FeeEstimator,
 	)
 	if err != nil {
 		return nil, err
@@ -1462,6 +1389,12 @@ func (r *rpcServer) SendMany(ctx context.Context,
 func (r *rpcServer) NewAddress(ctx context.Context,
 	in *lnrpc.NewAddressRequest) (*lnrpc.NewAddressResponse, error) {
 
+	// Always use the default wallet account unless one was specified.
+	account := lnwallet.DefaultAccountName
+	if in.Account != "" {
+		account = in.Account
+	}
+
 	// Translate the gRPC proto address type to the wallet controller's
 	// available address types.
 	var (
@@ -1471,7 +1404,7 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 	switch in.Type {
 	case lnrpc.AddressType_WITNESS_PUBKEY_HASH:
 		addr, err = r.server.cc.Wallet.NewAddress(
-			lnwallet.WitnessPubKey, false,
+			lnwallet.WitnessPubKey, false, account,
 		)
 		if err != nil {
 			return nil, err
@@ -1479,7 +1412,7 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 
 	case lnrpc.AddressType_NESTED_PUBKEY_HASH:
 		addr, err = r.server.cc.Wallet.NewAddress(
-			lnwallet.NestedWitnessPubKey, false,
+			lnwallet.NestedWitnessPubKey, false, account,
 		)
 		if err != nil {
 			return nil, err
@@ -1487,7 +1420,7 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 
 	case lnrpc.AddressType_UNUSED_WITNESS_PUBKEY_HASH:
 		addr, err = r.server.cc.Wallet.LastUnusedAddress(
-			lnwallet.WitnessPubKey,
+			lnwallet.WitnessPubKey, account,
 		)
 		if err != nil {
 			return nil, err
@@ -1495,14 +1428,15 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 
 	case lnrpc.AddressType_UNUSED_NESTED_PUBKEY_HASH:
 		addr, err = r.server.cc.Wallet.LastUnusedAddress(
-			lnwallet.NestedWitnessPubKey,
+			lnwallet.NestedWitnessPubKey, account,
 		)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	rpcsLog.Debugf("[newaddress] type=%v addr=%v", in.Type, addr.String())
+	rpcsLog.Debugf("[newaddress] account=%v type=%v addr=%v", account,
+		in.Type, addr.String())
 	return &lnrpc.NewAddressResponse{Address: addr.String()}, nil
 }
 
@@ -1728,7 +1662,7 @@ func newFundingShimAssembler(chanPointShim *lnrpc.ChanPointShim, initiator bool,
 
 	// First, we'll map the RPC's channel point to one we can actually use.
 	index := chanPointShim.ChanPoint.OutputIndex
-	txid, err := GetChanPointFundingTxid(chanPointShim.ChanPoint)
+	txid, err := lnrpc.GetChanPointFundingTxid(chanPointShim.ChanPoint)
 	if err != nil {
 		return nil, err
 	}
@@ -1803,7 +1737,7 @@ func newPsbtAssembler(req *lnrpc.OpenChannelRequest, normalizedMinConfs int32,
 			"minimum confirmation is not supported for PSBT " +
 			"funding")
 	}
-	if req.SatPerByte != 0 || req.TargetConf != 0 {
+	if req.SatPerByte != 0 || req.SatPerVbyte != 0 || req.TargetConf != 0 { // nolint:staticcheck
 		return nil, fmt.Errorf("specifying fee estimation parameters " +
 			"is not supported for PSBT funding")
 	}
@@ -1934,7 +1868,7 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	// key object. For all sync call, byte slices are expected to be encoded
 	// as hex strings.
 	case isSync:
-		keyBytes, err := hex.DecodeString(in.NodePubkeyString)
+		keyBytes, err := hex.DecodeString(in.NodePubkeyString) // nolint:staticcheck
 		if err != nil {
 			return nil, err
 		}
@@ -1954,14 +1888,10 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 		return nil, fmt.Errorf("cannot open channel to self")
 	}
 
-	// Based on the passed fee related parameters, we'll determine an
-	// appropriate fee rate for the funding transaction.
-	satPerKw := chainfee.SatPerKVByte(in.SatPerByte * 1000).FeePerKWeight()
-	feeRate, err := sweep.DetermineFeePerKw(
-		r.server.cc.FeeEstimator, sweep.FeePreference{
-			ConfTarget: uint32(in.TargetConf),
-			FeeRate:    satPerKw,
-		},
+	// Calculate an appropriate fee rate for this transaction.
+	feeRate, err := calculateFeeRate(
+		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
+		uint32(in.TargetConf), r.server.cc.FeeEstimator,
 	)
 	if err != nil {
 		return nil, err
@@ -2077,7 +2007,7 @@ out:
 			update, ok := fundingUpdate.Update.(*lnrpc.OpenStatusUpdate_ChanOpen)
 			if ok {
 				chanPoint := update.ChanOpen.ChannelPoint
-				txid, err := GetChanPointFundingTxid(chanPoint)
+				txid, err := lnrpc.GetChanPointFundingTxid(chanPoint)
 				if err != nil {
 					return err
 				}
@@ -2145,29 +2075,6 @@ func (r *rpcServer) OpenChannelSync(ctx context.Context,
 	}
 }
 
-// GetChanPointFundingTxid returns the given channel point's funding txid in
-// raw bytes.
-func GetChanPointFundingTxid(chanPoint *lnrpc.ChannelPoint) (*chainhash.Hash, error) {
-	var txid []byte
-
-	// A channel point's funding txid can be get/set as a byte slice or a
-	// string. In the case it is a string, decode it.
-	switch chanPoint.GetFundingTxid().(type) {
-	case *lnrpc.ChannelPoint_FundingTxidBytes:
-		txid = chanPoint.GetFundingTxidBytes()
-	case *lnrpc.ChannelPoint_FundingTxidStr:
-		s := chanPoint.GetFundingTxidStr()
-		h, err := chainhash.NewHashFromStr(s)
-		if err != nil {
-			return nil, err
-		}
-
-		txid = h[:]
-	}
-
-	return chainhash.NewHash(txid)
-}
-
 // CloseChannel attempts to close an active channel identified by its channel
 // point. The actions of this method can additionally be augmented to attempt
 // a force close after a timeout period in the case of an inactive peer.
@@ -2186,13 +2093,15 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 
 	// If force closing a channel, the fee set in the commitment transaction
 	// is used.
-	if in.Force && (in.SatPerByte != 0 || in.TargetConf != 0) {
+	if in.Force && (in.SatPerByte != 0 || in.SatPerVbyte != 0 || // nolint:staticcheck
+		in.TargetConf != 0) {
+
 		return fmt.Errorf("force closing a channel uses a pre-defined fee")
 	}
 
 	force := in.Force
 	index := in.ChannelPoint.OutputIndex
-	txid, err := GetChanPointFundingTxid(in.GetChannelPoint())
+	txid, err := lnrpc.GetChanPointFundingTxid(in.GetChannelPoint())
 	if err != nil {
 		rpcsLog.Errorf("[closechannel] unable to get funding txid: %v", err)
 		return err
@@ -2318,14 +2227,9 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		// Based on the passed fee related parameters, we'll determine
 		// an appropriate fee rate for the cooperative closure
 		// transaction.
-		satPerKw := chainfee.SatPerKVByte(
-			in.SatPerByte * 1000,
-		).FeePerKWeight()
-		feeRate, err := sweep.DetermineFeePerKw(
-			r.server.cc.FeeEstimator, sweep.FeePreference{
-				ConfTarget: uint32(in.TargetConf),
-				FeeRate:    satPerKw,
-			},
+		feeRate, err := calculateFeeRate(
+			uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
+			uint32(in.TargetConf), r.server.cc.FeeEstimator,
 		)
 		if err != nil {
 			return err
@@ -2455,7 +2359,7 @@ func abandonChanFromGraph(chanGraph *channeldb.ChannelGraph,
 
 	// If the channel ID is still in the graph, then that means the channel
 	// is still open, so we'll now move to purge it from the graph.
-	return chanGraph.DeleteChannelEdges(chanID)
+	return chanGraph.DeleteChannelEdges(false, chanID)
 }
 
 // AbandonChannel removes all channel state from the database except for a
@@ -2467,15 +2371,20 @@ func (r *rpcServer) AbandonChannel(_ context.Context,
 	// If this isn't the dev build, then we won't allow the RPC to be
 	// executed, as it's an advanced feature and won't be activated in
 	// regular production/release builds except for the explicit case of
-	// externally funded channels that are still pending.
-	if !in.PendingFundingShimOnly && !build.IsDevBuild() {
+	// externally funded channels that are still pending. Due to repeated
+	// requests, we also allow this requirement to be overwritten by a new
+	// flag that attests to the user knowing what they're doing and the risk
+	// associated with the command/RPC.
+	if !in.IKnowWhatIAmDoing && !in.PendingFundingShimOnly &&
+		!build.IsDevBuild() {
+
 		return nil, fmt.Errorf("AbandonChannel RPC call only " +
 			"available in dev builds")
 	}
 
 	// We'll parse out the arguments to we can obtain the chanPoint of the
 	// target channel.
-	txid, err := GetChanPointFundingTxid(in.GetChannelPoint())
+	txid, err := lnrpc.GetChanPointFundingTxid(in.GetChannelPoint())
 	if err != nil {
 		return nil, err
 	}
@@ -2509,7 +2418,9 @@ func (r *rpcServer) AbandonChannel(_ context.Context,
 		// PSBT) on the channel so we don't need to use the thaw height.
 		isShimFunded := dbChan.ThawHeight > 0
 		isPendingShimFunded := isShimFunded && dbChan.IsPending
-		if in.PendingFundingShimOnly && !isPendingShimFunded {
+		if !in.IKnowWhatIAmDoing && in.PendingFundingShimOnly &&
+			!isPendingShimFunded {
+
 			return nil, fmt.Errorf("channel %v is not externally "+
 				"funded or not pending", chanPoint)
 		}
@@ -2568,8 +2479,8 @@ func (r *rpcServer) AbandonChannel(_ context.Context,
 // GetInfo returns general information concerning the lightning node including
 // its identity pubkey, alias, the chains it is connected to, and information
 // concerning the number of open+pending channels.
-func (r *rpcServer) GetInfo(ctx context.Context,
-	in *lnrpc.GetInfoRequest) (*lnrpc.GetInfoResponse, error) {
+func (r *rpcServer) GetInfo(_ context.Context,
+	_ *lnrpc.GetInfoRequest) (*lnrpc.GetInfoResponse, error) {
 
 	serverPeers := r.server.Peers()
 
@@ -2609,6 +2520,19 @@ func (r *rpcServer) GetInfo(ctx context.Context,
 			"with current best block in the main chain: %v", err)
 	}
 
+	// If the router does full channel validation, it has a lot of work to
+	// do for each block. So it might be possible that it isn't yet up to
+	// date with the most recent block, even if the wallet is. This can
+	// happen in environments with high CPU load (such as parallel itests).
+	// Since the `synced_to_chain` flag in the response of this call is used
+	// by many wallets (and also our itests) to make sure everything's up to
+	// date, we add the router's state to it. So the flag will only toggle
+	// to true once the router was also able to catch up.
+	if !r.cfg.Routing.AssumeChannelValid {
+		routerHeight := r.server.chanRouter.SyncedHeight()
+		isSynced = isSynced && uint32(bestHeight) == routerHeight
+	}
+
 	network := lncfg.NormalizeNetwork(r.cfg.ActiveNetParams.Name)
 	activeChains := make([]*lnrpc.Chain, r.cfg.registeredChains.NumActiveChains())
 	for i, chain := range r.cfg.registeredChains.ActiveChains() {
@@ -2616,7 +2540,6 @@ func (r *rpcServer) GetInfo(ctx context.Context,
 			Chain:   chain.String(),
 			Network: network,
 		}
-
 	}
 
 	// Check if external IP addresses were provided to lnd and use them
@@ -2867,6 +2790,10 @@ func (r *rpcServer) SubscribePeerEvents(req *lnrpc.PeerEventSubscription,
 			if err := eventStream.Send(event); err != nil {
 				return err
 			}
+
+		case <-eventStream.Context().Done():
+			return eventStream.Context().Err()
+
 		case <-r.quit:
 			return nil
 		}
@@ -2881,30 +2808,80 @@ func (r *rpcServer) SubscribePeerEvents(req *lnrpc.PeerEventSubscription,
 func (r *rpcServer) WalletBalance(ctx context.Context,
 	in *lnrpc.WalletBalanceRequest) (*lnrpc.WalletBalanceResponse, error) {
 
-	// Get total balance, from txs that have >= 0 confirmations.
-	totalBal, err := r.server.cc.Wallet.ConfirmedBalance(0)
+	// Retrieve all existing wallet accounts. We'll compute the confirmed
+	// and unconfirmed balance for each and tally them up.
+	accounts, err := r.server.cc.Wallet.ListAccounts("", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get confirmed balance, from txs that have >= 1 confirmations.
-	// TODO(halseth): get both unconfirmed and confirmed balance in one
-	// call, as this is racy.
-	confirmedBal, err := r.server.cc.Wallet.ConfirmedBalance(1)
-	if err != nil {
-		return nil, err
-	}
+	var totalBalance, confirmedBalance, unconfirmedBalance btcutil.Amount
+	rpcAccountBalances := make(
+		map[string]*lnrpc.WalletAccountBalance, len(accounts),
+	)
+	for _, account := range accounts {
+		// There are two default accounts, one for NP2WKH outputs and
+		// another for P2WKH outputs. The balance will be computed for
+		// both given one call to ConfirmedBalance with the default
+		// wallet and imported account, so we'll skip the second
+		// instance to avoid inflating the balance.
+		switch account.AccountName {
+		case waddrmgr.ImportedAddrAccountName:
+			// Omit the imported account from the response unless we
+			// actually have any keys imported.
+			if account.ImportedKeyCount == 0 {
+				continue
+			}
 
-	// Get unconfirmed balance, from txs with 0 confirmations.
-	unconfirmedBal := totalBal - confirmedBal
+			fallthrough
+
+		case lnwallet.DefaultAccountName:
+			if _, ok := rpcAccountBalances[account.AccountName]; ok {
+				continue
+			}
+
+		default:
+		}
+
+		// Get total balance, from txs that have >= 0 confirmations.
+		totalBal, err := r.server.cc.Wallet.ConfirmedBalance(
+			0, account.AccountName,
+		)
+		if err != nil {
+			return nil, err
+		}
+		totalBalance += totalBal
+
+		// Get confirmed balance, from txs that have >= 1 confirmations.
+		// TODO(halseth): get both unconfirmed and confirmed balance in
+		// one call, as this is racy.
+		confirmedBal, err := r.server.cc.Wallet.ConfirmedBalance(
+			1, account.AccountName,
+		)
+		if err != nil {
+			return nil, err
+		}
+		confirmedBalance += confirmedBal
+
+		// Get unconfirmed balance, from txs with 0 confirmations.
+		unconfirmedBal := totalBal - confirmedBal
+		unconfirmedBalance += unconfirmedBal
+
+		rpcAccountBalances[account.AccountName] = &lnrpc.WalletAccountBalance{
+			ConfirmedBalance:   int64(confirmedBal),
+			UnconfirmedBalance: int64(unconfirmedBal),
+		}
+	}
 
 	rpcsLog.Debugf("[walletbalance] Total balance=%v (confirmed=%v, "+
-		"unconfirmed=%v)", totalBal, confirmedBal, unconfirmedBal)
+		"unconfirmed=%v)", totalBalance, confirmedBalance,
+		unconfirmedBalance)
 
 	return &lnrpc.WalletBalanceResponse{
-		TotalBalance:       int64(totalBal),
-		ConfirmedBalance:   int64(confirmedBal),
-		UnconfirmedBalance: int64(unconfirmedBal),
+		TotalBalance:       int64(totalBalance),
+		ConfirmedBalance:   int64(confirmedBalance),
+		UnconfirmedBalance: int64(unconfirmedBalance),
+		AccountBalance:     rpcAccountBalances,
 	}, nil
 }
 
@@ -3157,7 +3134,7 @@ func (r *rpcServer) PendingChannels(ctx context.Context,
 				return nil, err
 			}
 
-			resp.TotalLimboBalance += int64(forceClose.LimboBalance)
+			resp.TotalLimboBalance += forceClose.LimboBalance
 
 			resp.PendingForceClosingChannels = append(
 				resp.PendingForceClosingChannels,
@@ -4090,6 +4067,10 @@ func (r *rpcServer) SubscribeChannelEvents(req *lnrpc.ChannelEventSubscription,
 			if err := updateStream.Send(update); err != nil {
 				return err
 			}
+
+		case <-updateStream.Context().Done():
+			return updateStream.Context().Err()
+
 		case <-r.quit:
 			return nil
 		}
@@ -4368,6 +4349,20 @@ func (r *rpcServer) extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPayme
 		return payIntent, err
 	}
 
+	// Payment address may not be needed by legacy invoices.
+	if len(rpcPayReq.PaymentAddr) != 0 && len(rpcPayReq.PaymentAddr) != 32 {
+		return payIntent, errors.New("invalid payment address length")
+	}
+
+	// Set the payment address if it was explicitly defined with the
+	// rpcPaymentRequest.
+	// Note that the payment address for the payIntent should be nil if none
+	// was provided with the rpcPaymentRequest.
+	if len(rpcPayReq.PaymentAddr) != 0 {
+		payIntent.paymentAddr = &[32]byte{}
+		copy(payIntent.paymentAddr[:], rpcPayReq.PaymentAddr)
+	}
+
 	// Otherwise, If the payment request field was not specified
 	// (and a custom route wasn't specified), construct the payment
 	// from the other fields.
@@ -4391,6 +4386,15 @@ func (r *rpcServer) extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPayme
 		// 9 blocks that is defined in BOLT-11, because this is never
 		// enough for other lnd nodes.
 		payIntent.cltvDelta = uint16(r.cfg.Bitcoin.TimeLockDelta)
+	}
+
+	// Do bounds checking with the block padding so the router isn't left
+	// with a zombie payment in case the user messes up.
+	err = routing.ValidateCLTVLimit(
+		payIntent.cltvLimit, payIntent.cltvDelta, true,
+	)
+	if err != nil {
+		return payIntent, err
 	}
 
 	// If the user is manually specifying payment details, then the payment
@@ -4453,7 +4457,6 @@ func (r *rpcServer) dispatchPaymentIntent(
 			FinalCLTVDelta:     payIntent.cltvDelta,
 			FeeLimit:           payIntent.feeLimit,
 			CltvLimit:          payIntent.cltvLimit,
-			PaymentHash:        payIntent.rHash,
 			RouteHints:         payIntent.routeHints,
 			OutgoingChannelIDs: payIntent.outgoingChannelIDs,
 			LastHop:            payIntent.lastHop,
@@ -4466,6 +4469,10 @@ func (r *rpcServer) dispatchPaymentIntent(
 			// Don't enable multi-part payments on the main rpc.
 			// Users need to use routerrpc for that.
 			MaxParts: 1,
+		}
+		err := payment.SetPaymentHash(payIntent.rHash)
+		if err != nil {
+			return nil, err
 		}
 
 		preImage, route, routerErr = r.server.chanRouter.SendPayment(
@@ -4816,6 +4823,9 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 		GenInvoiceFeatures: func() *lnwire.FeatureVector {
 			return r.server.featureMgr.Get(feature.SetInvoice)
 		},
+		GenAmpInvoiceFeatures: func() *lnwire.FeatureVector {
+			return r.server.featureMgr.Get(feature.SetInvoiceAmp)
+		},
 	}
 
 	value, err := lnrpc.UnmarshallAmt(invoice.Value, invoice.ValueMsat)
@@ -4837,6 +4847,7 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 		CltvExpiry:      invoice.CltvExpiry,
 		Private:         invoice.Private,
 		RouteHints:      routeHints,
+		Amp:             invoice.IsAmp,
 	}
 
 	if invoice.RPreimage != nil {
@@ -4997,6 +5008,9 @@ func (r *rpcServer) SubscribeInvoices(req *lnrpc.InvoiceSubscription,
 				return err
 			}
 
+		case <-updateStream.Context().Done():
+			return updateStream.Context().Err()
+
 		case <-r.quit:
 			return nil
 		}
@@ -5014,6 +5028,7 @@ func (r *rpcServer) SubscribeTransactions(req *lnrpc.GetTransactionsRequest,
 		return err
 	}
 	defer txClient.Cancel()
+	rpcsLog.Infof("New transaction subscription")
 
 	for {
 		select {
@@ -5054,6 +5069,10 @@ func (r *rpcServer) SubscribeTransactions(req *lnrpc.GetTransactionsRequest,
 				return err
 			}
 
+		case <-updateStream.Context().Done():
+			rpcsLog.Infof("Cancelling transaction subscription")
+			return updateStream.Context().Err()
+
 		case <-r.quit:
 			return nil
 		}
@@ -5076,7 +5095,7 @@ func (r *rpcServer) GetTransactions(ctx context.Context,
 	}
 
 	transactions, err := r.server.cc.Wallet.ListTransactionDetails(
-		req.StartHeight, endHeight,
+		req.StartHeight, endHeight, req.Account,
 	)
 	if err != nil {
 		return nil, err
@@ -5161,9 +5180,10 @@ func (r *rpcServer) DescribeGraph(ctx context.Context,
 func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 	c1, c2 *channeldb.ChannelEdgePolicy) *lnrpc.ChannelEdge {
 
-	// Order the edges by increasing pubkey.
-	if bytes.Compare(edgeInfo.NodeKey2Bytes[:],
-		edgeInfo.NodeKey1Bytes[:]) < 0 {
+	// Make sure the policies match the node they belong to. c1 should point
+	// to the policy for NodeKey1, and c2 for NodeKey2.
+	if c1 != nil && c1.ChannelFlags&lnwire.ChanUpdateDirection == 1 ||
+		c2 != nil && c2.ChannelFlags&lnwire.ChanUpdateDirection == 0 {
 
 		c2, c1 = c1, c2
 	}
@@ -5310,7 +5330,10 @@ func (r *rpcServer) GetNodeInfo(ctx context.Context,
 	// to this public key. If the node cannot be found, then an error will
 	// be returned.
 	node, err := graph.FetchLightningNode(nil, pubKey)
-	if err != nil {
+	switch {
+	case err == channeldb.ErrGraphNodeNotFound:
+		return nil, status.Error(codes.NotFound, err.Error())
+	case err != nil:
 		return nil, err
 	}
 
@@ -5523,10 +5546,25 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 
 // StopDaemon will send a shutdown request to the interrupt handler, triggering
 // a graceful shutdown of the daemon.
-func (r *rpcServer) StopDaemon(ctx context.Context,
+func (r *rpcServer) StopDaemon(_ context.Context,
 	_ *lnrpc.StopRequest) (*lnrpc.StopResponse, error) {
 
-	signal.RequestShutdown()
+	// Before we even consider a shutdown, are we currently in recovery
+	// mode? We don't want to allow shutting down during recovery because
+	// that would mean the user would have to manually continue the rescan
+	// process next time by using `lncli unlock --recovery_window X`
+	// otherwise some funds wouldn't be picked up.
+	isRecoveryMode, progress, err := r.server.cc.Wallet.GetRecoveryInfo()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get wallet recovery info: %v",
+			err)
+	}
+	if isRecoveryMode && progress < 1 {
+		return nil, fmt.Errorf("wallet recovery in progress, cannot " +
+			"shut down, please wait until rescan finishes")
+	}
+
+	r.interceptor.RequestShutdown()
 	return &lnrpc.StopResponse{}, nil
 }
 
@@ -5573,6 +5611,11 @@ func (r *rpcServer) SubscribeChannelGraph(req *lnrpc.GraphTopologySubscription,
 				return err
 			}
 
+		// The context was cancelled so we report a cancellation error
+		// and exit immediately.
+		case <-updateStream.Context().Done():
+			return updateStream.Context().Err()
+
 		// The server is quitting, so we'll exit immediately. Returning
 		// nil will close the clients read end of the stream.
 		case <-r.quit:
@@ -5595,16 +5638,26 @@ func marshallTopologyChange(topChange *routing.TopologyChange) *lnrpc.GraphTopol
 
 	nodeUpdates := make([]*lnrpc.NodeUpdate, len(topChange.NodeUpdates))
 	for i, nodeUpdate := range topChange.NodeUpdates {
+		nodeAddrs := make([]*lnrpc.NodeAddress, 0, len(nodeUpdate.Addresses))
+		for _, addr := range nodeUpdate.Addresses {
+			nodeAddr := &lnrpc.NodeAddress{
+				Network: addr.Network(),
+				Addr:    addr.String(),
+			}
+			nodeAddrs = append(nodeAddrs, nodeAddr)
+		}
+
 		addrs := make([]string, len(nodeUpdate.Addresses))
 		for i, addr := range nodeUpdate.Addresses {
 			addrs[i] = addr.String()
 		}
 
 		nodeUpdates[i] = &lnrpc.NodeUpdate{
-			Addresses:   addrs,
-			IdentityKey: encodeKey(nodeUpdate.IdentityKey),
-			Alias:       nodeUpdate.Alias,
-			Color:       nodeUpdate.Color,
+			Addresses:     addrs,
+			NodeAddresses: nodeAddrs,
+			IdentityKey:   encodeKey(nodeUpdate.IdentityKey),
+			Alias:         nodeUpdate.Alias,
+			Color:         nodeUpdate.Color,
 			Features: invoicesrpc.CreateRPCFeatures(
 				nodeUpdate.Features,
 			),
@@ -5705,11 +5758,17 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 
 // DeleteAllPayments deletes all outgoing payments from DB.
 func (r *rpcServer) DeleteAllPayments(ctx context.Context,
-	_ *lnrpc.DeleteAllPaymentsRequest) (*lnrpc.DeleteAllPaymentsResponse, error) {
+	req *lnrpc.DeleteAllPaymentsRequest) (
+	*lnrpc.DeleteAllPaymentsResponse, error) {
 
-	rpcsLog.Debugf("[DeleteAllPayments]")
+	rpcsLog.Infof("[DeleteAllPayments] failed_payments_only=%v, "+
+		"failed_htlcs_only=%v", req.FailedPaymentsOnly,
+		req.FailedHtlcsOnly)
 
-	if err := r.server.remoteChanDB.DeletePayments(); err != nil {
+	err := r.server.remoteChanDB.DeletePayments(
+		req.FailedPaymentsOnly, req.FailedHtlcsOnly,
+	)
+	if err != nil {
 		return nil, err
 	}
 
@@ -5979,7 +6038,7 @@ func (r *rpcServer) UpdateChannelPolicy(ctx context.Context,
 	// Otherwise, we're targeting an individual channel by its channel
 	// point.
 	case *lnrpc.PolicyUpdateRequest_ChanPoint:
-		txid, err := GetChanPointFundingTxid(scope.ChanPoint)
+		txid, err := lnrpc.GetChanPointFundingTxid(scope.ChanPoint)
 		if err != nil {
 			return nil, err
 		}
@@ -6128,15 +6187,16 @@ func (r *rpcServer) ForwardingHistory(ctx context.Context,
 		feeMsat := event.AmtIn - event.AmtOut
 
 		resp.ForwardingEvents[i] = &lnrpc.ForwardingEvent{
-			Timestamp:  uint64(event.Timestamp.Unix()),
-			ChanIdIn:   event.IncomingChanID.ToUint64(),
-			ChanIdOut:  event.OutgoingChanID.ToUint64(),
-			AmtIn:      uint64(amtInMsat.ToSatoshis()),
-			AmtOut:     uint64(amtOutMsat.ToSatoshis()),
-			Fee:        uint64(feeMsat.ToSatoshis()),
-			FeeMsat:    uint64(feeMsat),
-			AmtInMsat:  uint64(amtInMsat),
-			AmtOutMsat: uint64(amtOutMsat),
+			Timestamp:   uint64(event.Timestamp.Unix()),
+			TimestampNs: uint64(event.Timestamp.UnixNano()),
+			ChanIdIn:    event.IncomingChanID.ToUint64(),
+			ChanIdOut:   event.OutgoingChanID.ToUint64(),
+			AmtIn:       uint64(amtInMsat.ToSatoshis()),
+			AmtOut:      uint64(amtOutMsat.ToSatoshis()),
+			Fee:         uint64(feeMsat.ToSatoshis()),
+			FeeMsat:     uint64(feeMsat),
+			AmtInMsat:   uint64(amtInMsat),
+			AmtOutMsat:  uint64(amtOutMsat),
 		}
 	}
 
@@ -6154,7 +6214,7 @@ func (r *rpcServer) ExportChannelBackup(ctx context.Context,
 
 	// First, we'll convert the lnrpc channel point into a wire.OutPoint
 	// that we can manipulate.
-	txid, err := GetChanPointFundingTxid(in.ChanPoint)
+	txid, err := lnrpc.GetChanPointFundingTxid(in.ChanPoint)
 	if err != nil {
 		return nil, err
 	}
@@ -6478,6 +6538,9 @@ func (r *rpcServer) SubscribeChannelBackups(req *lnrpc.ChannelBackupSubscription
 				return err
 			}
 
+		case <-updateStream.Context().Done():
+			return updateStream.Context().Err()
+
 		case <-r.quit:
 			return nil
 		}
@@ -6546,7 +6609,8 @@ func (r *rpcServer) BakeMacaroon(ctx context.Context,
 		// Either we have the special entity "uri" which specifies a
 		// full gRPC URI or we have one of the pre-defined actions.
 		if op.Entity == macaroons.PermissionEntityCustomURI {
-			_, ok := r.allPermissions[op.Action]
+			allPermissions := r.interceptorChain.Permissions()
+			_, ok := allPermissions[op.Action]
 			if !ok {
 				return nil, fmt.Errorf("invalid permission " +
 					"action, must be an existing URI in " +
@@ -6661,7 +6725,7 @@ func (r *rpcServer) ListPermissions(_ context.Context,
 	rpcsLog.Debugf("[listpermissions]")
 
 	permissionMap := make(map[string]*lnrpc.MacaroonPermissionList)
-	for uri, perms := range r.allPermissions {
+	for uri, perms := range r.interceptorChain.Permissions() {
 		rpcPerms := make([]*lnrpc.MacaroonPermission, len(perms))
 		for idx, perm := range perms {
 			rpcPerms[idx] = &lnrpc.MacaroonPermission{

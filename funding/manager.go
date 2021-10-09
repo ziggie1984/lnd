@@ -19,11 +19,11 @@ import (
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/chanacceptor"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/discovery"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -675,12 +675,14 @@ func (f *Manager) start() error {
 
 // Stop signals all helper goroutines to execute a graceful shutdown. This
 // method will block until all goroutines have exited.
-func (f *Manager) Stop() {
+func (f *Manager) Stop() error {
 	f.stopped.Do(func() {
 		log.Info("Funding manager shutting down")
 		close(f.quit)
 		f.wg.Wait()
 	})
+
+	return nil
 }
 
 // nextPendingChanID returns the next free pending channel ID to be used to
@@ -1372,7 +1374,10 @@ func (f *Manager) handleFundingOpen(peer lnpeer.Peer,
 	shutdown, err := getUpfrontShutdownScript(
 		f.cfg.EnableUpfrontShutdown, peer, acceptorResp.UpfrontShutdown,
 		func() (lnwire.DeliveryAddress, error) {
-			addr, err := f.cfg.Wallet.NewAddress(lnwallet.WitnessPubKey, false)
+			addr, err := f.cfg.Wallet.NewAddress(
+				lnwallet.WitnessPubKey, false,
+				lnwallet.DefaultAccountName,
+			)
 			if err != nil {
 				return nil, err
 			}
@@ -3153,6 +3158,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		func() (lnwire.DeliveryAddress, error) {
 			addr, err := f.cfg.Wallet.NewAddress(
 				lnwallet.WitnessPubKey, false,
+				lnwallet.DefaultAccountName,
 			)
 			if err != nil {
 				return nil, err

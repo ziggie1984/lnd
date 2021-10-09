@@ -5,9 +5,12 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lntest"
 	"github.com/lightningnetwork/lnd/lntest/wait"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,14 +46,21 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	defer cancel()
 
 	// We'll now send a single HTLC across our multi-hop network.
-	carolPubKey := carol.PubKey[:]
-	payHash := makeFakePayHash(t)
-	_, err := alice.RouterClient.SendPaymentV2(
+	preimage := lntypes.Preimage{1, 2, 3}
+	payHash := preimage.Hash()
+	invoiceReq := &invoicesrpc.AddHoldInvoiceRequest{
+		Value:      int64(htlcAmt),
+		CltvExpiry: 40,
+		Hash:       payHash[:],
+	}
+
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+	carolInvoice, err := carol.AddHoldInvoice(ctxt, invoiceReq)
+	require.NoError(t.t, err)
+
+	_, err = alice.RouterClient.SendPaymentV2(
 		ctx, &routerrpc.SendPaymentRequest{
-			Dest:           carolPubKey,
-			Amt:            int64(htlcAmt),
-			PaymentHash:    payHash,
-			FinalCltvDelta: finalCltvDelta,
+			PaymentRequest: carolInvoice.PaymentRequest,
 			TimeoutSeconds: 60,
 			FeeLimitMsat:   noFeeLimitMsat,
 		},
@@ -61,7 +71,7 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	// show that the HTLC has been locked in.
 	nodes := []*lntest.HarnessNode{alice, bob, carol}
 	err = wait.NoError(func() error {
-		return assertActiveHtlcs(nodes, payHash)
+		return assertActiveHtlcs(nodes, payHash[:])
 	}, defaultTimeout)
 	require.NoError(t.t, err)
 
@@ -73,7 +83,7 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	// transaction. This will let us exercise that Bob is able to sweep the
 	// expired HTLC on Carol's version of the commitment transaction. If
 	// Carol has an anchor, it will be swept too.
-	ctxt, _ := context.WithTimeout(ctxb, channelCloseTimeout)
+	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
 	closeChannelAndAssertType(
 		ctxt, t, net, carol, bobChanPoint, c == commitTypeAnchors,
 		true,
@@ -93,7 +103,7 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	}
 
 	_, err = waitForNTxsInMempool(
-		net.Miner.Node, expectedTxes, minerMempoolTimeout,
+		net.Miner.Client, expectedTxes, minerMempoolTimeout,
 	)
 	require.NoError(t.t, err)
 
@@ -101,7 +111,7 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	// point, Bob should hand off the output to his internal utxo nursery,
 	// which will broadcast a sweep transaction.
 	numBlocks := padCLTV(finalCltvDelta - 1)
-	_, err = net.Miner.Node.Generate(numBlocks)
+	_, err = net.Miner.Client.Generate(numBlocks)
 	require.NoError(t.t, err)
 
 	// If we check Bob's pending channel report, it should show that he has
@@ -126,12 +136,12 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	require.NoError(t.t, err)
 
 	// We need to generate an additional block to trigger the sweep.
-	_, err = net.Miner.Node.Generate(1)
+	_, err = net.Miner.Client.Generate(1)
 	require.NoError(t.t, err)
 
 	// Bob's sweeping transaction should now be found in the mempool at
 	// this point.
-	sweepTx, err := waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
+	sweepTx, err := waitForTxInMempool(net.Miner.Client, minerMempoolTimeout)
 	if err != nil {
 		// If Bob's transaction isn't yet in the mempool, then due to
 		// internal message passing and the low period between blocks
@@ -141,9 +151,9 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 		// we'll fail.
 		// TODO(halseth): can we use waitForChannelPendingForceClose to
 		// avoid this hack?
-		_, err = net.Miner.Node.Generate(1)
+		_, err = net.Miner.Client.Generate(1)
 		require.NoError(t.t, err)
-		sweepTx, err = waitForTxInMempool(net.Miner.Node, minerMempoolTimeout)
+		sweepTx, err = waitForTxInMempool(net.Miner.Client, minerMempoolTimeout)
 		require.NoError(t.t, err)
 	}
 
@@ -168,6 +178,10 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	err = waitForNumChannelPendingForceClose(ctxt, bob, 0, nil)
 	require.NoError(t.t, err)
 
+	// While we're here, we assert that our expired invoice's state is
+	// correctly updated, and can no longer be settled.
+	assertOnChainInvoiceState(ctxb, t, carol, preimage)
+
 	// We'll close out the test by closing the channel from Alice to Bob,
 	// and then shutting down the new node we created as its no longer
 	// needed. Coop close, no anchors.
@@ -175,4 +189,26 @@ func testMultiHopRemoteForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	closeChannelAndAssertType(
 		ctxt, t, net, alice, aliceChanPoint, false, false,
 	)
+}
+
+// assertOnChainInvoiceState asserts that we have the correct state for a hold
+// invoice that has expired on chain, and that it can't be settled.
+func assertOnChainInvoiceState(ctx context.Context, t *harnessTest,
+	node *lntest.HarnessNode, preimage lntypes.Preimage) {
+
+	hash := preimage.Hash()
+	inv, err := node.LookupInvoice(ctx, &lnrpc.PaymentHash{
+		RHash: hash[:],
+	})
+	require.NoError(t.t, err)
+
+	for _, htlc := range inv.Htlcs {
+		require.Equal(t.t, lnrpc.InvoiceHTLCState_CANCELED, htlc.State)
+	}
+	require.Equal(t.t, lnrpc.Invoice_CANCELED, inv.State)
+
+	_, err = node.SettleInvoice(ctx, &invoicesrpc.SettleInvoiceMsg{
+		Preimage: preimage[:],
+	})
+	require.Error(t.t, err, "should not be able to settle invoice")
 }

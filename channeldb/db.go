@@ -12,14 +12,15 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/walletdb"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	mig "github.com/lightningnetwork/lnd/channeldb/migration"
 	"github.com/lightningnetwork/lnd/channeldb/migration12"
 	"github.com/lightningnetwork/lnd/channeldb/migration13"
 	"github.com/lightningnetwork/lnd/channeldb/migration16"
 	"github.com/lightningnetwork/lnd/channeldb/migration20"
+	"github.com/lightningnetwork/lnd/channeldb/migration21"
 	"github.com/lightningnetwork/lnd/channeldb/migration_01_to_11"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -182,6 +183,18 @@ var (
 			number:    20,
 			migration: migration20.MigrateOutpointIndex,
 		},
+		{
+			// Migrate to length prefixed wire messages everywhere
+			// in the database.
+			number:    21,
+			migration: migration21.MigrateDatabaseWireMessages,
+		},
+		{
+			// Initialize set id index so that invoices can be
+			// queried by individual htlc sets.
+			number:    22,
+			migration: mig.CreateTLB(setIDIndexBucket),
+		},
 	}
 
 	// Big endian is the preferred byte order, due to cursor scans over
@@ -312,6 +325,7 @@ var topLevelBuckets = [][]byte{
 	fwdPackagesKey,
 	invoiceBucket,
 	payAddrIndexBucket,
+	setIDIndexBucket,
 	paymentsIndexBucket,
 	peersBucket,
 	nodeInfoBucket,

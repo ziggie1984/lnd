@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/integration/rpctest"
+	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 )
@@ -53,9 +54,12 @@ func initHintCache(t *testing.T) *chainntnfs.HeightHintCache {
 // driver.
 func setUpNotifier(t *testing.T, h *rpctest.Harness) *BtcdNotifier {
 	hintCache := initHintCache(t)
+	blockCache := blockcache.NewBlockCache(10000)
 
 	rpcCfg := h.RPCConfig()
-	notifier, err := New(&rpcCfg, chainntnfs.NetParams, hintCache, hintCache)
+	notifier, err := New(
+		&rpcCfg, chainntnfs.NetParams, hintCache, hintCache, blockCache,
+	)
 	if err != nil {
 		t.Fatalf("unable to create notifier: %v", err)
 	}
@@ -132,7 +136,7 @@ func TestHistoricalConfDetailsTxIndex(t *testing.T) {
 
 	// We'll now confirm this transaction and re-attempt to retrieve its
 	// confirmation details.
-	if _, err := harness.Node.Generate(1); err != nil {
+	if _, err := harness.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
 
@@ -188,7 +192,7 @@ func TestHistoricalConfDetailsNoTxIndex(t *testing.T) {
 	// Now, we'll create a test transaction and attempt to retrieve its
 	// confirmation details. We'll note its broadcast height to use as the
 	// height hint when manually scanning the chain.
-	_, currentHeight, err := harness.Node.GetBestBlock()
+	_, currentHeight, err := harness.Client.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to retrieve current height: %v", err)
 	}
@@ -219,7 +223,7 @@ func TestHistoricalConfDetailsNoTxIndex(t *testing.T) {
 
 	// We'll now confirm this transaction and re-attempt to retrieve its
 	// confirmation details.
-	if _, err := harness.Node.Generate(1); err != nil {
+	if _, err := harness.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
 

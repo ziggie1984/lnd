@@ -57,6 +57,9 @@ const (
 	// listenerFormat is the format string that is used to generate local
 	// listener addresses.
 	listenerFormat = "127.0.0.1:%d"
+
+	// NeutrinoBackendName is the name of the neutrino backend.
+	NeutrinoBackendName = "neutrino"
 )
 
 var (
@@ -88,10 +91,10 @@ var (
 	)
 )
 
-// nextAvailablePort returns the first port that is available for listening by
+// NextAvailablePort returns the first port that is available for listening by
 // a new node. It panics if no port is found and the maximum available TCP port
 // is reached.
-func nextAvailablePort() int {
+func NextAvailablePort() int {
 	port := atomic.AddUint32(&lastPort, 1)
 	for port < 65535 {
 		// If there are no errors while attempting to listen on this
@@ -145,20 +148,26 @@ func GetBtcdBinary() string {
 // addresses with unique ports and should be used to overwrite rpctest's default
 // generator which is prone to use colliding ports.
 func GenerateBtcdListenerAddresses() (string, string) {
-	return fmt.Sprintf(listenerFormat, nextAvailablePort()),
-		fmt.Sprintf(listenerFormat, nextAvailablePort())
+	return fmt.Sprintf(listenerFormat, NextAvailablePort()),
+		fmt.Sprintf(listenerFormat, NextAvailablePort())
 }
 
 // generateListeningPorts returns four ints representing ports to listen on
 // designated for the current lightning network test. This returns the next
 // available ports for the p2p, rpc, rest and profiling services.
-func generateListeningPorts() (int, int, int, int) {
-	p2p := nextAvailablePort()
-	rpc := nextAvailablePort()
-	rest := nextAvailablePort()
-	profile := nextAvailablePort()
-
-	return p2p, rpc, rest, profile
+func generateListeningPorts(cfg *NodeConfig) {
+	if cfg.P2PPort == 0 {
+		cfg.P2PPort = NextAvailablePort()
+	}
+	if cfg.RPCPort == 0 {
+		cfg.RPCPort = NextAvailablePort()
+	}
+	if cfg.RESTPort == 0 {
+		cfg.RESTPort = NextAvailablePort()
+	}
+	if cfg.ProfilePort == 0 {
+		cfg.ProfilePort = NextAvailablePort()
+	}
 }
 
 // BackendConfig is an interface that abstracts away the specific chain backend
@@ -207,6 +216,7 @@ type NodeConfig struct {
 	ProfilePort int
 
 	AcceptKeySend bool
+	AcceptAMP     bool
 
 	FeeURL string
 
@@ -294,22 +304,25 @@ func (cfg NodeConfig) genArgs() []string {
 		args = append(args, "--accept-keysend")
 	}
 
+	if cfg.AcceptAMP {
+		args = append(args, "--accept-amp")
+	}
+
 	if cfg.Etcd {
 		args = append(args, "--db.backend=etcd")
 		args = append(args, "--db.etcd.embedded")
 		args = append(
 			args, fmt.Sprintf(
 				"--db.etcd.embedded_client_port=%v",
-				nextAvailablePort(),
+				NextAvailablePort(),
 			),
 		)
 		args = append(
 			args, fmt.Sprintf(
 				"--db.etcd.embedded_peer_port=%v",
-				nextAvailablePort(),
+				NextAvailablePort(),
 			),
 		)
-		args = append(args, "--db.etcd.embedded")
 	}
 
 	if cfg.FeeURL != "" {
@@ -404,7 +417,7 @@ func newNode(cfg NodeConfig) (*HarnessNode, error) {
 	cfg.ReadMacPath = filepath.Join(networkDir, "readonly.macaroon")
 	cfg.InvoiceMacPath = filepath.Join(networkDir, "invoice.macaroon")
 
-	cfg.P2PPort, cfg.RPCPort, cfg.RESTPort, cfg.ProfilePort = generateListeningPorts()
+	generateListeningPorts(&cfg)
 
 	// Run all tests with accept keysend. The keysend code is very isolated
 	// and it is highly unlikely that it would affect regular itests when
@@ -532,7 +545,9 @@ func (hn *HarnessNode) InvoiceMacPath() string {
 //
 // This may not clean up properly if an error is returned, so the caller should
 // call shutdown() regardless of the return value.
-func (hn *HarnessNode) start(lndBinary string, lndError chan<- error) error {
+func (hn *HarnessNode) start(lndBinary string, lndError chan<- error,
+	wait bool) error {
+
 	hn.quit = make(chan struct{})
 
 	args := hn.Cfg.genArgs()
@@ -640,12 +655,100 @@ func (hn *HarnessNode) start(lndBinary string, lndError chan<- error) error {
 		return err
 	}
 
+	// We may want to skip waiting for the node to come up (eg. the node
+	// is waiting to become the leader).
+	if !wait {
+		return nil
+	}
+
 	// Since Stop uses the LightningClient to stop the node, if we fail to get a
 	// connected client, we have to kill the process.
 	useMacaroons := !hn.Cfg.HasSeed
 	conn, err := hn.ConnectRPC(useMacaroons)
 	if err != nil {
 		hn.cmd.Process.Kill()
+		return err
+	}
+
+	if err := hn.waitUntilStarted(conn, DefaultTimeout); err != nil {
+		return err
+	}
+
+	// If the node was created with a seed, we will need to perform an
+	// additional step to unlock the wallet. The connection returned will
+	// only use the TLS certs, and can only perform operations necessary to
+	// unlock the daemon.
+	if hn.Cfg.HasSeed {
+		hn.WalletUnlockerClient = lnrpc.NewWalletUnlockerClient(conn)
+		return nil
+	}
+
+	return hn.initLightningClient(conn)
+}
+
+// waitUntilStarted waits until the wallet state flips from "WAITING_TO_START".
+func (hn *HarnessNode) waitUntilStarted(conn grpc.ClientConnInterface,
+	timeout time.Duration) error {
+
+	stateClient := lnrpc.NewStateClient(conn)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stateStream, err := stateClient.SubscribeState(
+		ctx, &lnrpc.SubscribeStateRequest{},
+	)
+	if err != nil {
+		return err
+	}
+
+	errChan := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		for {
+			resp, err := stateStream.Recv()
+			if err != nil {
+				errChan <- err
+			}
+
+			if resp.State != lnrpc.WalletState_WAITING_TO_START {
+				close(started)
+				return
+			}
+		}
+	}()
+
+	select {
+
+	case <-started:
+	case err = <-errChan:
+
+	case <-time.After(timeout):
+		return fmt.Errorf("WaitUntilLeader timed out")
+	}
+
+	return err
+}
+
+// WaitUntilLeader attempts to finish the start procedure by initiating an RPC
+// connection and setting up the wallet unlocker client. This is needed when
+// a node that has recently been started was waiting to become the leader and
+// we're at the point when we expect that it is the leader now (awaiting unlock).
+func (hn *HarnessNode) WaitUntilLeader(timeout time.Duration) error {
+	var (
+		conn    *grpc.ClientConn
+		connErr error
+	)
+
+	startTs := time.Now()
+	if err := wait.NoError(func() error {
+		conn, connErr = hn.ConnectRPC(!hn.Cfg.HasSeed)
+		return connErr
+	}, timeout); err != nil {
+		return err
+	}
+	timeout -= time.Since(startTs)
+
+	if err := hn.waitUntilStarted(conn, timeout); err != nil {
 		return err
 	}
 
@@ -664,7 +767,7 @@ func (hn *HarnessNode) start(lndBinary string, lndError chan<- error) error {
 // initClientWhenReady waits until the main gRPC server is detected as active,
 // then complete the normal HarnessNode gRPC connection creation. This can be
 // used it a node has just been unlocked, or has its wallet state initialized.
-func (hn *HarnessNode) initClientWhenReady() error {
+func (hn *HarnessNode) initClientWhenReady(timeout time.Duration) error {
 	var (
 		conn    *grpc.ClientConn
 		connErr error
@@ -672,7 +775,7 @@ func (hn *HarnessNode) initClientWhenReady() error {
 	if err := wait.NoError(func() error {
 		conn, connErr = hn.ConnectRPC(true)
 		return connErr
-	}, DefaultTimeout); err != nil {
+	}, timeout); err != nil {
 		return err
 	}
 
@@ -781,7 +884,7 @@ func (hn *HarnessNode) Unlock(ctx context.Context,
 
 	// Now that the wallet has been unlocked, we'll wait for the RPC client
 	// to be ready, then establish the normal gRPC connection.
-	return hn.initClientWhenReady()
+	return hn.initClientWhenReady(DefaultTimeout)
 }
 
 // initLightningClient constructs the grpc LightningClient from the given client
@@ -801,8 +904,9 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	hn.SignerClient = signrpc.NewSignerClient(conn)
 
 	// Set the harness node's pubkey to what the node claims in GetInfo.
-	err := hn.FetchNodeInfo()
-	if err != nil {
+	// Since the RPC might not be immediately active, we wrap the call in a
+	// wait.NoError.
+	if err := wait.NoError(hn.FetchNodeInfo, DefaultTimeout); err != nil {
 		return err
 	}
 
@@ -812,7 +916,7 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	// until then, we'll create a dummy subscription to ensure we can do so
 	// successfully before proceeding. We use a dummy subscription in order
 	// to not consume an update from the real one.
-	err = wait.NoError(func() error {
+	err := wait.NoError(func() error {
 		req := &lnrpc.GraphTopologySubscription{}
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		topologyClient, err := hn.SubscribeChannelGraph(ctx, req)
@@ -1011,7 +1115,10 @@ func (hn *HarnessNode) stop() error {
 		// closed before a response is returned.
 		req := lnrpc.StopRequest{}
 		ctx := context.Background()
-		hn.LightningClient.StopDaemon(ctx, &req)
+		_, err := hn.LightningClient.StopDaemon(ctx, &req)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Wait for lnd process and other goroutines to exit.
@@ -1052,6 +1159,11 @@ func (hn *HarnessNode) shutdown() error {
 		return err
 	}
 	return nil
+}
+
+// kill kills the lnd process
+func (hn *HarnessNode) kill() error {
+	return hn.cmd.Process.Kill()
 }
 
 // closeChanWatchRequest is a request to the lightningNetworkWatcher to be
@@ -1300,50 +1412,31 @@ func (hn *HarnessNode) WaitForNetworkChannelClose(ctx context.Context,
 	}
 }
 
-// WaitForBlockchainSync will block until the target nodes has fully
-// synchronized with the blockchain. If the passed context object has a set
-// timeout, then the goroutine will continually poll until the timeout has
-// elapsed. In the case that the chain isn't synced before the timeout is up,
-// then this function will return an error.
+// WaitForBlockchainSync waits for the target node to be fully synchronized with
+// the blockchain. If the passed context object has a set timeout, it will
+// continually poll until the timeout has elapsed. In the case that the chain
+// isn't synced before the timeout is up, this function will return an error.
 func (hn *HarnessNode) WaitForBlockchainSync(ctx context.Context) error {
-	errChan := make(chan error, 1)
-	retryDelay := time.Millisecond * 100
+	ticker := time.NewTicker(time.Millisecond * 100)
+	defer ticker.Stop()
 
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-			case <-hn.quit:
-				return
-			default:
-			}
-
-			getInfoReq := &lnrpc.GetInfoRequest{}
-			getInfoResp, err := hn.GetInfo(ctx, getInfoReq)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			if getInfoResp.SyncedToChain {
-				errChan <- nil
-				return
-			}
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(retryDelay):
-			}
+	for {
+		resp, err := hn.GetInfo(ctx, &lnrpc.GetInfoRequest{})
+		if err != nil {
+			return err
 		}
-	}()
+		if resp.SyncedToChain {
+			return nil
+		}
 
-	select {
-	case <-hn.quit:
-		return nil
-	case err := <-errChan:
-		return err
-	case <-ctx.Done():
-		return fmt.Errorf("timeout while waiting for blockchain sync")
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout while waiting for " +
+				"blockchain sync")
+		case <-hn.quit:
+			return nil
+		case <-ticker.C:
+		}
 	}
 }
 

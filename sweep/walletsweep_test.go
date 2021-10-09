@@ -119,7 +119,7 @@ func newMockUtxoSource(utxos []*lnwallet.Utxo) *mockUtxoSource {
 	}
 }
 
-func (m *mockUtxoSource) ListUnspentWitness(minConfs int32,
+func (m *mockUtxoSource) ListUnspentWitnessFromDefaultAccount(minConfs int32,
 	maxConfs int32) ([]*lnwallet.Utxo, error) {
 
 	return m.outputs, nil
@@ -289,7 +289,7 @@ func TestCraftSweepAllTxCoinSelectFail(t *testing.T) {
 
 	_, err := CraftSweepAllTx(
 		0, 100, 10, nil, nil, coinSelectLocker, utxoSource,
-		utxoLocker, nil, nil,
+		utxoLocker, nil, nil, 0,
 	)
 
 	// Since we instructed the coin select locker to fail above, we should
@@ -315,7 +315,7 @@ func TestCraftSweepAllTxUnknownWitnessType(t *testing.T) {
 
 	_, err := CraftSweepAllTx(
 		0, 100, 10, nil, nil, coinSelectLocker, utxoSource,
-		utxoLocker, nil, nil,
+		utxoLocker, nil, nil, 0,
 	)
 
 	// Since passed in a p2wsh output, which is unknown, we should fail to
@@ -350,7 +350,7 @@ func TestCraftSweepAllTx(t *testing.T) {
 
 	sweepPkg, err := CraftSweepAllTx(
 		0, 100, 10, nil, deliveryAddr, coinSelectLocker, utxoSource,
-		utxoLocker, feeEstimator, signer,
+		utxoLocker, feeEstimator, signer, 0,
 	)
 	if err != nil {
 		t.Fatalf("unable to make sweep tx: %v", err)

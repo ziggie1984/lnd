@@ -57,6 +57,10 @@ type RegistryConfig struct {
 	// send payments.
 	AcceptKeySend bool
 
+	// AcceptAMP indicates whether we want to accept spontaneous AMP
+	// payments.
+	AcceptAMP bool
+
 	// GcCanceledInvoicesOnStartup if set, we'll attempt to garbage collect
 	// all canceled invoices upon start.
 	GcCanceledInvoicesOnStartup bool
@@ -160,7 +164,7 @@ func NewRegistry(cdb *channeldb.DB, expiryWatcher *InvoiceExpiryWatcher,
 // invoices.
 func (i *InvoiceRegistry) scanInvoicesOnStart() error {
 	var (
-		pending   []*invoiceExpiry
+		pending   []invoiceExpiry
 		removable []channeldb.InvoiceDeleteRef
 	)
 
@@ -213,8 +217,15 @@ func (i *InvoiceRegistry) scanInvoicesOnStart() error {
 		len(pending))
 	i.expiryWatcher.AddInvoices(pending...)
 
-	if err := i.cdb.DeleteInvoice(removable); err != nil {
-		log.Warnf("Deleting old invoices failed: %v", err)
+	if len(removable) > 0 {
+		log.Infof("Attempting to delete %v canceled invoices",
+			len(removable))
+		if err := i.cdb.DeleteInvoice(removable); err != nil {
+			log.Warnf("Deleting canceled invoices failed: %v", err)
+		} else {
+			log.Infof("Deleted %v canceled invoices",
+				len(removable))
+		}
 	}
 
 	return nil
@@ -237,7 +248,7 @@ func (i *InvoiceRegistry) Start() error {
 	// delete them.
 	err = i.scanInvoicesOnStart()
 	if err != nil {
-		i.Stop()
+		_ = i.Stop()
 		return err
 	}
 
@@ -245,12 +256,13 @@ func (i *InvoiceRegistry) Start() error {
 }
 
 // Stop signals the registry for a graceful shutdown.
-func (i *InvoiceRegistry) Stop() {
+func (i *InvoiceRegistry) Stop() error {
 	i.expiryWatcher.Stop()
 
 	close(i.quit)
 
 	i.wg.Wait()
+	return nil
 }
 
 // invoiceEvent represents a new event that has modified on invoice on disk.
@@ -377,7 +389,8 @@ func (i *InvoiceRegistry) invoiceEventLoop() {
 func (i *InvoiceRegistry) dispatchToSingleClients(event *invoiceEvent) {
 	// Dispatch to single invoice subscribers.
 	for _, client := range i.singleNotificationClients {
-		if client.invoiceRef.PayHash() != event.hash {
+		payHash := client.invoiceRef.PayHash()
+		if payHash == nil || *payHash != event.hash {
 			continue
 		}
 
@@ -524,8 +537,13 @@ func (i *InvoiceRegistry) deliverSingleBacklogEvents(
 		return err
 	}
 
+	payHash := client.invoiceRef.PayHash()
+	if payHash == nil {
+		return nil
+	}
+
 	err = client.notify(&invoiceEvent{
-		hash:    client.invoiceRef.PayHash(),
+		hash:    *payHash,
 		invoice: &invoice,
 	})
 	if err != nil {
@@ -559,7 +577,7 @@ func (i *InvoiceRegistry) AddInvoice(invoice *channeldb.Invoice,
 
 	// Now that we've added the invoice, we'll send dispatch a message to
 	// notify the clients of this new invoice.
-	i.notifyClients(paymentHash, invoice, channeldb.ContractOpen)
+	i.notifyClients(paymentHash, invoice)
 	i.Unlock()
 
 	// InvoiceExpiryWatcher.AddInvoice must not be locked by InvoiceRegistry
@@ -707,8 +725,12 @@ func (i *InvoiceRegistry) processKeySend(ctx invoiceUpdateCtx) error {
 
 	// Cancel htlc is preimage is invalid.
 	preimage, err := lntypes.MakePreimage(preimageSlice)
-	if err != nil || preimage.Hash() != ctx.hash {
-		return errors.New("invalid keysend preimage")
+	if err != nil {
+		return err
+	}
+	if preimage.Hash() != ctx.hash {
+		return fmt.Errorf("invalid keysend preimage %v for hash %v",
+			preimage, ctx.hash)
 	}
 
 	// Only allow keysend for non-mpp payments.
@@ -771,6 +793,67 @@ func (i *InvoiceRegistry) processKeySend(ctx invoiceUpdateCtx) error {
 	return nil
 }
 
+// processAMP just-in-time inserts an invoice if this htlc is a keysend
+// htlc.
+func (i *InvoiceRegistry) processAMP(ctx invoiceUpdateCtx) error {
+	// AMP payments MUST also include an MPP record.
+	if ctx.mpp == nil {
+		return errors.New("no MPP record for AMP")
+	}
+
+	// Create an invoice for the total amount expected, provided in the MPP
+	// record.
+	amt := ctx.mpp.TotalMsat()
+
+	// Set the TLV and MPP optional features on the invoice. We'll also make
+	// the AMP features required so that it can't be paid by legacy or MPP
+	// htlcs.
+	rawFeatures := lnwire.NewRawFeatureVector(
+		lnwire.TLVOnionPayloadOptional,
+		lnwire.PaymentAddrOptional,
+		lnwire.AMPRequired,
+	)
+	features := lnwire.NewFeatureVector(rawFeatures, lnwire.Features)
+
+	// Use the minimum block delta that we require for settling htlcs.
+	finalCltvDelta := i.cfg.FinalCltvRejectDelta
+
+	// Pre-check expiry here to prevent inserting an invoice that will not
+	// be settled.
+	if ctx.expiry < uint32(ctx.currentHeight+finalCltvDelta) {
+		return errors.New("final expiry too soon")
+	}
+
+	// We'll use the sender-generated payment address provided in the HTLC
+	// to create our AMP invoice.
+	payAddr := ctx.mpp.PaymentAddr()
+
+	// Create placeholder invoice.
+	invoice := &channeldb.Invoice{
+		CreationDate: i.cfg.Clock.Now(),
+		Terms: channeldb.ContractTerm{
+			FinalCltvDelta:  finalCltvDelta,
+			Value:           amt,
+			PaymentPreimage: nil,
+			PaymentAddr:     payAddr,
+			Features:        features,
+		},
+	}
+
+	// Insert invoice into database. Ignore duplicates payment hashes and
+	// payment addrs, this may be a replay or a different HTLC for the AMP
+	// invoice.
+	_, err := i.AddInvoice(invoice, ctx.hash)
+	switch {
+	case err == channeldb.ErrDuplicateInvoice:
+		return nil
+	case err == channeldb.ErrDuplicatePayAddr:
+		return nil
+	default:
+		return err
+	}
+}
+
 // NotifyExitHopHtlc attempts to mark an invoice as settled. The return value
 // describes how the htlc should be resolved.
 //
@@ -802,12 +885,29 @@ func (i *InvoiceRegistry) NotifyExitHopHtlc(rHash lntypes.Hash,
 		finalCltvRejectDelta: i.cfg.FinalCltvRejectDelta,
 		customRecords:        payload.CustomRecords(),
 		mpp:                  payload.MultiPath(),
+		amp:                  payload.AMPRecord(),
 	}
 
-	// Process keysend if present. Do this outside of the lock, because
-	// AddInvoice obtains its own lock. This is no problem, because the
-	// operation is idempotent.
-	if i.cfg.AcceptKeySend {
+	switch {
+
+	// If we are accepting spontaneous AMP payments and this payload
+	// contains an AMP record, create an AMP invoice that will be settled
+	// below.
+	case i.cfg.AcceptAMP && ctx.amp != nil:
+		err := i.processAMP(ctx)
+		if err != nil {
+			ctx.log(fmt.Sprintf("amp error: %v", err))
+
+			return NewFailResolution(
+				circuitKey, currentHeight, ResultAmpError,
+			), nil
+		}
+
+	// If we are accepting spontaneous keysend payments, create a regular
+	// invoice that will be settled below. We also enforce that this is only
+	// done when no AMP payload is present since it will only be settle-able
+	// by regular HTLCs.
+	case i.cfg.AcceptKeySend && ctx.amp == nil:
 		err := i.processKeySend(ctx)
 		if err != nil {
 			ctx.log(fmt.Sprintf("keysend error: %v", err))
@@ -921,6 +1021,24 @@ func (i *InvoiceRegistry) notifyExitHopHtlcLocked(
 			"outcome: %v, at accept height: %v",
 			res.Outcome, res.AcceptHeight))
 
+		// Some failures apply to the entire HTLC set. Break here if
+		// this isn't one of them.
+		if !res.Outcome.IsSetFailure() {
+			break
+		}
+
+		// Also cancel any HTLCs in the HTLC set that are also in the
+		// canceled state with the same failure result.
+		setID := ctx.setID()
+		canceledHtlcSet := invoice.HTLCSet(setID, channeldb.HtlcStateCanceled)
+		for key, htlc := range canceledHtlcSet {
+			htlcFailResolution := NewFailResolution(
+				key, int32(htlc.AcceptHeight), res.Outcome,
+			)
+
+			i.notifyHodlSubscribers(htlcFailResolution)
+		}
+
 	// If the htlc was settled, we will settle any previously accepted
 	// htlcs and notify our peer to settle them.
 	case *HtlcSettleResolution:
@@ -931,9 +1049,12 @@ func (i *InvoiceRegistry) notifyExitHopHtlcLocked(
 		// Also settle any previously accepted htlcs. If a htlc is
 		// marked as settled, we should follow now and settle the htlc
 		// with our peer.
-		for key, htlc := range invoice.Htlcs {
-			if htlc.State != channeldb.HtlcStateSettled {
-				continue
+		setID := ctx.setID()
+		settledHtlcSet := invoice.HTLCSet(setID, channeldb.HtlcStateSettled)
+		for key, htlc := range settledHtlcSet {
+			preimage := res.Preimage
+			if htlc.AMP != nil && htlc.AMP.Preimage != nil {
+				preimage = *htlc.AMP.Preimage
 			}
 
 			// Notify subscribers that the htlcs should be settled
@@ -942,13 +1063,30 @@ func (i *InvoiceRegistry) notifyExitHopHtlcLocked(
 			// htlc that we just settled, so may not be accurate
 			// for all htlcs.
 			htlcSettleResolution := NewSettleResolution(
-				res.Preimage, key,
+				preimage, key,
 				int32(htlc.AcceptHeight), res.Outcome,
 			)
 
 			// Notify subscribers that the htlc should be settled
 			// with our peer.
 			i.notifyHodlSubscribers(htlcSettleResolution)
+		}
+
+		// If concurrent payments were attempted to this invoice before
+		// the current one was ultimately settled, cancel back any of
+		// the HTLCs immediately. As a result of the settle, the HTLCs
+		// in other HTLC sets are automatically converted to a canceled
+		// state when updating the invoice.
+		canceledHtlcSet := invoice.HTLCSetCompliment(
+			setID, channeldb.HtlcStateCanceled,
+		)
+		for key, htlc := range canceledHtlcSet {
+			htlcFailResolution := NewFailResolution(
+				key, int32(htlc.AcceptHeight),
+				ResultInvoiceAlreadySettled,
+			)
+
+			i.notifyHodlSubscribers(htlcFailResolution)
 		}
 
 	// If we accepted the htlc, subscribe to the hodl invoice and return
@@ -980,6 +1118,16 @@ func (i *InvoiceRegistry) notifyExitHopHtlcLocked(
 
 		}
 
+		// If we have fully accepted the set of htlcs for this invoice,
+		// we can now add it to our invoice expiry watcher. We do not
+		// add invoices before they are fully accepted, because it is
+		// possible that we MppTimeout the htlcs, and then our relevant
+		// expiry height could change.
+		if res.outcome == resultAccepted {
+			expiry := makeInvoiceExpiry(ctx.hash, invoice)
+			i.expiryWatcher.AddInvoices(expiry)
+		}
+
 		i.hodlSubscribe(hodlChan, ctx.circuitKey)
 
 	default:
@@ -990,7 +1138,7 @@ func (i *InvoiceRegistry) notifyExitHopHtlcLocked(
 	// HTLCs, we'll go ahead and notify any clients wiaiting on the invoice
 	// state changes.
 	if updateSubscribers {
-		i.notifyClients(ctx.hash, invoice, invoice.State)
+		i.notifyClients(ctx.hash, invoice)
 	}
 
 	return resolution, nil
@@ -1051,7 +1199,7 @@ func (i *InvoiceRegistry) SettleHodlInvoice(preimage lntypes.Preimage) error {
 
 		i.notifyHodlSubscribers(resolution)
 	}
-	i.notifyClients(hash, invoice, invoice.State)
+	i.notifyClients(hash, invoice)
 
 	return nil
 }
@@ -1060,6 +1208,20 @@ func (i *InvoiceRegistry) SettleHodlInvoice(preimage lntypes.Preimage) error {
 // payment hash.
 func (i *InvoiceRegistry) CancelInvoice(payHash lntypes.Hash) error {
 	return i.cancelInvoiceImpl(payHash, true)
+}
+
+// shouldCancel examines the state of an invoice and whether we want to
+// cancel already accepted invoices, taking our force cancel boolean into
+// account. This is pulled out into its own function so that tests that mock
+// cancelInvoiceImpl can reuse this logic.
+func shouldCancel(state channeldb.ContractState, cancelAccepted bool) bool {
+	if state != channeldb.ContractAccepted {
+		return true
+	}
+
+	// If the invoice is accepted, we should only cancel if we want to
+	// force cancelation of accepted invoices.
+	return cancelAccepted
 }
 
 // cancelInvoice attempts to cancel the invoice corresponding to the passed
@@ -1078,9 +1240,7 @@ func (i *InvoiceRegistry) cancelInvoiceImpl(payHash lntypes.Hash,
 	updateInvoice := func(invoice *channeldb.Invoice) (
 		*channeldb.InvoiceUpdateDesc, error) {
 
-		// Only cancel the invoice in ContractAccepted state if explicitly
-		// requested to do so.
-		if invoice.State == channeldb.ContractAccepted && !cancelAccepted {
+		if !shouldCancel(invoice.State, cancelAccepted) {
 			return nil, nil
 		}
 
@@ -1132,7 +1292,7 @@ func (i *InvoiceRegistry) cancelInvoiceImpl(payHash lntypes.Hash,
 			),
 		)
 	}
-	i.notifyClients(payHash, invoice, channeldb.ContractCanceled)
+	i.notifyClients(payHash, invoice)
 
 	// Attempt to also delete the invoice if requested through the registry
 	// config.
@@ -1166,8 +1326,7 @@ func (i *InvoiceRegistry) cancelInvoiceImpl(payHash lntypes.Hash,
 // notifyClients notifies all currently registered invoice notification clients
 // of a newly added/settled invoice.
 func (i *InvoiceRegistry) notifyClients(hash lntypes.Hash,
-	invoice *channeldb.Invoice,
-	state channeldb.ContractState) {
+	invoice *channeldb.Invoice) {
 
 	event := &invoiceEvent{
 		invoice: invoice,

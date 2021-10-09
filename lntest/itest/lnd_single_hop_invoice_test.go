@@ -15,6 +15,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
+	"github.com/stretchr/testify/require"
 )
 
 func testSingleHopInvoice(net *lntest.NetworkHarness, t *harnessTest) {
@@ -62,8 +63,9 @@ func testSingleHopInvoice(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// With the invoice for Bob added, send a payment towards Alice paying
 	// to the above generated invoice.
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	resp := sendAndAssertSuccess(
-		t, net.Alice,
+		ctxt, t, net.Alice,
 		&routerrpc.SendPaymentRequest{
 			PaymentRequest: invoiceResp.PaymentRequest,
 			TimeoutSeconds: 60,
@@ -84,7 +86,7 @@ func testSingleHopInvoice(net *lntest.NetworkHarness, t *harnessTest) {
 	if err != nil {
 		t.Fatalf("unable to lookup invoice: %v", err)
 	}
-	if !dbInvoice.Settled {
+	if !dbInvoice.Settled { // nolint:staticcheck
 		t.Fatalf("bob's invoice should be marked as settled: %v",
 			spew.Sdump(dbInvoice))
 	}
@@ -114,8 +116,9 @@ func testSingleHopInvoice(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Next send another payment, but this time using a zpay32 encoded
 	// invoice rather than manually specifying the payment details.
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	sendAndAssertSuccess(
-		t, net.Alice,
+		ctxt, t, net.Alice,
 		&routerrpc.SendPaymentRequest{
 			PaymentRequest: invoiceResp.PaymentRequest,
 			TimeoutSeconds: 60,
@@ -137,8 +140,9 @@ func testSingleHopInvoice(net *lntest.NetworkHarness, t *harnessTest) {
 	keySendPreimage := lntypes.Preimage{3, 4, 5, 11}
 	keySendHash := keySendPreimage.Hash()
 
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	sendAndAssertSuccess(
-		t, net.Alice,
+		ctxt, t, net.Alice,
 		&routerrpc.SendPaymentRequest{
 			Dest:           net.Bob.PubKey[:],
 			Amt:            paymentAmt,
@@ -161,6 +165,21 @@ func testSingleHopInvoice(net *lntest.NetworkHarness, t *harnessTest) {
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
+
+	// Assert that the invoice has the proper AMP fields set, since the
+	// legacy keysend payment should have been promoted into an AMP payment
+	// internally.
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	keysendInvoice, err := net.Bob.LookupInvoice(
+		ctxt, &lnrpc.PaymentHash{
+			RHash: keySendHash[:],
+		},
+	)
+	require.NoError(t.t, err)
+	require.Equal(t.t, 1, len(keysendInvoice.Htlcs))
+	htlc := keysendInvoice.Htlcs[0]
+	require.Equal(t.t, uint64(0), htlc.MppTotalAmtMsat)
+	require.Nil(t.t, htlc.Amp)
 
 	// Now create an invoice and specify routing hints.
 	// We will test that the routing hints are encoded properly.

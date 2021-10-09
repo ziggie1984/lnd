@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -64,13 +64,15 @@ func randCompressedPubKey(t *testing.T) [33]byte {
 
 func randAnnounceSignatures() *lnwire.AnnounceSignatures {
 	return &lnwire.AnnounceSignatures{
-		ShortChannelID: lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ShortChannelID:  lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ExtraOpaqueData: make([]byte, 0),
 	}
 }
 
 func randChannelUpdate() *lnwire.ChannelUpdate {
 	return &lnwire.ChannelUpdate{
-		ShortChannelID: lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ShortChannelID:  lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ExtraOpaqueData: make([]byte, 0),
 	}
 }
 

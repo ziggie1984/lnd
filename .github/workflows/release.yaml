@@ -16,7 +16,7 @@ env:
   # /dev.Dockerfile
   # /make/builder.Dockerfile
   # /.github/workflows/main.yml
-  GO_VERSION: 1.15.7
+  GO_VERSION: 1.16.3
 
 jobs:
   main:
@@ -27,17 +27,6 @@ jobs:
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
-
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
 
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
@@ -106,7 +95,7 @@ jobs:
 
             Our release binaries are fully reproducible. Third parties are able to verify that the release binaries were produced properly without having to trust the release manager(s). See our [reproducible builds guide](https://github.com/lightningnetwork/lnd/tree/master/build/release) for how this can be achieved.
             The release binaries are compiled with `go${{ env.GO_VERSION }}`, which is required by verifiers to arrive at the same ones.
-            They include the following build tags: `autopilotrpc`, `signrpc`, `walletrpc`, `chainrpc`, `invoicesrpc`, `routerrpc`, and `watchtowerrpc`. Note that these are already included in the release script, so they do not need to be provided.
+            They include the following build tags: `autopilotrpc`, `signrpc`, `walletrpc`, `chainrpc`, `invoicesrpc`, `routerrpc`, `watchtowerrpc` and `monitoring`. Note that these are already included in the release script, so they do not need to be provided.
 
             The `make release` command can be used to ensure one rebuilds with all the same flags used for the release. If one wishes to build for only a single platform, then `make release sys=<OS-ARCH> tag=<tag>` can be used. 
 
@@ -124,7 +113,8 @@ jobs:
             To verify the `lnd` and `lncli` binaries inside the docker images against the signed, reproducible release binaries, there is a verification script in the image that can be called (before starting the container for example):
 
             ```shell
-            $ docker run --rm --entrypoint="" lightninglabs/lnd:${{ env.RELEASE_VERSION }} /verify-install.sh ${{ env.RELEASE_VERSION }}
+            $ docker pull lightninglabs/lnd:${{ env.RELEASE_VERSION }}
+            $ docker run --rm --entrypoint="" lightninglabs/lnd:${{ env.RELEASE_VERSION }} /verify-install.sh
             $ OK=$?
             $ if [ "$OK" -ne "0" ]; then echo "Verification failed!"; exit 1; done
             $ docker run lightninglabs/lnd [command-line options]

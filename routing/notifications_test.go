@@ -19,6 +19,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/chainview"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -170,8 +171,8 @@ func (m *mockChain) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
 
 	hash, ok := m.blockIndex[uint32(blockHeight)]
 	if !ok {
-		return nil, fmt.Errorf("can't find block hash, for "+
-			"height %v", blockHeight)
+		return nil, fmt.Errorf("block number out of range: %v",
+			blockHeight)
 	}
 
 	return &hash, nil
@@ -182,6 +183,13 @@ func (m *mockChain) addUtxo(op wire.OutPoint, out *wire.TxOut) {
 	m.utxos[op] = *out
 	m.Unlock()
 }
+
+func (m *mockChain) delUtxo(op wire.OutPoint) {
+	m.Lock()
+	delete(m.utxos, op)
+	m.Unlock()
+}
+
 func (m *mockChain) GetUtxo(op *wire.OutPoint, _ []byte, _ uint32,
 	_ <-chan struct{}) (*wire.TxOut, error) {
 	m.RLock()
@@ -189,7 +197,7 @@ func (m *mockChain) GetUtxo(op *wire.OutPoint, _ []byte, _ uint32,
 
 	utxo, ok := m.utxos[*op]
 	if !ok {
-		return nil, fmt.Errorf("utxo not found")
+		return nil, btcwallet.ErrOutputSpent
 	}
 
 	return &utxo, nil
@@ -344,11 +352,8 @@ func (m *mockChainView) Stop() error {
 func TestEdgeUpdateNotification(t *testing.T) {
 	t.Parallel()
 
-	ctx, cleanUp, err := createTestCtxSingleNode(0)
+	ctx, cleanUp := createTestCtxSingleNode(t, 0)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// First we'll create the utxo for the channel to be "closed"
 	const chanValue = 10000
@@ -538,11 +543,8 @@ func TestNodeUpdateNotification(t *testing.T) {
 	t.Parallel()
 
 	const startingBlockHeight = 101
-	ctx, cleanUp, err := createTestCtxSingleNode(startingBlockHeight)
+	ctx, cleanUp := createTestCtxSingleNode(t, startingBlockHeight)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// We only accept node announcements from nodes having a known channel,
 	// so create one now.
@@ -731,11 +733,8 @@ func TestNotificationCancellation(t *testing.T) {
 	t.Parallel()
 
 	const startingBlockHeight = 101
-	ctx, cleanUp, err := createTestCtxSingleNode(startingBlockHeight)
+	ctx, cleanUp := createTestCtxSingleNode(t, startingBlockHeight)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// Create a new client to receive notifications.
 	ntfnClient, err := ctx.router.SubscribeTopology()
@@ -823,11 +822,8 @@ func TestChannelCloseNotification(t *testing.T) {
 	t.Parallel()
 
 	const startingBlockHeight = 101
-	ctx, cleanUp, err := createTestCtxSingleNode(startingBlockHeight)
+	ctx, cleanUp := createTestCtxSingleNode(t, startingBlockHeight)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// First we'll create the utxo for the channel to be "closed"
 	const chanValue = 10000

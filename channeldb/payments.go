@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
@@ -216,8 +216,9 @@ func (ps PaymentStatus) String() string {
 // PaymentCreationInfo is the information necessary to have ready when
 // initiating a payment, moving it into state InFlight.
 type PaymentCreationInfo struct {
-	// PaymentHash is the hash this payment is paying to.
-	PaymentHash lntypes.Hash
+	// PaymentIdentifier is the hash this payment is paying to in case of
+	// non-AMP payments, and the SetID for AMP payments.
+	PaymentIdentifier lntypes.Hash
 
 	// Value is the amount we are paying.
 	Value lnwire.MilliSatoshi
@@ -676,8 +677,11 @@ func fetchPaymentWithSequenceNumber(tx kvdb.RTx, paymentHash lntypes.Hash,
 	return duplicatePayment, nil
 }
 
-// DeletePayments deletes all completed and failed payments from the DB.
-func (db *DB) DeletePayments() error {
+// DeletePayments deletes all completed and failed payments from the DB. If
+// failedOnly is set, only failed payments will be considered for deletion. If
+// failedHtlsOnly is set, the payment itself won't be deleted, only failed HTLC
+// attempts.
+func (db *DB) DeletePayments(failedOnly, failedHtlcsOnly bool) error {
 	return kvdb.Update(db, func(tx kvdb.RwTx) error {
 		payments := tx.ReadWriteBucket(paymentsRootBucket)
 		if payments == nil {
@@ -692,9 +696,13 @@ func (db *DB) DeletePayments() error {
 			// deleteIndexes is the set of indexes pointing to these
 			// payments that need to be deleted.
 			deleteIndexes [][]byte
+
+			// deleteHtlcs maps a payment hash to the HTLC IDs we
+			// want to delete for that payment.
+			deleteHtlcs = make(map[lntypes.Hash][][]byte)
 		)
 		err := payments.ForEach(func(k, _ []byte) error {
-			bucket := payments.NestedReadWriteBucket(k)
+			bucket := payments.NestedReadBucket(k)
 			if bucket == nil {
 				// We only expect sub-buckets to be found in
 				// this top-level bucket.
@@ -715,6 +723,55 @@ func (db *DB) DeletePayments() error {
 				return nil
 			}
 
+			// If we requested to only delete failed payments, we
+			// can return if this one is not.
+			if failedOnly && paymentStatus != StatusFailed {
+				return nil
+			}
+
+			// If we are only deleting failed HTLCs, fetch them.
+			if failedHtlcsOnly {
+				htlcsBucket := bucket.NestedReadBucket(
+					paymentHtlcsBucket,
+				)
+
+				var htlcs []HTLCAttempt
+				if htlcsBucket != nil {
+					htlcs, err = fetchHtlcAttempts(
+						htlcsBucket,
+					)
+					if err != nil {
+						return err
+					}
+				}
+
+				// Now iterate though them and save the bucket
+				// keys for the failed HTLCs.
+				var toDelete [][]byte
+				for _, h := range htlcs {
+					if h.Failure == nil {
+						continue
+					}
+
+					htlcIDBytes := make([]byte, 8)
+					binary.BigEndian.PutUint64(
+						htlcIDBytes, h.AttemptID,
+					)
+
+					toDelete = append(toDelete, htlcIDBytes)
+				}
+
+				hash, err := lntypes.MakeHash(k)
+				if err != nil {
+					return err
+				}
+
+				deleteHtlcs[hash] = toDelete
+
+				// We return, we are only deleting attempts.
+				return nil
+			}
+
 			// Add the bucket to the set of buckets we can delete.
 			deleteBuckets = append(deleteBuckets, k)
 
@@ -726,11 +783,25 @@ func (db *DB) DeletePayments() error {
 			}
 
 			deleteIndexes = append(deleteIndexes, seqNrs...)
-
 			return nil
 		})
 		if err != nil {
 			return err
+		}
+
+		// Delete the failed HTLC attempts we found.
+		for hash, htlcIDs := range deleteHtlcs {
+			bucket := payments.NestedReadWriteBucket(hash[:])
+			htlcsBucket := bucket.NestedReadWriteBucket(
+				paymentHtlcsBucket,
+			)
+
+			for _, aid := range htlcIDs {
+				err := htlcsBucket.DeleteNestedBucket(aid)
+				if err != nil {
+					return err
+				}
+			}
 		}
 
 		for _, k := range deleteBuckets {
@@ -786,7 +857,7 @@ func fetchSequenceNumbers(paymentBucket kvdb.RBucket) ([][]byte, error) {
 func serializePaymentCreationInfo(w io.Writer, c *PaymentCreationInfo) error {
 	var scratch [8]byte
 
-	if _, err := w.Write(c.PaymentHash[:]); err != nil {
+	if _, err := w.Write(c.PaymentIdentifier[:]); err != nil {
 		return err
 	}
 
@@ -816,7 +887,7 @@ func deserializePaymentCreationInfo(r io.Reader) (*PaymentCreationInfo, error) {
 
 	c := &PaymentCreationInfo{}
 
-	if _, err := io.ReadFull(r, c.PaymentHash[:]); err != nil {
+	if _, err := io.ReadFull(r, c.PaymentIdentifier[:]); err != nil {
 		return nil, err
 	}
 
@@ -848,7 +919,7 @@ func deserializePaymentCreationInfo(r io.Reader) (*PaymentCreationInfo, error) {
 }
 
 func serializeHTLCAttemptInfo(w io.Writer, a *HTLCAttemptInfo) error {
-	if err := WriteElements(w, a.SessionKey); err != nil {
+	if err := WriteElements(w, a.sessionKey); err != nil {
 		return err
 	}
 
@@ -856,15 +927,29 @@ func serializeHTLCAttemptInfo(w io.Writer, a *HTLCAttemptInfo) error {
 		return err
 	}
 
-	return serializeTime(w, a.AttemptTime)
+	if err := serializeTime(w, a.AttemptTime); err != nil {
+		return err
+	}
+
+	// If the hash is nil we can just return.
+	if a.Hash == nil {
+		return nil
+	}
+
+	if _, err := w.Write(a.Hash[:]); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func deserializeHTLCAttemptInfo(r io.Reader) (*HTLCAttemptInfo, error) {
 	a := &HTLCAttemptInfo{}
-	err := ReadElements(r, &a.SessionKey)
+	err := ReadElements(r, &a.sessionKey)
 	if err != nil {
 		return nil, err
 	}
+
 	a.Route, err = DeserializeRoute(r)
 	if err != nil {
 		return nil, err
@@ -874,6 +959,24 @@ func deserializeHTLCAttemptInfo(r io.Reader) (*HTLCAttemptInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	hash := lntypes.Hash{}
+	_, err = io.ReadFull(r, hash[:])
+
+	switch {
+
+	// Older payment attempts wouldn't have the hash set, in which case we
+	// can just return.
+	case err == io.EOF, err == io.ErrUnexpectedEOF:
+		return a, nil
+
+	case err != nil:
+		return nil, err
+
+	default:
+	}
+
+	a.Hash = &hash
 
 	return a, nil
 }

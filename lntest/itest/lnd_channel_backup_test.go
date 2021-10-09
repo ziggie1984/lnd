@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lntest"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/stretchr/testify/require"
@@ -62,7 +63,7 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 				// the node from seed, then manually recover
 				// the channel backup.
 				return chanRestoreViaRPC(
-					net, password, mnemonic, multi,
+					net, password, mnemonic, multi, oldNode,
 				)
 			},
 		},
@@ -88,7 +89,7 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 				// create a new nodeRestorer that will restore
 				// using the on-disk channels.backup.
 				return chanRestoreViaRPC(
-					net, password, mnemonic, multi,
+					net, password, mnemonic, multi, oldNode,
 				)
 			},
 		},
@@ -123,6 +124,7 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 					return net.RestoreNodeWithSeed(
 						"dave", nil, password,
 						mnemonic, 1000, backupSnapshot,
+						copyPorts(oldNode),
 					)
 				}, nil
 			},
@@ -159,6 +161,7 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 					newNode, err := net.RestoreNodeWithSeed(
 						"dave", nil, password,
 						mnemonic, 1000, nil,
+						copyPorts(oldNode),
 					)
 					if err != nil {
 						return nil, err
@@ -205,7 +208,7 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 				return func() (*lntest.HarnessNode, error) {
 					newNode, err := net.RestoreNodeWithSeed(
 						"dave", nil, password, mnemonic,
-						1000, nil,
+						1000, nil, copyPorts(oldNode),
 					)
 					if err != nil {
 						return nil, fmt.Errorf("unable to "+
@@ -275,7 +278,7 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 				// the node from seed, then manually recover
 				// the channel backup.
 				return chanRestoreViaRPC(
-					net, password, mnemonic, multi,
+					net, password, mnemonic, multi, oldNode,
 				)
 			},
 		},
@@ -325,7 +328,7 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 				// the channel backup.
 				multi := chanBackup.MultiChanBackup.MultiChanBackup
 				return chanRestoreViaRPC(
-					net, password, mnemonic, multi,
+					net, password, mnemonic, multi, oldNode,
 				)
 			},
 		},
@@ -352,7 +355,38 @@ func testChannelBackupRestore(net *lntest.NetworkHarness, t *harnessTest) {
 				// create a new nodeRestorer that will restore
 				// using the on-disk channels.backup.
 				return chanRestoreViaRPC(
-					net, password, mnemonic, multi,
+					net, password, mnemonic, multi, oldNode,
+				)
+			},
+		},
+
+		// Restore by also creating a channel with the legacy revocation
+		// producer format to make sure old SCBs can still be recovered.
+		{
+			name:             "old revocation producer format",
+			initiator:        true,
+			legacyRevocation: true,
+			restoreMethod: func(oldNode *lntest.HarnessNode,
+				backupFilePath string,
+				mnemonic []string) (nodeRestorer, error) {
+
+				// For this restoration method, we'll grab the
+				// current multi-channel backup from the old
+				// node, and use it to restore a new node
+				// within the closure.
+				req := &lnrpc.ChanBackupExportRequest{}
+				chanBackup, err := oldNode.ExportAllChannelBackups(
+					ctxb, req,
+				)
+				require.NoError(t.t, err)
+
+				multi := chanBackup.MultiChanBackup.MultiChanBackup
+
+				// In our nodeRestorer function, we'll restore
+				// the node from seed, then manually recover the
+				// channel backup.
+				return chanRestoreViaRPC(
+					net, password, mnemonic, multi, oldNode,
 				)
 			},
 		},
@@ -399,10 +433,7 @@ func testChannelBackupUpdates(net *lntest.NetworkHarness, t *harnessTest) {
 		backupDir, chanbackup.DefaultBackupFileName,
 	)
 	carolArgs := fmt.Sprintf("--backupfilepath=%v", backupFilePath)
-	carol, err := net.NewNode("carol", []string{carolArgs})
-	if err != nil {
-		t.Fatalf("unable to create new node: %v", err)
-	}
+	carol := net.NewNode(t.t, "carol", []string{carolArgs})
 	defer shutdownAndAssert(net, t, carol)
 
 	// Next, we'll register for streaming notifications for changes to the
@@ -446,9 +477,7 @@ func testChannelBackupUpdates(net *lntest.NetworkHarness, t *harnessTest) {
 	// With Carol up, we'll now connect her to Alice, and open a channel
 	// between them.
 	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	if err := net.ConnectNodes(ctxt, carol, net.Alice); err != nil {
-		t.Fatalf("unable to connect carol to alice: %v", err)
-	}
+	net.ConnectNodes(ctxt, t.t, carol, net.Alice)
 
 	// Next, we'll open two channels between Alice and Carol back to back.
 	var chanPoints []*lnrpc.ChannelPoint
@@ -571,18 +600,13 @@ func testExportChannelBackup(net *lntest.NetworkHarness, t *harnessTest) {
 	// First, we'll create our primary test node: Carol. We'll use Carol to
 	// open channels and also export backups that we'll examine throughout
 	// the test.
-	carol, err := net.NewNode("carol", nil)
-	if err != nil {
-		t.Fatalf("unable to create new node: %v", err)
-	}
+	carol := net.NewNode(t.t, "carol", nil)
 	defer shutdownAndAssert(net, t, carol)
 
 	// With Carol up, we'll now connect her to Alice, and open a channel
 	// between them.
 	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	if err := net.ConnectNodes(ctxt, carol, net.Alice); err != nil {
-		t.Fatalf("unable to connect carol to alice: %v", err)
-	}
+	net.ConnectNodes(ctxt, t.t, carol, net.Alice)
 
 	// Next, we'll open two channels between Alice and Carol back to back.
 	var chanPoints []*lnrpc.ChannelPoint
@@ -765,6 +789,10 @@ type chanRestoreTestCase struct {
 	// used for the channels created in the test.
 	anchorCommit bool
 
+	// legacyRevocation signals if a channel with the legacy revocation
+	// producer format should also be created before restoring.
+	legacyRevocation bool
+
 	// restoreMethod takes an old node, then returns a function
 	// closure that'll return the same node, but with its state
 	// restored via a custom method. We use this to abstract away
@@ -789,9 +817,12 @@ func testChanRestoreScenario(t *harnessTest, net *lntest.NetworkHarness,
 
 	ctxb := context.Background()
 
-	var nodeArgs []string
+	nodeArgs := []string{
+		"--minbackoff=50ms",
+		"--maxbackoff=1s",
+	}
 	if testCase.anchorCommit {
-		nodeArgs = commitTypeAnchors.Args()
+		nodeArgs = append(nodeArgs, commitTypeAnchors.Args()...)
 	}
 
 	// First, we'll create a brand new node we'll use within the test. If
@@ -808,24 +839,16 @@ func testChanRestoreScenario(t *harnessTest, net *lntest.NetworkHarness,
 	defer func() {
 		shutdownAndAssert(net, t, dave)
 	}()
-	carol, err := net.NewNode("carol", nodeArgs)
-	if err != nil {
-		t.Fatalf("unable to make new node: %v", err)
-	}
+	carol := net.NewNode(t.t, "carol", nodeArgs)
 	defer shutdownAndAssert(net, t, carol)
 
 	// Now that our new nodes are created, we'll give them some coins for
 	// channel opening and anchor sweeping.
 	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err = net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, carol)
-	if err != nil {
-		t.Fatalf("unable to send coins to dave: %v", err)
-	}
+	net.SendCoins(ctxt, t.t, btcutil.SatoshiPerBitcoin, carol)
+
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, dave)
-	if err != nil {
-		t.Fatalf("unable to send coins to dave: %v", err)
-	}
+	net.SendCoins(ctxt, t.t, btcutil.SatoshiPerBitcoin, dave)
 
 	var from, to *lntest.HarnessNode
 	if testCase.initiator {
@@ -836,9 +859,7 @@ func testChanRestoreScenario(t *harnessTest, net *lntest.NetworkHarness,
 
 	// Next, we'll connect Dave to Carol, and open a new channel to her
 	// with a portion pushed.
-	if err := net.ConnectNodes(ctxt, dave, carol); err != nil {
-		t.Fatalf("unable to connect dave to carol: %v", err)
-	}
+	net.ConnectNodes(ctxt, t.t, dave, carol)
 
 	// We will either open a confirmed or unconfirmed channel, depending on
 	// the requirements of the test case.
@@ -866,6 +887,13 @@ func testChanRestoreScenario(t *harnessTest, net *lntest.NetworkHarness,
 		if err != nil {
 			t.Fatalf("channel backup not updated in time: %v", err)
 		}
+
+	// Also create channels with the legacy revocation producer format if
+	// requested.
+	case testCase.legacyRevocation:
+		createLegacyRevocationChannel(
+			net, t, chanAmt, pushAmt, from, to,
+		)
 
 	default:
 		ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
@@ -1052,10 +1080,7 @@ func testChanRestoreScenario(t *harnessTest, net *lntest.NetworkHarness,
 	// Now that we have our new node up, we expect that it'll re-connect to
 	// Carol automatically based on the restored backup.
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = net.EnsureConnected(ctxt, dave, carol)
-	if err != nil {
-		t.Fatalf("node didn't connect after recovery: %v", err)
-	}
+	net.EnsureConnected(ctxt, t.t, dave, carol)
 
 	// TODO(roasbeef): move dave restarts?
 
@@ -1068,12 +1093,123 @@ func testChanRestoreScenario(t *harnessTest, net *lntest.NetworkHarness,
 	)
 }
 
+// createLegacyRevocationChannel creates a single channel using the legacy
+// revocation producer format by using PSBT to signal a special pending channel
+// ID.
+func createLegacyRevocationChannel(net *lntest.NetworkHarness, t *harnessTest,
+	chanAmt, pushAmt btcutil.Amount, from, to *lntest.HarnessNode) {
+
+	ctxb := context.Background()
+
+	// We'll signal to the wallet that we also want to create a channel with
+	// the legacy revocation producer format that relies on deriving a
+	// private key from the key ring. This is only available during itests
+	// to make sure we don't hard depend on the DerivePrivKey method of the
+	// key ring. We can signal the wallet by setting a custom pending
+	// channel ID. To be able to do that, we need to set a funding shim
+	// which is easiest by using PSBT funding. The ID is the hex
+	// representation of the string "legacy-revocation".
+	itestLegacyFormatChanID := [32]byte{
+		0x6c, 0x65, 0x67, 0x61, 0x63, 0x79, 0x2d, 0x72, 0x65, 0x76,
+		0x6f, 0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e,
+	}
+	ctxt, cancel := context.WithTimeout(ctxb, defaultTimeout)
+	defer cancel()
+	openChannelReq := lntest.OpenChannelParams{
+		Amt:     chanAmt,
+		PushAmt: pushAmt,
+		FundingShim: &lnrpc.FundingShim{
+			Shim: &lnrpc.FundingShim_PsbtShim{
+				PsbtShim: &lnrpc.PsbtShim{
+					PendingChanId: itestLegacyFormatChanID[:],
+				},
+			},
+		},
+	}
+	chanUpdates, tempPsbt, err := openChannelPsbt(
+		ctxt, from, to, openChannelReq,
+	)
+	require.NoError(t.t, err)
+
+	// Fund the PSBT by using the source node's wallet.
+	ctxt, cancel = context.WithTimeout(ctxb, defaultTimeout)
+	defer cancel()
+	fundReq := &walletrpc.FundPsbtRequest{
+		Template: &walletrpc.FundPsbtRequest_Psbt{
+			Psbt: tempPsbt,
+		},
+		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
+			SatPerVbyte: 2,
+		},
+	}
+	fundResp, err := from.WalletKitClient.FundPsbt(ctxt, fundReq)
+	require.NoError(t.t, err)
+
+	// We have a PSBT that has no witness data yet, which is exactly what we
+	// need for the next step of verifying the PSBT with the funding intents.
+	_, err = from.FundingStateStep(ctxb, &lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_PsbtVerify{
+			PsbtVerify: &lnrpc.FundingPsbtVerify{
+				PendingChanId: itestLegacyFormatChanID[:],
+				FundedPsbt:    fundResp.FundedPsbt,
+			},
+		},
+	})
+	require.NoError(t.t, err)
+
+	// Now we'll ask the source node's wallet to sign the PSBT so we can
+	// finish the funding flow.
+	ctxt, cancel = context.WithTimeout(ctxb, defaultTimeout)
+	defer cancel()
+	finalizeReq := &walletrpc.FinalizePsbtRequest{
+		FundedPsbt: fundResp.FundedPsbt,
+	}
+	finalizeRes, err := from.WalletKitClient.FinalizePsbt(
+		ctxt, finalizeReq,
+	)
+	require.NoError(t.t, err)
+
+	// We've signed our PSBT now, let's pass it to the intent again.
+	_, err = from.FundingStateStep(ctxb, &lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_PsbtFinalize{
+			PsbtFinalize: &lnrpc.FundingPsbtFinalize{
+				PendingChanId: itestLegacyFormatChanID[:],
+				SignedPsbt:    finalizeRes.SignedPsbt,
+			},
+		},
+	})
+	require.NoError(t.t, err)
+
+	// Consume the "channel pending" update. This waits until the funding
+	// transaction was fully compiled.
+	ctxt, cancel = context.WithTimeout(ctxb, defaultTimeout)
+	defer cancel()
+	updateResp, err := receiveChanUpdate(ctxt, chanUpdates)
+	require.NoError(t.t, err)
+	upd, ok := updateResp.Update.(*lnrpc.OpenStatusUpdate_ChanPending)
+	require.True(t.t, ok)
+	chanPoint := &lnrpc.ChannelPoint{
+		FundingTxid: &lnrpc.ChannelPoint_FundingTxidBytes{
+			FundingTxidBytes: upd.ChanPending.Txid,
+		},
+		OutputIndex: upd.ChanPending.OutputIndex,
+	}
+
+	_ = mineBlocks(t, net, 6, 1)
+	ctxt, cancel = context.WithTimeout(ctxb, defaultTimeout)
+	defer cancel()
+	err = from.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	require.NoError(t.t, err)
+	err = to.WaitForNetworkChannelOpen(ctxt, chanPoint)
+	require.NoError(t.t, err)
+}
+
 // chanRestoreViaRPC is a helper test method that returns a nodeRestorer
 // instance which will restore the target node from a password+seed, then
 // trigger a SCB restore using the RPC interface.
-func chanRestoreViaRPC(net *lntest.NetworkHarness,
-	password []byte, mnemonic []string,
-	multi []byte) (nodeRestorer, error) {
+func chanRestoreViaRPC(net *lntest.NetworkHarness, password []byte,
+	mnemonic []string, multi []byte,
+	oldNode *lntest.HarnessNode) (nodeRestorer, error) {
 
 	backup := &lnrpc.RestoreChanBackupRequest_MultiChanBackup{
 		MultiChanBackup: multi,
@@ -1084,6 +1220,7 @@ func chanRestoreViaRPC(net *lntest.NetworkHarness,
 	return func() (*lntest.HarnessNode, error) {
 		newNode, err := net.RestoreNodeWithSeed(
 			"dave", nil, password, mnemonic, 1000, nil,
+			copyPorts(oldNode),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("unable to "+
@@ -1102,4 +1239,15 @@ func chanRestoreViaRPC(net *lntest.NetworkHarness,
 
 		return newNode, nil
 	}, nil
+}
+
+// copyPorts returns a node option function that copies the ports of an existing
+// node over to the newly created one.
+func copyPorts(oldNode *lntest.HarnessNode) lntest.NodeOption {
+	return func(cfg *lntest.NodeConfig) {
+		cfg.P2PPort = oldNode.Cfg.P2PPort
+		cfg.RPCPort = oldNode.Cfg.RPCPort
+		cfg.RESTPort = oldNode.Cfg.RESTPort
+		cfg.ProfilePort = oldNode.Cfg.ProfilePort
+	}
 }

@@ -1,4 +1,4 @@
-FROM golang:1.13.10-alpine as builder
+FROM golang:1.17.1-alpine as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
@@ -27,7 +27,7 @@ RUN go install ./...
 
 
 # Start a new, final image.
-FROM alpine:3.7 as final
+FROM alpine:3.14.2 as final
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
@@ -62,6 +62,8 @@ VOLUME /data
 # lnd
 COPY --from=builder /go/bin/lncli /bin/
 COPY --from=builder /go/bin/lnd /bin/
+COPY --from=builder /go/src/github.com/lightningnetwork/lnd/scripts/verify-install.sh /
+COPY --from=builder /go/src/github.com/lightningnetwork/lnd/scripts/keys/* /keys/
 # loop
 COPY --from=builder /go/bin/loopd /bin/
 COPY --from=builder /go/bin/loop /bin/

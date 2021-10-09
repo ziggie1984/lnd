@@ -1,4 +1,4 @@
-FROM golang:1.13.10-stretch as builder
+FROM golang:1.17.2-stretch as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
@@ -62,6 +62,8 @@ VOLUME /data
 # lnd
 COPY --from=builder /go/bin/linux_arm/lncli /bin/
 COPY --from=builder /go/bin/linux_arm/lnd /bin/
+COPY --from=builder /go/src/github.com/lightningnetwork/lnd/scripts/verify-install.sh /
+COPY --from=builder /go/src/github.com/lightningnetwork/lnd/scripts/keys/* /keys/
 # loop
 COPY --from=builder /go/bin/linux_arm/loopd /bin/
 COPY --from=builder /go/bin/linux_arm/loop /bin/

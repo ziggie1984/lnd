@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
@@ -42,6 +43,10 @@ var (
 type ChanStatusConfig struct {
 	// OurPubKey is the public key identifying this node on the network.
 	OurPubKey *btcec.PublicKey
+
+	// OurKeyLoc is the locator for the public key identifying this node on
+	// the network.
+	OurKeyLoc keychain.KeyLocator
 
 	// MessageSigner signs messages that validate under OurPubKey.
 	MessageSigner lnwallet.MessageSigner
@@ -217,6 +222,7 @@ func (m *ChanStatusManager) start() error {
 // Stop safely shuts down the ChanStatusManager.
 func (m *ChanStatusManager) Stop() error {
 	m.stopped.Do(func() {
+		log.Info("Channel Status Manager shutting down")
 		close(m.quit)
 		m.wg.Wait()
 	})
@@ -620,7 +626,7 @@ func (m *ChanStatusManager) signAndSendNextUpdate(outpoint wire.OutPoint,
 	}
 
 	err = SignChannelUpdate(
-		m.cfg.MessageSigner, m.cfg.OurPubKey, chanUpdate,
+		m.cfg.MessageSigner, m.cfg.OurKeyLoc, chanUpdate,
 		ChanUpdSetDisable(disabled), ChanUpdSetTimestamp,
 	)
 	if err != nil {

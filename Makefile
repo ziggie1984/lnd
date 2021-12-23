@@ -9,6 +9,7 @@ GOACC_PKG := github.com/ory/go-acc
 GOIMPORTS_PKG := golang.org/x/tools/cmd/goimports
 GOFUZZ_BUILD_PKG := github.com/dvyukov/go-fuzz/go-fuzz-build
 GOFUZZ_PKG := github.com/dvyukov/go-fuzz/go-fuzz
+GOFUZZ_DEP_PKG := github.com/dvyukov/go-fuzz/go-fuzz-dep
 
 GO_BIN := ${GOPATH}/bin
 BTCD_BIN := $(GO_BIN)/btcd
@@ -21,7 +22,7 @@ GOFUZZ_BIN := $(GO_BIN)/go-fuzz
 
 MOBILE_BUILD_DIR :=${GOPATH}/src/$(MOBILE_PKG)/build
 IOS_BUILD_DIR := $(MOBILE_BUILD_DIR)/ios
-IOS_BUILD := $(IOS_BUILD_DIR)/Lndmobile.framework
+IOS_BUILD := $(IOS_BUILD_DIR)/Lndmobile.xcframework
 ANDROID_BUILD_DIR := $(MOBILE_BUILD_DIR)/android
 ANDROID_BUILD := $(ANDROID_BUILD_DIR)/Lndmobile.aar
 
@@ -39,7 +40,7 @@ BTCD_COMMIT := $(shell cat go.mod | \
 
 LINT_COMMIT := v1.18.0
 GOACC_COMMIT :=80342ae2e0fcf265e99e76bcc4efd022c7c3811b 
-GOFUZZ_COMMIT := 21309f307f61
+GOFUZZ_COMMIT := b1f3d6f
 
 DEPGET := cd /tmp && GO111MODULE=on go get -v
 GOBUILD := GO111MODULE=on go build -v
@@ -83,6 +84,8 @@ LINT_WORKERS = --concurrency=$(workers)
 endif
 
 LINT = $(LINT_BIN) run -v $(LINT_WORKERS)
+
+GOFUZZ_DEP_PKG_FETCH = go get -v $(GOFUZZ_DEP_PKG)@$(GOFUZZ_COMMIT)
 
 GREEN := "\\033[0;32m"
 NC := "\\033[0m"
@@ -143,6 +146,14 @@ build-itest:
 	@$(call print, "Building itest binary for ${backend} backend.")
 	CGO_ENABLED=0 $(GOTEST) -v ./lntest/itest -tags="$(DEV_TAGS) $(RPC_TAGS) rpctest $(backend)" -c -o lntest/itest/itest.test$(EXEC_SUFFIX)
 
+build-itest-race:
+	@$(call print, "Building itest btcd and lnd with race detector.")
+	CGO_ENABLED=0 $(GOBUILD) -tags="rpctest" -o lntest/itest/btcd-itest$(EXEC_SUFFIX) $(ITEST_LDFLAGS) $(BTCD_PKG)
+	CGO_ENABLED=1 $(GOBUILD) -race -tags="$(ITEST_TAGS)" -o lntest/itest/lnd-itest$(EXEC_SUFFIX) $(ITEST_LDFLAGS) $(PKG)/cmd/lnd
+
+	@$(call print, "Building itest binary for ${backend} backend.")
+	CGO_ENABLED=0 $(GOTEST) -v ./lntest/itest -tags="$(DEV_TAGS) $(RPC_TAGS) rpctest $(backend)" -c -o lntest/itest/itest.test$(EXEC_SUFFIX)
+
 install:
 	@$(call print, "Installing lnd and lncli.")
 	$(GOINSTALL) -tags="${tags}" $(LDFLAGS) $(PKG)/cmd/lnd
@@ -179,19 +190,33 @@ scratch: build
 
 check: unit itest
 
-itest-only:
+db-instance:
+ifeq ($(dbbackend),postgres)
+	# Remove a previous postgres instance if it exists.
+	docker rm lnd-postgres --force || echo "Starting new postgres container"
+
+	# Start a fresh postgres instance. Allow a maximum of 500 connections.
+	# This is required for the async benchmark to pass.
+	docker run --name lnd-postgres -e POSTGRES_PASSWORD=postgres -p 6432:5432 -d postgres:13-alpine
+	docker logs -f lnd-postgres &
+
+	# Wait for the instance to be started.
+	sleep $(POSTGRES_START_DELAY)
+endif
+
+itest-only: db-instance
 	@$(call print, "Running integration tests with ${backend} backend.")
 	rm -rf lntest/itest/*.log lntest/itest/.logs-*; date
 	EXEC_SUFFIX=$(EXEC_SUFFIX) scripts/itest_part.sh 0 1 $(TEST_FLAGS) $(ITEST_FLAGS)
-	lntest/itest/log_check_errors.sh
 
 itest: build-itest itest-only
 
-itest-parallel: build-itest
+itest-race: build-itest-race itest-only
+
+itest-parallel: build-itest db-instance
 	@$(call print, "Running tests")
 	rm -rf lntest/itest/*.log lntest/itest/.logs-*; date
 	EXEC_SUFFIX=$(EXEC_SUFFIX) echo "$$(seq 0 $$(expr $(ITEST_PARALLELISM) - 1))" | xargs -P $(ITEST_PARALLELISM) -n 1 -I {} scripts/itest_part.sh {} $(NUM_ITEST_TRANCHES) $(TEST_FLAGS) $(ITEST_FLAGS)
-	lntest/itest/log_check_errors.sh
 
 unit: btcd
 	@$(call print, "Running unit tests.")
@@ -239,6 +264,8 @@ flakehunter-parallel:
 # FUZZING
 # =============
 fuzz-build: $(GOFUZZ_BUILD_BIN)
+	@$(call print, "Fetching go-fuzz-dep package")
+	$(GOFUZZ_DEP_PKG_FETCH)
 	@$(call print, "Creating fuzz harnesses for packages '$(FUZZPKG)'.")
 	scripts/fuzz.sh build "$(FUZZPKG)"
 
@@ -277,8 +304,12 @@ rpc-format:
 
 rpc-check: rpc
 	@$(call print, "Verifying protos.")
-	for rpc in $$(find lnrpc/ -name "*.proto" | $(XARGS) awk '/    rpc /{print $$2}'); do if ! grep -q $$rpc lnrpc/rest-annotations.yaml; then echo "RPC $$rpc not added to lnrpc/rest-annotations.yaml"; exit 1; fi; done
+	cd ./lnrpc; ../scripts/check-rest-annotations.sh
 	if test -n "$$(git describe --dirty | grep dirty)"; then echo "Protos not properly formatted or not compiled with v3.4.0"; git status; git diff; exit 1; fi
+
+rpc-js-compile:
+	@$(call print, "Compiling JSON/WASM stubs.")
+	GOOS=js GOARCH=wasm $(GOBUILD) -tags="$(WASM_RELEASE_TAGS)" $(PKG)/lnrpc/...
 
 sample-conf-check:
 	@$(call print, "Making sure every flag has an example in the sample-lnd.conf file")
@@ -340,6 +371,7 @@ clean-mobile:
 	rpc \
 	rpc-format \
 	rpc-check \
+	rpc-js-compile \
 	mobile-rpc \
 	vendor \
 	ios \

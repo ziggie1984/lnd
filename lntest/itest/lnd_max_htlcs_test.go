@@ -23,9 +23,8 @@ func testMaxHtlcPathfind(net *lntest.NetworkHarness, t *harnessTest) {
 	// Bob to add a maximum of 5 htlcs to her commitment.
 	maxHtlcs := 5
 
-	ctxt, _ := context.WithTimeout(ctxb, channelOpenTimeout)
 	chanPoint := openChannelAndAssert(
-		ctxt, t, net, net.Alice, net.Bob,
+		t, net, net.Alice, net.Bob,
 		lntest.OpenChannelParams{
 			Amt:            1000000,
 			PushAmt:        800000,
@@ -35,7 +34,7 @@ func testMaxHtlcPathfind(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Wait for Alice and Bob to receive the channel edge from the
 	// funding manager.
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
 	err := net.Alice.WaitForNetworkChannelOpen(ctxt, chanPoint)
 	require.NoError(t.t, err, "alice does not have open channel")
 
@@ -126,8 +125,7 @@ func testMaxHtlcPathfind(net *lntest.NetworkHarness, t *harnessTest) {
 	}, 0)
 	require.NoError(t.t, err, "expected all htlcs canceled")
 
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPoint, false)
+	closeChannelAndAssert(t, net, net.Alice, chanPoint, false)
 }
 
 type holdSubscription struct {

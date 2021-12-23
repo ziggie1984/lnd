@@ -872,10 +872,13 @@ func (n *TxNotifier) UpdateConfDetails(confRequest ConfRequest,
 func (n *TxNotifier) dispatchConfDetails(
 	ntfn *ConfNtfn, details *TxConfirmation) error {
 
-	// If no details are provided, return early as we can't dispatch.
-	if details == nil {
-		Log.Debugf("Unable to dispatch %v, no details provided",
-			ntfn.ConfRequest)
+	// If there are no conf details to dispatch or if the notification has
+	// already been dispatched, then we can skip dispatching to this
+	// client.
+	if details == nil || ntfn.dispatched {
+		Log.Debugf("Skipping dispatch of conf details(%v) for "+
+			"request %v, dispatched=%v", details, ntfn.ConfRequest,
+			ntfn.dispatched)
 
 		return nil
 	}
@@ -1320,6 +1323,19 @@ func (n *TxNotifier) dispatchSpendDetails(ntfn *SpendNtfn, details *SpendDetail)
 		ntfn.dispatched = true
 	case <-n.quit:
 		return ErrTxNotifierExiting
+	}
+
+	spendHeight := uint32(details.SpendingHeight)
+
+	// We also add to spendsByHeight to notify on chain reorgs.
+	reorgSafeHeight := spendHeight + n.reorgSafetyLimit
+	if reorgSafeHeight > n.currentHeight {
+		txSet, exists := n.spendsByHeight[spendHeight]
+		if !exists {
+			txSet = make(map[SpendRequest]struct{})
+			n.spendsByHeight[spendHeight] = txSet
+		}
+		txSet[ntfn.SpendRequest] = struct{}{}
 	}
 
 	return nil

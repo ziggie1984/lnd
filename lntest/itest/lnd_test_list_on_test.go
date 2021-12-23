@@ -1,3 +1,4 @@
+//go:build rpctest
 // +build rpctest
 
 package itest
@@ -38,6 +39,10 @@ var allTestCases = []*testCase{
 	{
 		name: "disconnecting target peer",
 		test: testDisconnectingTargetPeer,
+	},
+	{
+		name: "reconnect after ip change",
+		test: testReconnectAfterIPChange,
 	},
 	{
 		name: "graph topology notifications",
@@ -275,6 +280,14 @@ var allTestCases = []*testCase{
 		test: testPsbtChanFunding,
 	},
 	{
+		name: "psbt channel funding external",
+		test: testPsbtChanFundingExternal,
+	},
+	{
+		name: "batch channel funding",
+		test: testBatchChanFunding,
+	},
+	{
 		name: "sendtoroute multi path payment",
 		test: testSendToRouteMultiPath,
 	},
@@ -291,6 +304,10 @@ var allTestCases = []*testCase{
 		test: testSendPaymentAMPInvoice,
 	},
 	{
+		name: "sendpayment amp invoice repeat",
+		test: testSendPaymentAMPInvoiceRepeat,
+	},
+	{
 		name: "send multi path payment",
 		test: testSendMultiPathPayment,
 	},
@@ -299,8 +316,12 @@ var allTestCases = []*testCase{
 		test: testRestAPI,
 	},
 	{
-		name: "intercept forwarded htlc packets",
-		test: testForwardInterceptor,
+		name: "forward interceptor",
+		test: testForwardInterceptorBasic,
+	},
+	{
+		name: "forward interceptor dedup htlcs",
+		test: testForwardInterceptorDedupHtlc,
 	},
 	{
 		name: "wumbo channels",
@@ -333,5 +354,17 @@ var allTestCases = []*testCase{
 	{
 		name: "max htlc pathfind",
 		test: testMaxHtlcPathfind,
+	},
+	{
+		name: "rpc middleware interceptor",
+		test: testRPCMiddlewareInterceptor,
+	},
+	{
+		name: "wipe forwarding packages",
+		test: testWipeForwardingPackages,
+	},
+	{
+		name: "remote signer",
+		test: testRemoteSigner,
 	},
 }

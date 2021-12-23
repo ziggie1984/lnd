@@ -28,8 +28,6 @@ import (
 )
 
 const (
-	defaultTimeout = time.Second * 5
-
 	// stateTimeout is the timeout we allow when waiting for state
 	// transitions.
 	stateTimeout = time.Second * 15
@@ -380,6 +378,9 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 			_ *channeldb.ResolverReport) error {
 
 			return nil
+		},
+		FetchHistoricalChannel: func() (*channeldb.OpenChannel, error) {
+			return &channeldb.OpenChannel{}, nil
 		},
 	}
 

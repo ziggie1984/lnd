@@ -158,6 +158,11 @@ type ChannelArbitratorConfig struct {
 	PutResolverReport func(tx kvdb.RwTx,
 		report *channeldb.ResolverReport) error
 
+	// FetchHistoricalChannel retrieves the historical state of a channel.
+	// This is mostly used to supplement the ContractResolvers with
+	// additional information required for proper contract resolution.
+	FetchHistoricalChannel func() (*channeldb.OpenChannel, error)
+
 	ChainArbitratorConfig
 }
 
@@ -435,10 +440,10 @@ func (c *ChannelArbitrator) Start(state *chanArbStartState) error {
 		}
 	}
 
-	log.Debugf("Starting ChannelArbitrator(%v), htlc_set=%v",
+	log.Debugf("Starting ChannelArbitrator(%v), htlc_set=%v, state=%v",
 		c.cfg.ChanPoint, newLogClosure(func() string {
 			return spew.Sdump(c.activeHTLCs)
-		}),
+		}), state.currentState,
 	)
 
 	// Set our state from our starting state.
@@ -604,10 +609,20 @@ func (c *ChannelArbitrator) relaunchResolvers(commitSet *CommitSet,
 		htlcMap[outpoint] = &htlc
 	}
 
+	// We'll also fetch the historical state of this channel, as it should
+	// have been marked as closed by now, and supplement it to each resolver
+	// such that we can properly resolve our pending contracts.
+	chanState, err := c.cfg.FetchHistoricalChannel()
+	if err != nil {
+		return err
+	}
+
 	log.Infof("ChannelArbitrator(%v): relaunching %v contract "+
 		"resolvers", c.cfg.ChanPoint, len(unresolvedContracts))
 
 	for _, resolver := range unresolvedContracts {
+		resolver.SupplementState(chanState)
+
 		htlcResolver, ok := resolver.(htlcContractResolver)
 		if !ok {
 			continue
@@ -795,7 +810,7 @@ func (c *ChannelArbitrator) stateStep(
 		// default state. If this isn't a self initiated event (we're
 		// checking due to a chain update), then we'll exit now.
 		if len(chainActions) == 0 && trigger == chainTrigger {
-			log.Tracef("ChannelArbitrator(%v): no actions for "+
+			log.Debugf("ChannelArbitrator(%v): no actions for "+
 				"chain trigger, terminating", c.cfg.ChanPoint)
 
 			return StateDefault, closeTx, nil
@@ -990,7 +1005,7 @@ func (c *ChannelArbitrator) stateStep(
 		}
 
 		// If the resolution is empty, and we have no HTLCs at all to
-		// tend to, then we're done here. We don't need to launch any
+		// send to, then we're done here. We don't need to launch any
 		// resolvers, and can go straight to our final state.
 		if contractResolutions.IsEmpty() && confCommitSet.IsEmpty() {
 			log.Infof("ChannelArbitrator(%v): contract "+
@@ -1001,7 +1016,7 @@ func (c *ChannelArbitrator) stateStep(
 		}
 
 		// Now that we know we'll need to act, we'll process the htlc
-		// actions, wen create the structures we need to resolve all
+		// actions, then create the structures we need to resolve all
 		// outstanding contracts.
 		htlcResolvers, pktsToSend, err := c.prepContractResolutions(
 			contractResolutions, triggerHeight, trigger,
@@ -1100,7 +1115,7 @@ func (c *ChannelArbitrator) sweepAnchors(anchors *lnwallet.AnchorResolutions,
 	// sweepWithDeadline is a helper closure that takes an anchor
 	// resolution and sweeps it with its corresponding deadline.
 	sweepWithDeadline := func(anchor *lnwallet.AnchorResolution,
-		htlcs htlcSet) error {
+		htlcs htlcSet, anchorPath string) error {
 
 		// Find the deadline for this specific anchor.
 		deadline, err := c.findCommitmentDeadline(heightHint, htlcs)
@@ -1109,7 +1124,8 @@ func (c *ChannelArbitrator) sweepAnchors(anchors *lnwallet.AnchorResolutions,
 		}
 
 		log.Debugf("ChannelArbitrator(%v): pre-confirmation sweep of "+
-			"anchor of tx %v", c.cfg.ChanPoint, anchor.CommitAnchor)
+			"anchor of %s commit tx %v", c.cfg.ChanPoint,
+			anchorPath, anchor.CommitAnchor)
 
 		// Prepare anchor output for sweeping.
 		anchorInput := input.MakeBaseInput(
@@ -1153,13 +1169,15 @@ func (c *ChannelArbitrator) sweepAnchors(anchors *lnwallet.AnchorResolutions,
 	for htlcSet, htlcs := range c.activeHTLCs {
 		switch {
 		case htlcSet == LocalHtlcSet && anchors.Local != nil:
-			err := sweepWithDeadline(anchors.Local, htlcs)
+			err := sweepWithDeadline(anchors.Local, htlcs, "local")
 			if err != nil {
 				return err
 			}
 
 		case htlcSet == RemoteHtlcSet && anchors.Remote != nil:
-			err := sweepWithDeadline(anchors.Remote, htlcs)
+			err := sweepWithDeadline(
+				anchors.Remote, htlcs, "remote",
+			)
 			if err != nil {
 				return err
 			}
@@ -1167,7 +1185,9 @@ func (c *ChannelArbitrator) sweepAnchors(anchors *lnwallet.AnchorResolutions,
 		case htlcSet == RemotePendingHtlcSet &&
 			anchors.RemotePending != nil:
 
-			err := sweepWithDeadline(anchors.RemotePending, htlcs)
+			err := sweepWithDeadline(
+				anchors.RemotePending, htlcs, "remote pending",
+			)
 			if err != nil {
 				return err
 			}
@@ -1298,7 +1318,7 @@ func (c *ChannelArbitrator) advanceState(
 	// transition to is that same state that we started at.
 	for {
 		priorState = c.state
-		log.Tracef("ChannelArbitrator(%v): attempting state step with "+
+		log.Debugf("ChannelArbitrator(%v): attempting state step with "+
 			"trigger=%v from state=%v", c.cfg.ChanPoint, trigger,
 			priorState)
 
@@ -1319,7 +1339,7 @@ func (c *ChannelArbitrator) advanceState(
 		// our prior state back as the next state, then we'll
 		// terminate.
 		if nextState == priorState {
-			log.Tracef("ChannelArbitrator(%v): terminating at "+
+			log.Debugf("ChannelArbitrator(%v): terminating at "+
 				"state=%v", c.cfg.ChanPoint, nextState)
 			return nextState, forceCloseTx, nil
 		}
@@ -1907,6 +1927,14 @@ func (c *ChannelArbitrator) prepContractResolutions(
 		return nil, nil, err
 	}
 
+	// We'll also fetch the historical state of this channel, as it should
+	// have been marked as closed by now, and supplement it to each resolver
+	// such that we can properly resolve our pending contracts.
+	chanState, err := c.cfg.FetchHistoricalChannel()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// There may be a class of HTLC's which we can fail back immediately,
 	// for those we'll prepare a slice of packets to add to our outbox. Any
 	// packets we need to send, will be cancels.
@@ -2012,6 +2040,7 @@ func (c *ChannelArbitrator) prepContractResolutions(
 				resolver := newTimeoutResolver(
 					resolution, height, htlc, resolverCfg,
 				)
+				resolver.SupplementState(chanState)
 				htlcResolvers = append(htlcResolvers, resolver)
 			}
 
@@ -2068,6 +2097,7 @@ func (c *ChannelArbitrator) prepContractResolutions(
 				resolver := newOutgoingContestResolver(
 					resolution, height, htlc, resolverCfg,
 				)
+				resolver.SupplementState(chanState)
 				htlcResolvers = append(htlcResolvers, resolver)
 			}
 		}
@@ -2078,9 +2108,10 @@ func (c *ChannelArbitrator) prepContractResolutions(
 	// trimmed).
 	if contractResolutions.CommitResolution != nil {
 		resolver := newCommitSweepResolver(
-			*contractResolutions.CommitResolution,
-			height, c.cfg.ChanPoint, resolverCfg,
+			*contractResolutions.CommitResolution, height,
+			c.cfg.ChanPoint, resolverCfg,
 		)
+		resolver.SupplementState(chanState)
 		htlcResolvers = append(htlcResolvers, resolver)
 	}
 

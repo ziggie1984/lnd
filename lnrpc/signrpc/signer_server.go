@@ -1,3 +1,4 @@
+//go:build signrpc
 // +build signrpc
 
 package signrpc
@@ -14,7 +15,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -88,6 +89,9 @@ type ServerShell struct {
 // lnd. This allows callers to create custom protocols, external to lnd, even
 // backed by multiple distinct lnd across independent failure domains.
 type Server struct {
+	// Required by the grpc-gateway/v2 library for forward compatibility.
+	UnimplementedSignerServer
+
 	cfg *Config
 }
 
@@ -442,7 +446,7 @@ func (s *Server) ComputeInputScript(ctx context.Context,
 
 // SignMessage signs a message with the key specified in the key locator. The
 // returned signature is fixed-size LN wire format encoded.
-func (s *Server) SignMessage(ctx context.Context,
+func (s *Server) SignMessage(_ context.Context,
 	in *SignMessageReq) (*SignMessageResp, error) {
 
 	if in.Msg == nil {
@@ -453,20 +457,33 @@ func (s *Server) SignMessage(ctx context.Context,
 	}
 
 	// Describe the private key we'll be using for signing.
-	keyDescriptor := keychain.KeyDescriptor{
-		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamily(in.KeyLoc.KeyFamily),
-			Index:  uint32(in.KeyLoc.KeyIndex),
-		},
+	keyLocator := keychain.KeyLocator{
+		Family: keychain.KeyFamily(in.KeyLoc.KeyFamily),
+		Index:  uint32(in.KeyLoc.KeyIndex),
 	}
 
-	// The signature is over the sha256 hash of the message.
-	var digest [32]byte
-	copy(digest[:], chainhash.HashB(in.Msg))
+	// To allow a watch-only wallet to forward the SignMessageCompact to an
+	// endpoint that doesn't add the message prefix, we allow this RPC to
+	// also return the compact signature format instead of adding a flag to
+	// the lnrpc.SignMessage call that removes the message prefix.
+	if in.CompactSig {
+		sigBytes, err := s.cfg.KeyRing.SignMessageCompact(
+			keyLocator, in.Msg, in.DoubleHash,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("can't sign the hash: %v", err)
+		}
+
+		return &SignMessageResp{
+			Signature: sigBytes,
+		}, nil
+	}
 
 	// Create the raw ECDSA signature first and convert it to the final wire
 	// format after.
-	sig, err := s.cfg.KeyRing.SignDigest(keyDescriptor, digest)
+	sig, err := s.cfg.KeyRing.SignMessage(
+		keyLocator, in.Msg, in.DoubleHash,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("can't sign the hash: %v", err)
 	}

@@ -3,7 +3,9 @@ package lntest
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -11,7 +13,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +27,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
@@ -60,6 +65,8 @@ const (
 
 	// NeutrinoBackendName is the name of the neutrino backend.
 	NeutrinoBackendName = "neutrino"
+
+	postgresDsn = "postgres://postgres:postgres@localhost:6432/%s?sslmode=disable"
 )
 
 var (
@@ -90,6 +97,10 @@ var (
 		"btcdexec", "", "full path to btcd binary",
 	)
 )
+
+func postgresDatabaseDsn(dbName string) string {
+	return fmt.Sprintf(postgresDsn, dbName)
+}
 
 // NextAvailablePort returns the first port that is available for listening by
 // a new node. It panics if no port is found and the maximum available TCP port
@@ -220,7 +231,8 @@ type NodeConfig struct {
 
 	FeeURL string
 
-	Etcd bool
+	DbBackend   DatabaseBackend
+	PostgresDsn string
 }
 
 func (cfg NodeConfig) P2PAddr() string {
@@ -291,6 +303,7 @@ func (cfg NodeConfig) genArgs() []string {
 	args = append(args, fmt.Sprintf("--invoicemacaroonpath=%v", cfg.InvoiceMacPath))
 	args = append(args, fmt.Sprintf("--trickledelay=%v", trickleDelay))
 	args = append(args, fmt.Sprintf("--profile=%d", cfg.ProfilePort))
+	args = append(args, fmt.Sprintf("--caches.rpc-graph-cache-duration=0"))
 
 	if !cfg.HasSeed {
 		args = append(args, "--noseedbackup")
@@ -308,7 +321,8 @@ func (cfg NodeConfig) genArgs() []string {
 		args = append(args, "--accept-amp")
 	}
 
-	if cfg.Etcd {
+	switch cfg.DbBackend {
+	case BackendEtcd:
 		args = append(args, "--db.backend=etcd")
 		args = append(args, "--db.etcd.embedded")
 		args = append(
@@ -323,6 +337,16 @@ func (cfg NodeConfig) genArgs() []string {
 				NextAvailablePort(),
 			),
 		)
+		args = append(
+			args, fmt.Sprintf(
+				"--db.etcd.embedded_log_file=%v",
+				path.Join(cfg.LogDir, "etcd.log"),
+			),
+		)
+
+	case BackendPostgres:
+		args = append(args, "--db.backend=postgres")
+		args = append(args, "--db.postgres.dsn="+cfg.PostgresDsn)
 	}
 
 	if cfg.FeeURL != "" {
@@ -331,6 +355,21 @@ func (cfg NodeConfig) genArgs() []string {
 
 	return args
 }
+
+// policyUpdateMap defines a type to store channel policy updates. It has the
+// format,
+// {
+//  "chanPoint1": {
+//       "advertisingNode1": [
+//              policy1, policy2, ...
+//       ],
+//       "advertisingNode2": [
+//              policy1, policy2, ...
+//       ]
+//  },
+//  "chanPoint2": ...
+// }
+type policyUpdateMap map[string]map[string][]*lnrpc.RoutingPolicy
 
 // HarnessNode represents an instance of lnd running within our test network
 // harness. Each HarnessNode instance also fully embeds an RPC client in
@@ -361,11 +400,15 @@ type HarnessNode struct {
 	// edges seen for that channel within the network. When this number
 	// reaches 2, then it means that both edge advertisements has propagated
 	// through the network.
-	openChans   map[wire.OutPoint]int
-	openClients map[wire.OutPoint][]chan struct{}
+	openChans        map[wire.OutPoint]int
+	openChanWatchers map[wire.OutPoint][]chan struct{}
 
-	closedChans  map[wire.OutPoint]struct{}
-	closeClients map[wire.OutPoint][]chan struct{}
+	closedChans       map[wire.OutPoint]struct{}
+	closeChanWatchers map[wire.OutPoint][]chan struct{}
+
+	// policyUpdates stores a slice of seen polices by each advertising
+	// node and the outpoint.
+	policyUpdates policyUpdateMap
 
 	quit chan struct{}
 	wg   sync.WaitGroup
@@ -389,6 +432,14 @@ type HarnessNode struct {
 	WalletKitClient  walletrpc.WalletKitClient
 	Watchtower       watchtowerrpc.WatchtowerClient
 	WatchtowerClient wtclientrpc.WatchtowerClientClient
+	StateClient      lnrpc.StateClient
+
+	// backupDbDir is the path where a database backup is stored, if any.
+	backupDbDir string
+
+	// postgresDbName is the name of the postgres database where lnd data is
+	// stored in.
+	postgresDbName string
 }
 
 // Assert *HarnessNode implements the lnrpc.LightningClient interface.
@@ -424,6 +475,17 @@ func newNode(cfg NodeConfig) (*HarnessNode, error) {
 	// enabled.
 	cfg.AcceptKeySend = true
 
+	// Create temporary database.
+	var dbName string
+	if cfg.DbBackend == BackendPostgres {
+		var err error
+		dbName, err = createTempPgDb()
+		if err != nil {
+			return nil, err
+		}
+		cfg.PostgresDsn = postgresDatabaseDsn(dbName)
+	}
+
 	numActiveNodesMtx.Lock()
 	nodeNum := numActiveNodes
 	numActiveNodes++
@@ -434,17 +496,54 @@ func newNode(cfg NodeConfig) (*HarnessNode, error) {
 		NodeID:            nodeNum,
 		chanWatchRequests: make(chan *chanWatchRequest),
 		openChans:         make(map[wire.OutPoint]int),
-		openClients:       make(map[wire.OutPoint][]chan struct{}),
+		openChanWatchers:  make(map[wire.OutPoint][]chan struct{}),
 
-		closedChans:  make(map[wire.OutPoint]struct{}),
-		closeClients: make(map[wire.OutPoint][]chan struct{}),
+		closedChans:       make(map[wire.OutPoint]struct{}),
+		closeChanWatchers: make(map[wire.OutPoint][]chan struct{}),
+
+		policyUpdates: policyUpdateMap{},
+
+		postgresDbName: dbName,
 	}, nil
 }
 
-// NewMiner creates a new miner using btcd backend. The logDir specifies the
-// miner node's log dir. When tests finished, during clean up, its logs are
-// copied to a file specified as logFilename.
-func NewMiner(logDir, logFilename string, netParams *chaincfg.Params,
+func createTempPgDb() (string, error) {
+	// Create random database name.
+	randBytes := make([]byte, 8)
+	_, err := rand.Read(randBytes)
+	if err != nil {
+		return "", err
+	}
+	dbName := "itest_" + hex.EncodeToString(randBytes)
+
+	// Create database.
+	err = executePgQuery("CREATE DATABASE " + dbName)
+	if err != nil {
+		return "", err
+	}
+
+	return dbName, nil
+}
+
+func executePgQuery(query string) error {
+	pool, err := pgxpool.Connect(
+		context.Background(),
+		postgresDatabaseDsn("postgres"),
+	)
+	if err != nil {
+		return fmt.Errorf("unable to connect to database: %v", err)
+	}
+	defer pool.Close()
+
+	_, err = pool.Exec(context.Background(), query)
+	return err
+}
+
+// NewMiner creates a new miner using btcd backend. The baseLogDir specifies
+// the miner node's log dir. When tests are finished, during clean up, its log
+// files, including any compressed log files from logrotate, are copied to
+// logDir as logFilename.
+func NewMiner(baseLogDir, logFilename string, netParams *chaincfg.Params,
 	handler *rpcclient.NotificationHandlers,
 	btcdBinary string) (*rpctest.Harness, func() error, error) {
 
@@ -454,8 +553,10 @@ func NewMiner(logDir, logFilename string, netParams *chaincfg.Params,
 		"--nowinservice",
 		"--nobanning",
 		"--debuglevel=debug",
-		"--logdir=" + logDir,
+		"--logdir=" + baseLogDir,
 		"--trickleinterval=100ms",
+		// Don't disconnect if a reply takes too long.
+		"--nostalldetect",
 	}
 
 	miner, err := rpctest.New(netParams, handler, args, btcdBinary)
@@ -472,24 +573,94 @@ func NewMiner(logDir, logFilename string, netParams *chaincfg.Params,
 			)
 		}
 
-		// After shutting down the miner, we'll make a copy of the log
-		// file before deleting the temporary log dir.
-		logFile := fmt.Sprintf("%s/%s/btcd.log", logDir, netParams.Name)
-		copyPath := fmt.Sprintf("%s/../%s", logDir, logFilename)
-		err := CopyFile(filepath.Clean(copyPath), logFile)
+		// After shutting down the miner, we'll make a copy of
+		// the log files before deleting the temporary log dir.
+		logDir := fmt.Sprintf("%s/%s", baseLogDir, netParams.Name)
+		files, err := ioutil.ReadDir(logDir)
 		if err != nil {
-			return fmt.Errorf("unable to copy file: %v", err)
+			return fmt.Errorf("unable to read log directory: %v", err)
 		}
 
-		if err = os.RemoveAll(logDir); err != nil {
+		for _, file := range files {
+			logFile := fmt.Sprintf(
+				"%s/%s", logDir, file.Name(),
+			)
+			newFilename := strings.Replace(file.Name(), "btcd.log", logFilename, 1)
+			copyPath := fmt.Sprintf(
+				"%s/../%s", baseLogDir, newFilename,
+			)
+
+			err := CopyFile(filepath.Clean(copyPath), logFile)
+			if err != nil {
+				return fmt.Errorf("unable to copy file: %v", err)
+			}
+		}
+
+		if err = os.RemoveAll(baseLogDir); err != nil {
 			return fmt.Errorf(
-				"cannot remove dir %s: %v", logDir, err,
+				"cannot remove dir %s: %v", baseLogDir, err,
 			)
 		}
 		return nil
 	}
 
 	return miner, cleanUp, nil
+}
+
+// String gives the internal state of the node which is useful for debugging.
+func (hn *HarnessNode) String() string {
+	type nodeCfg struct {
+		LogFilenamePrefix string
+		ExtraArgs         []string
+		HasSeed           bool
+		P2PPort           int
+		RPCPort           int
+		RESTPort          int
+		ProfilePort       int
+		AcceptKeySend     bool
+		AcceptAMP         bool
+		FeeURL            string
+	}
+
+	nodeState := struct {
+		NodeID      int
+		Name        string
+		PubKey      string
+		OpenChans   map[string]int
+		ClosedChans map[string]struct{}
+		NodeCfg     nodeCfg
+	}{
+		NodeID:      hn.NodeID,
+		Name:        hn.Cfg.Name,
+		PubKey:      hn.PubKeyStr,
+		OpenChans:   make(map[string]int),
+		ClosedChans: make(map[string]struct{}),
+		NodeCfg: nodeCfg{
+			LogFilenamePrefix: hn.Cfg.LogFilenamePrefix,
+			ExtraArgs:         hn.Cfg.ExtraArgs,
+			HasSeed:           hn.Cfg.HasSeed,
+			P2PPort:           hn.Cfg.P2PPort,
+			RPCPort:           hn.Cfg.RPCPort,
+			RESTPort:          hn.Cfg.RESTPort,
+			AcceptKeySend:     hn.Cfg.AcceptKeySend,
+			AcceptAMP:         hn.Cfg.AcceptAMP,
+			FeeURL:            hn.Cfg.FeeURL,
+		},
+	}
+
+	for outpoint, count := range hn.openChans {
+		nodeState.OpenChans[outpoint.String()] = count
+	}
+	for outpoint, count := range hn.closedChans {
+		nodeState.ClosedChans[outpoint.String()] = count
+	}
+
+	bytes, err := json.MarshalIndent(nodeState, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("\n encode node state with err: %v", err)
+	}
+
+	return fmt.Sprintf("\nnode state: %s", bytes)
 }
 
 // DBPath returns the filepath to the channeldb database file for this node.
@@ -517,7 +688,7 @@ func (hn *HarnessNode) TLSKeyStr() string {
 	return hn.Cfg.TLSKeyPath
 }
 
-// ChanBackupPath returns the fielpath to the on-disk channels.backup file for
+// ChanBackupPath returns the fielpath to the on-disk channel.backup file for
 // this node.
 func (hn *HarnessNode) ChanBackupPath() string {
 	return hn.Cfg.ChanBackupPath()
@@ -537,6 +708,15 @@ func (hn *HarnessNode) ReadMacPath() string {
 // node.
 func (hn *HarnessNode) InvoiceMacPath() string {
 	return hn.Cfg.InvoiceMacPath
+}
+
+// renameFile is a helper to rename (log) files created during integration tests.
+func renameFile(fromFileName, toFileName string) {
+	err := os.Rename(fromFileName, toFileName)
+	if err != nil {
+		fmt.Printf("could not rename %s to %s: %v\n",
+			fromFileName, toFileName, err)
+	}
 }
 
 // Start launches a new process running lnd. Additionally, the PID of the
@@ -565,6 +745,30 @@ func (hn *HarnessNode) start(lndBinary string, lndError chan<- error,
 		}
 	}
 
+	getFinalizedLogFilePrefix := func() string {
+		pubKeyHex := hex.EncodeToString(
+			hn.PubKey[:logPubKeyBytes],
+		)
+
+		return fmt.Sprintf("%s/%d-%s-%s-%s",
+			GetLogDir(), hn.NodeID,
+			hn.Cfg.LogFilenamePrefix,
+			hn.Cfg.Name, pubKeyHex)
+	}
+
+	finalizeEtcdLog := func() {
+		if hn.Cfg.DbBackend != BackendEtcd {
+			return
+		}
+
+		etcdLogFileName := fmt.Sprintf("%s/etcd.log", hn.Cfg.LogDir)
+		newEtcdLogFileName := fmt.Sprintf("%v-etcd.log",
+			getFinalizedLogFilePrefix(),
+		)
+
+		renameFile(etcdLogFileName, newEtcdLogFileName)
+	}
+
 	// If the logoutput flag is passed, redirect output from the nodes to
 	// log files.
 	if *logOutput {
@@ -581,29 +785,19 @@ func (hn *HarnessNode) start(lndBinary string, lndError chan<- error,
 			fileName = fmt.Sprintf("%s/%d-%s-%s-tmp__.log", dir,
 				hn.NodeID, hn.Cfg.LogFilenamePrefix,
 				hn.Cfg.Name)
+		}
 
-			// Once the node has done its work, the log file can be
-			// renamed.
-			finalizeLogfile = func() {
-				if hn.logFile != nil {
-					hn.logFile.Close()
+		// Once the node has done its work, the log file can be
+		// renamed.
+		finalizeLogfile = func() {
+			if hn.logFile != nil {
+				hn.logFile.Close()
 
-					pubKeyHex := hex.EncodeToString(
-						hn.PubKey[:logPubKeyBytes],
-					)
-					newFileName := fmt.Sprintf("%s/"+
-						"%d-%s-%s-%s.log",
-						dir, hn.NodeID,
-						hn.Cfg.LogFilenamePrefix,
-						hn.Cfg.Name, pubKeyHex)
-					err := os.Rename(fileName, newFileName)
-					if err != nil {
-						fmt.Printf("could not rename "+
-							"%s to %s: %v\n",
-							fileName, newFileName,
-							err)
-					}
-				}
+				newFileName := fmt.Sprintf("%v.log",
+					getFinalizedLogFilePrefix(),
+				)
+
+				renameFile(fileName, newFileName)
 			}
 		}
 
@@ -647,6 +841,10 @@ func (hn *HarnessNode) start(lndBinary string, lndError chan<- error,
 
 		// Make sure log file is closed and renamed if necessary.
 		finalizeLogfile()
+
+		// Rename the etcd.log file if the node was running on embedded
+		// etcd.
+		finalizeEtcdLog()
 	}()
 
 	// Write process ID to a file.
@@ -670,7 +868,7 @@ func (hn *HarnessNode) start(lndBinary string, lndError chan<- error,
 		return err
 	}
 
-	if err := hn.waitUntilStarted(conn, DefaultTimeout); err != nil {
+	if err := hn.WaitUntilStarted(conn, DefaultTimeout); err != nil {
 		return err
 	}
 
@@ -686,9 +884,30 @@ func (hn *HarnessNode) start(lndBinary string, lndError chan<- error,
 	return hn.initLightningClient(conn)
 }
 
-// waitUntilStarted waits until the wallet state flips from "WAITING_TO_START".
-func (hn *HarnessNode) waitUntilStarted(conn grpc.ClientConnInterface,
+// WaitUntilStarted waits until the wallet state flips from "WAITING_TO_START".
+func (hn *HarnessNode) WaitUntilStarted(conn grpc.ClientConnInterface,
 	timeout time.Duration) error {
+
+	return hn.waitForState(conn, timeout, func(s lnrpc.WalletState) bool {
+		return s != lnrpc.WalletState_WAITING_TO_START
+	})
+}
+
+// WaitUntilStateReached waits until the given wallet state (or one of the
+// states following it) has been reached.
+func (hn *HarnessNode) WaitUntilStateReached(conn grpc.ClientConnInterface,
+	timeout time.Duration, desiredState lnrpc.WalletState) error {
+
+	return hn.waitForState(conn, timeout, func(s lnrpc.WalletState) bool {
+		return s >= desiredState
+	})
+}
+
+// waitForState waits until the current node state fulfills the given
+// predicate.
+func (hn *HarnessNode) waitForState(conn grpc.ClientConnInterface,
+	timeout time.Duration,
+	predicate func(state lnrpc.WalletState) bool) error {
 
 	stateClient := lnrpc.NewStateClient(conn)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -708,9 +927,10 @@ func (hn *HarnessNode) waitUntilStarted(conn grpc.ClientConnInterface,
 			resp, err := stateStream.Recv()
 			if err != nil {
 				errChan <- err
+				return
 			}
 
-			if resp.State != lnrpc.WalletState_WAITING_TO_START {
+			if predicate(resp.State) {
 				close(started)
 				return
 			}
@@ -748,7 +968,7 @@ func (hn *HarnessNode) WaitUntilLeader(timeout time.Duration) error {
 	}
 	timeout -= time.Since(startTs)
 
-	if err := hn.waitUntilStarted(conn, timeout); err != nil {
+	if err := hn.WaitUntilStarted(conn, timeout); err != nil {
 		return err
 	}
 
@@ -887,6 +1107,34 @@ func (hn *HarnessNode) Unlock(ctx context.Context,
 	return hn.initClientWhenReady(DefaultTimeout)
 }
 
+// waitTillServerStarted makes a subscription to the server's state change and
+// blocks until the server is in state ServerActive.
+func (hn *HarnessNode) waitTillServerStarted() error {
+	ctxb := context.Background()
+	ctxt, cancel := context.WithTimeout(ctxb, NodeStartTimeout)
+	defer cancel()
+
+	client, err := hn.StateClient.SubscribeState(
+		ctxt, &lnrpc.SubscribeStateRequest{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to state: %w", err)
+	}
+
+	for {
+		resp, err := client.Recv()
+		if err != nil {
+			return fmt.Errorf("failed to receive state "+
+				"client stream: %w", err)
+		}
+
+		if resp.State == lnrpc.WalletState_SERVER_ACTIVE {
+			return nil
+		}
+	}
+
+}
+
 // initLightningClient constructs the grpc LightningClient from the given client
 // connection and subscribes the harness node to graph topology updates.
 // This method also spawns a lightning network watcher for this node,
@@ -902,6 +1150,12 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	hn.Watchtower = watchtowerrpc.NewWatchtowerClient(conn)
 	hn.WatchtowerClient = wtclientrpc.NewWatchtowerClientClient(conn)
 	hn.SignerClient = signrpc.NewSignerClient(conn)
+	hn.StateClient = lnrpc.NewStateClient(conn)
+
+	// Wait until the server is fully started.
+	if err := hn.waitTillServerStarted(); err != nil {
+		return err
+	}
 
 	// Set the harness node's pubkey to what the node claims in GetInfo.
 	// Since the RPC might not be immediately active, we wrap the call in a
@@ -910,50 +1164,12 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 		return err
 	}
 
-	// Due to a race condition between the ChannelRouter starting and us
-	// making the subscription request, it's possible for our graph
-	// subscription to fail. To ensure we don't start listening for updates
-	// until then, we'll create a dummy subscription to ensure we can do so
-	// successfully before proceeding. We use a dummy subscription in order
-	// to not consume an update from the real one.
-	err := wait.NoError(func() error {
-		req := &lnrpc.GraphTopologySubscription{}
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		topologyClient, err := hn.SubscribeChannelGraph(ctx, req)
-		if err != nil {
-			return err
-		}
-
-		// We'll wait to receive an error back within a one second
-		// timeout. This is needed since creating the client's stream is
-		// independent of the graph subscription being created. The
-		// stream is closed from the server's side upon an error.
-		errChan := make(chan error, 1)
-		go func() {
-			if _, err := topologyClient.Recv(); err != nil {
-				errChan <- err
-			}
-		}()
-
-		select {
-		case err = <-errChan:
-		case <-time.After(time.Second):
-		}
-
-		cancelFunc()
-		return err
-	}, DefaultTimeout)
-	if err != nil {
-		return err
-	}
-
 	// Launch the watcher that will hook into graph related topology change
 	// from the PoV of this node.
 	hn.wg.Add(1)
-	subscribed := make(chan error)
-	go hn.lightningNetworkWatcher(subscribed)
+	go hn.lightningNetworkWatcher()
 
-	return <-subscribed
+	return nil
 }
 
 // FetchNodeInfo queries an unlocked node to retrieve its public key.
@@ -978,15 +1194,16 @@ func (hn *HarnessNode) FetchNodeInfo() error {
 
 // AddToLog adds a line of choice to the node's logfile. This is useful
 // to interleave test output with output from the node.
-func (hn *HarnessNode) AddToLog(line string) error {
+func (hn *HarnessNode) AddToLog(format string, a ...interface{}) {
 	// If this node was not set up with a log file, just return early.
 	if hn.logFile == nil {
-		return nil
+		return
 	}
-	if _, err := hn.logFile.WriteString(line); err != nil {
-		return err
+
+	desc := fmt.Sprintf("itest: %s\n", fmt.Sprintf(format, a...))
+	if _, err := hn.logFile.WriteString(desc); err != nil {
+		hn.PrintErr("write to log err: %v", err)
 	}
-	return nil
 }
 
 // writePidFile writes the process ID of the running lnd process to a .pid file.
@@ -1066,7 +1283,10 @@ func (hn *HarnessNode) ConnectRPCWithMacaroon(mac *macaroon.Macaroon) (
 	if mac == nil {
 		return grpc.DialContext(ctx, hn.Cfg.RPCAddr(), opts...)
 	}
-	macCred := macaroons.NewMacaroonCredential(mac)
+	macCred, err := macaroons.NewMacaroonCredential(mac)
+	if err != nil {
+		return nil, fmt.Errorf("error cloning mac: %v", err)
+	}
 	opts = append(opts, grpc.WithPerRPCCredentials(macCred))
 
 	return grpc.DialContext(ctx, hn.Cfg.RPCAddr(), opts...)
@@ -1098,6 +1318,13 @@ func (hn *HarnessNode) SetExtraArgs(extraArgs []string) {
 
 // cleanup cleans up all the temporary files created by the node's process.
 func (hn *HarnessNode) cleanup() error {
+	if hn.backupDbDir != "" {
+		err := os.RemoveAll(hn.backupDbDir)
+		if err != nil {
+			return fmt.Errorf("unable to remove backup dir: %v", err)
+		}
+	}
+
 	return os.RemoveAll(hn.Cfg.BaseDir)
 }
 
@@ -1115,7 +1342,21 @@ func (hn *HarnessNode) stop() error {
 		// closed before a response is returned.
 		req := lnrpc.StopRequest{}
 		ctx := context.Background()
-		_, err := hn.LightningClient.StopDaemon(ctx, &req)
+
+		err := wait.NoError(func() error {
+			_, err := hn.LightningClient.StopDaemon(ctx, &req)
+			switch {
+			case err == nil:
+				return nil
+
+			// Try again if a recovery/rescan is in progress.
+			case strings.Contains(err.Error(), "recovery in progress"):
+				return err
+
+			default:
+				return nil
+			}
+		}, DefaultTimeout)
 		if err != nil {
 			return err
 		}
@@ -1141,8 +1382,11 @@ func (hn *HarnessNode) stop() error {
 	// Close any attempts at further grpc connections.
 	if hn.conn != nil {
 		err := hn.conn.Close()
-		if err != nil {
-			return fmt.Errorf("error attempting to stop grpc client: %v", err)
+		if err != nil &&
+			!strings.Contains(err.Error(), "connection is closing") {
+
+			return fmt.Errorf("error attempting to stop grpc "+
+				"client: %v", err)
 		}
 	}
 
@@ -1166,15 +1410,35 @@ func (hn *HarnessNode) kill() error {
 	return hn.cmd.Process.Kill()
 }
 
+type chanWatchType uint8
+
+const (
+	// watchOpenChannel specifies that this is a request to watch an open
+	// channel event.
+	watchOpenChannel chanWatchType = iota
+
+	// watchCloseChannel specifies that this is a request to watch a close
+	// channel event.
+	watchCloseChannel
+
+	// watchPolicyUpdate specifies that this is a request to watch a policy
+	// update event.
+	watchPolicyUpdate
+)
+
 // closeChanWatchRequest is a request to the lightningNetworkWatcher to be
 // notified once it's detected within the test Lightning Network, that a
 // channel has either been added or closed.
 type chanWatchRequest struct {
 	chanPoint wire.OutPoint
 
-	chanOpen bool
+	chanWatchType chanWatchType
 
 	eventChan chan struct{}
+
+	advertisingNode    string
+	policy             *lnrpc.RoutingPolicy
+	includeUnannounced bool
 }
 
 // getChanPointFundingTxid returns the given channel point's funding txid in
@@ -1200,45 +1464,45 @@ func getChanPointFundingTxid(chanPoint *lnrpc.ChannelPoint) ([]byte, error) {
 	return txid, nil
 }
 
+func checkChanPointInGraph(ctx context.Context,
+	node *HarnessNode, chanPoint wire.OutPoint) bool {
+
+	ctxt, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+	chanGraph, err := node.DescribeGraph(ctxt, &lnrpc.ChannelGraphRequest{})
+	if err != nil {
+		return false
+	}
+
+	targetChanPoint := chanPoint.String()
+	for _, chanEdge := range chanGraph.Edges {
+		candidateChanPoint := chanEdge.ChanPoint
+		if targetChanPoint == candidateChanPoint {
+			return true
+		}
+	}
+
+	return false
+}
+
 // lightningNetworkWatcher is a goroutine which is able to dispatch
 // notifications once it has been observed that a target channel has been
 // closed or opened within the network. In order to dispatch these
 // notifications, the GraphTopologySubscription client exposed as part of the
 // gRPC interface is used.
-func (hn *HarnessNode) lightningNetworkWatcher(subscribed chan error) {
+func (hn *HarnessNode) lightningNetworkWatcher() {
 	defer hn.wg.Done()
 
 	graphUpdates := make(chan *lnrpc.GraphTopologyUpdate)
+
+	// Start a goroutine to receive graph updates.
 	hn.wg.Add(1)
 	go func() {
 		defer hn.wg.Done()
-
-		req := &lnrpc.GraphTopologySubscription{}
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
-		topologyClient, err := hn.SubscribeChannelGraph(ctx, req)
+		err := hn.receiveTopologyClientStream(graphUpdates)
 		if err != nil {
-			msg := fmt.Sprintf("%s(%d): unable to create topology "+
-				"client: %v (%s)", hn.Name(), hn.NodeID, err,
-				time.Now().String())
-			subscribed <- fmt.Errorf(msg)
-			return
-		}
-		close(subscribed)
-
-		for {
-			update, err := topologyClient.Recv()
-			if err == io.EOF {
-				return
-			} else if err != nil {
-				return
-			}
-
-			select {
-			case graphUpdates <- update:
-			case <-hn.quit:
-				return
-			}
+			hn.PrintErr("receive topology client stream "+
+				"got err:%v", err)
 		}
 	}()
 
@@ -1249,92 +1513,26 @@ func (hn *HarnessNode) lightningNetworkWatcher(subscribed chan error) {
 		// the current set of registered clients to see if we can
 		// dispatch any requests.
 		case graphUpdate := <-graphUpdates:
-			// For each new channel, we'll increment the number of
-			// edges seen by one.
-			for _, newChan := range graphUpdate.ChannelUpdates {
-				txidHash, _ := getChanPointFundingTxid(newChan.ChanPoint)
-				txid, _ := chainhash.NewHash(txidHash)
-				op := wire.OutPoint{
-					Hash:  *txid,
-					Index: newChan.ChanPoint.OutputIndex,
-				}
-				hn.openChans[op]++
-
-				// For this new channel, if the number of edges
-				// seen is less than two, then the channel
-				// hasn't been fully announced yet.
-				if numEdges := hn.openChans[op]; numEdges < 2 {
-					continue
-				}
-
-				// Otherwise, we'll notify all the registered
-				// clients and remove the dispatched clients.
-				for _, eventChan := range hn.openClients[op] {
-					close(eventChan)
-				}
-				delete(hn.openClients, op)
-			}
-
-			// For each channel closed, we'll mark that we've
-			// detected a channel closure while lnd was pruning the
-			// channel graph.
-			for _, closedChan := range graphUpdate.ClosedChans {
-				txidHash, _ := getChanPointFundingTxid(closedChan.ChanPoint)
-				txid, _ := chainhash.NewHash(txidHash)
-				op := wire.OutPoint{
-					Hash:  *txid,
-					Index: closedChan.ChanPoint.OutputIndex,
-				}
-				hn.closedChans[op] = struct{}{}
-
-				// As the channel has been closed, we'll notify
-				// all register clients.
-				for _, eventChan := range hn.closeClients[op] {
-					close(eventChan)
-				}
-				delete(hn.closeClients, op)
-			}
+			hn.handleChannelEdgeUpdates(graphUpdate.ChannelUpdates)
+			hn.handleClosedChannelUpdate(graphUpdate.ClosedChans)
+			// TODO(yy): handle node updates too
 
 		// A new watch request, has just arrived. We'll either be able
 		// to dispatch immediately, or need to add the client for
 		// processing later.
 		case watchRequest := <-hn.chanWatchRequests:
-			targetChan := watchRequest.chanPoint
+			switch watchRequest.chanWatchType {
+			case watchOpenChannel:
+				// TODO(roasbeef): add update type also, checks
+				// for multiple of 2
+				hn.handleOpenChannelWatchRequest(watchRequest)
 
-			// TODO(roasbeef): add update type also, checks for
-			// multiple of 2
-			if watchRequest.chanOpen {
-				// If this is an open request, then it can be
-				// dispatched if the number of edges seen for
-				// the channel is at least two.
-				if numEdges := hn.openChans[targetChan]; numEdges >= 2 {
-					close(watchRequest.eventChan)
-					continue
-				}
+			case watchCloseChannel:
+				hn.handleCloseChannelWatchRequest(watchRequest)
 
-				// Otherwise, we'll add this to the list of
-				// watch open clients for this out point.
-				hn.openClients[targetChan] = append(
-					hn.openClients[targetChan],
-					watchRequest.eventChan,
-				)
-				continue
+			case watchPolicyUpdate:
+				hn.handlePolicyUpdateWatchRequest(watchRequest)
 			}
-
-			// If this is a close request, then it can be
-			// immediately dispatched if we've already seen a
-			// channel closure for this channel.
-			if _, ok := hn.closedChans[targetChan]; ok {
-				close(watchRequest.eventChan)
-				continue
-			}
-
-			// Otherwise, we'll add this to the list of close watch
-			// clients for this out point.
-			hn.closeClients[targetChan] = append(
-				hn.closeClients[targetChan],
-				watchRequest.eventChan,
-			)
 
 		case <-hn.quit:
 			return
@@ -1347,33 +1545,28 @@ func (hn *HarnessNode) lightningNetworkWatcher(subscribed chan error) {
 // considered "fully advertised" once both of its directional edges has been
 // advertised within the test Lightning Network.
 func (hn *HarnessNode) WaitForNetworkChannelOpen(ctx context.Context,
-	op *lnrpc.ChannelPoint) error {
+	chanPoint *lnrpc.ChannelPoint) error {
 
 	eventChan := make(chan struct{})
 
-	txidHash, err := getChanPointFundingTxid(op)
+	op, err := MakeOutpoint(chanPoint)
 	if err != nil {
-		return err
-	}
-	txid, err := chainhash.NewHash(txidHash)
-	if err != nil {
-		return err
+		return fmt.Errorf("failed to create outpoint for %v "+
+			"got err: %v", chanPoint, err)
 	}
 
 	hn.chanWatchRequests <- &chanWatchRequest{
-		chanPoint: wire.OutPoint{
-			Hash:  *txid,
-			Index: op.OutputIndex,
-		},
-		eventChan: eventChan,
-		chanOpen:  true,
+		chanPoint:     op,
+		eventChan:     eventChan,
+		chanWatchType: watchOpenChannel,
 	}
 
 	select {
 	case <-eventChan:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("channel not opened before timeout")
+		return fmt.Errorf("channel:%s not opened before timeout: %s",
+			op, hn)
 	}
 }
 
@@ -1382,33 +1575,78 @@ func (hn *HarnessNode) WaitForNetworkChannelOpen(ctx context.Context,
 // closed once a transaction spending the funding outpoint is seen within a
 // confirmed block.
 func (hn *HarnessNode) WaitForNetworkChannelClose(ctx context.Context,
-	op *lnrpc.ChannelPoint) error {
+	chanPoint *lnrpc.ChannelPoint) error {
 
 	eventChan := make(chan struct{})
 
-	txidHash, err := getChanPointFundingTxid(op)
+	op, err := MakeOutpoint(chanPoint)
 	if err != nil {
-		return err
-	}
-	txid, err := chainhash.NewHash(txidHash)
-	if err != nil {
-		return err
+		return fmt.Errorf("failed to create outpoint for %v "+
+			"got err: %v", chanPoint, err)
 	}
 
 	hn.chanWatchRequests <- &chanWatchRequest{
-		chanPoint: wire.OutPoint{
-			Hash:  *txid,
-			Index: op.OutputIndex,
-		},
-		eventChan: eventChan,
-		chanOpen:  false,
+		chanPoint:     op,
+		eventChan:     eventChan,
+		chanWatchType: watchCloseChannel,
 	}
 
 	select {
 	case <-eventChan:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("channel not closed before timeout")
+		return fmt.Errorf("channel:%s not closed before timeout: "+
+			"%s", op, hn)
+	}
+}
+
+// WaitForChannelPolicyUpdate will block until a channel policy with the target
+// outpoint and advertisingNode is seen within the network.
+func (hn *HarnessNode) WaitForChannelPolicyUpdate(ctx context.Context,
+	advertisingNode string, policy *lnrpc.RoutingPolicy,
+	chanPoint *lnrpc.ChannelPoint, includeUnannounced bool) error {
+
+	eventChan := make(chan struct{})
+
+	op, err := MakeOutpoint(chanPoint)
+	if err != nil {
+		return fmt.Errorf("failed to create outpoint for %v"+
+			"got err: %v", chanPoint, err)
+	}
+
+	ticker := time.NewTicker(wait.PollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		// Send a watch request every second.
+		case <-ticker.C:
+			// Did the event can close in the meantime? We want to
+			// avoid a "close of closed channel" panic since we're
+			// re-using the same event chan for multiple requests.
+			select {
+			case <-eventChan:
+				return nil
+			default:
+			}
+
+			hn.chanWatchRequests <- &chanWatchRequest{
+				chanPoint:          op,
+				eventChan:          eventChan,
+				chanWatchType:      watchPolicyUpdate,
+				policy:             policy,
+				advertisingNode:    advertisingNode,
+				includeUnannounced: includeUnannounced,
+			}
+
+		case <-eventChan:
+			return nil
+
+		case <-ctx.Done():
+			return fmt.Errorf("channel:%s policy not updated "+
+				"before timeout: [%s:%v] %s", op,
+				advertisingNode, policy, hn.String())
+		}
 	}
 }
 
@@ -1469,4 +1707,351 @@ func (hn *HarnessNode) WaitForBalance(expectedBalance btcutil.Amount, confirmed 
 	}
 
 	return nil
+}
+
+// PrintErr prints an error to the console.
+func (hn *HarnessNode) PrintErr(format string, a ...interface{}) {
+	fmt.Printf("itest error from [node:%s]: %s\n",
+		hn.Cfg.Name, fmt.Sprintf(format, a...))
+}
+
+// MakeOutpoint returns the outpoint of the channel's funding transaction.
+func MakeOutpoint(chanPoint *lnrpc.ChannelPoint) (wire.OutPoint, error) {
+	fundingTxID, err := lnrpc.GetChanPointFundingTxid(chanPoint)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+
+	return wire.OutPoint{
+		Hash:  *fundingTxID,
+		Index: chanPoint.OutputIndex,
+	}, nil
+}
+
+// handleChannelEdgeUpdates takes a series of channel edge updates, extracts
+// the outpoints, and saves them to harness node's internal state.
+func (hn *HarnessNode) handleChannelEdgeUpdates(
+	updates []*lnrpc.ChannelEdgeUpdate) {
+
+	// For each new channel, we'll increment the number of
+	// edges seen by one.
+	for _, newChan := range updates {
+		op, err := MakeOutpoint(newChan.ChanPoint)
+		if err != nil {
+			hn.PrintErr("failed to create outpoint for %v "+
+				"got err: %v", newChan.ChanPoint, err)
+			return
+		}
+		hn.openChans[op]++
+
+		// For this new channel, if the number of edges seen is less
+		// than two, then the channel hasn't been fully announced yet.
+		if numEdges := hn.openChans[op]; numEdges < 2 {
+			return
+		}
+
+		// Otherwise, we'll notify all the registered watchers and
+		// remove the dispatched watchers.
+		for _, eventChan := range hn.openChanWatchers[op] {
+			close(eventChan)
+		}
+		delete(hn.openChanWatchers, op)
+
+		// Check whether there's a routing policy update. If so, save
+		// it to the node state.
+		if newChan.RoutingPolicy == nil {
+			continue
+		}
+
+		// Append the policy to the slice.
+		node := newChan.AdvertisingNode
+		policies := hn.policyUpdates[op.String()]
+
+		// If the map[op] is nil, we need to initialize the map first.
+		if policies == nil {
+			policies = make(map[string][]*lnrpc.RoutingPolicy)
+		}
+		policies[node] = append(
+			policies[node], newChan.RoutingPolicy,
+		)
+		hn.policyUpdates[op.String()] = policies
+	}
+}
+
+// handleOpenChannelWatchRequest processes a watch open channel request by
+// checking the number of the edges seen for a given channel point. If the
+// number is no less than 2 then the channel is considered open. Otherwise, we
+// will attempt to find it in its channel graph. If neither can be found, the
+// request is added to a watch request list than will be handled by
+// handleChannelEdgeUpdates.
+func (hn *HarnessNode) handleOpenChannelWatchRequest(req *chanWatchRequest) {
+	targetChan := req.chanPoint
+
+	// If this is an open request, then it can be dispatched if the number
+	// of edges seen for the channel is at least two.
+	if numEdges := hn.openChans[targetChan]; numEdges >= 2 {
+		close(req.eventChan)
+		return
+	}
+
+	// Before we add the channel to our set of open clients, we'll check to
+	// see if the channel is already in the channel graph of the target
+	// node. This lets us handle the case where a node has already seen a
+	// channel before a notification has been requested, causing us to miss
+	// it.
+	chanFound := checkChanPointInGraph(context.Background(), hn, targetChan)
+	if chanFound {
+		close(req.eventChan)
+		return
+	}
+
+	// Otherwise, we'll add this to the list of open channel watchers for
+	// this out point.
+	hn.openChanWatchers[targetChan] = append(
+		hn.openChanWatchers[targetChan],
+		req.eventChan,
+	)
+}
+
+// handleClosedChannelUpdate takes a series of closed channel updates, extracts
+// the outpoints, saves them to harness node's internal state, and notifies all
+// registered clients.
+func (hn *HarnessNode) handleClosedChannelUpdate(
+	updates []*lnrpc.ClosedChannelUpdate) {
+
+	// For each channel closed, we'll mark that we've detected a channel
+	// closure while lnd was pruning the channel graph.
+	for _, closedChan := range updates {
+		op, err := MakeOutpoint(closedChan.ChanPoint)
+		if err != nil {
+			hn.PrintErr("failed to create outpoint for %v "+
+				"got err: %v", closedChan.ChanPoint, err)
+			return
+		}
+
+		hn.closedChans[op] = struct{}{}
+
+		// As the channel has been closed, we'll notify all register
+		// watchers.
+		for _, eventChan := range hn.closeChanWatchers[op] {
+			close(eventChan)
+		}
+		delete(hn.closeChanWatchers, op)
+	}
+}
+
+// handleCloseChannelWatchRequest processes a watch close channel request by
+// checking whether the given channel point can be found in the node's internal
+// state. If not, the request is added to a watch request list than will be
+// handled by handleCloseChannelWatchRequest.
+func (hn *HarnessNode) handleCloseChannelWatchRequest(req *chanWatchRequest) {
+	targetChan := req.chanPoint
+
+	// If this is a close request, then it can be immediately dispatched if
+	// we've already seen a channel closure for this channel.
+	if _, ok := hn.closedChans[targetChan]; ok {
+		close(req.eventChan)
+		return
+	}
+
+	// Otherwise, we'll add this to the list of close channel watchers for
+	// this out point.
+	hn.closeChanWatchers[targetChan] = append(
+		hn.closeChanWatchers[targetChan],
+		req.eventChan,
+	)
+}
+
+type topologyClient lnrpc.Lightning_SubscribeChannelGraphClient
+
+// newTopologyClient creates a topology client.
+func (hn *HarnessNode) newTopologyClient(
+	ctx context.Context) (topologyClient, error) {
+
+	req := &lnrpc.GraphTopologySubscription{}
+	client, err := hn.SubscribeChannelGraph(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("%s(%d): unable to create topology "+
+			"client: %v (%s)", hn.Name(), hn.NodeID, err,
+			time.Now().String())
+	}
+
+	return client, nil
+}
+
+// receiveTopologyClientStream initializes a topologyClient to subscribe
+// topology update events. Due to a race condition between the ChannelRouter
+// starting and us making the subscription request, it's possible for our graph
+// subscription to fail. In that case, we will retry the subscription until it
+// succeeds or fail after 10 seconds.
+//
+// NOTE: must be run as a goroutine.
+func (hn *HarnessNode) receiveTopologyClientStream(
+	receiver chan *lnrpc.GraphTopologyUpdate) error {
+
+	ctxb := context.Background()
+
+	// Create a topology client to receive graph updates.
+	client, err := hn.newTopologyClient(ctxb)
+	if err != nil {
+		return fmt.Errorf("create topologyClient failed: %v", err)
+	}
+
+	// We use the context to time out when retrying graph subscription.
+	ctxt, cancel := context.WithTimeout(ctxb, DefaultTimeout)
+	defer cancel()
+
+	for {
+		update, err := client.Recv()
+
+		switch {
+		case err == nil:
+			// Good case. We will send the update to the receiver.
+
+		case strings.Contains(err.Error(), "router not started"):
+			// If the router hasn't been started, we will retry
+			// every 200 ms until it has been started or fail
+			// after the ctxt is timed out.
+			select {
+			case <-ctxt.Done():
+				return fmt.Errorf("graph subscription: " +
+					"router not started before timeout")
+			case <-time.After(wait.PollInterval):
+			case <-hn.quit:
+				return nil
+			}
+
+			// Re-create the topology client.
+			client, err = hn.newTopologyClient(ctxb)
+			if err != nil {
+				return fmt.Errorf("create topologyClient "+
+					"failed: %v", err)
+			}
+
+			continue
+
+		case strings.Contains(err.Error(), "EOF"):
+			// End of subscription stream. Do nothing and quit.
+			return nil
+
+		default:
+			// An expected error is returned, return and leave it
+			// to be handled by the caller.
+			return fmt.Errorf("graph subscription err: %v", err)
+		}
+
+		// Send the update or quit.
+		select {
+		case receiver <- update:
+		case <-hn.quit:
+			return nil
+		}
+	}
+}
+
+// CheckChannelPolicy checks that the policy matches the expected one.
+func CheckChannelPolicy(policy, expectedPolicy *lnrpc.RoutingPolicy) error {
+	if policy.FeeBaseMsat != expectedPolicy.FeeBaseMsat {
+		return fmt.Errorf("expected base fee %v, got %v",
+			expectedPolicy.FeeBaseMsat, policy.FeeBaseMsat)
+	}
+	if policy.FeeRateMilliMsat != expectedPolicy.FeeRateMilliMsat {
+		return fmt.Errorf("expected fee rate %v, got %v",
+			expectedPolicy.FeeRateMilliMsat,
+			policy.FeeRateMilliMsat)
+	}
+	if policy.TimeLockDelta != expectedPolicy.TimeLockDelta {
+		return fmt.Errorf("expected time lock delta %v, got %v",
+			expectedPolicy.TimeLockDelta,
+			policy.TimeLockDelta)
+	}
+	if policy.MinHtlc != expectedPolicy.MinHtlc {
+		return fmt.Errorf("expected min htlc %v, got %v",
+			expectedPolicy.MinHtlc, policy.MinHtlc)
+	}
+	if policy.MaxHtlcMsat != expectedPolicy.MaxHtlcMsat {
+		return fmt.Errorf("expected max htlc %v, got %v",
+			expectedPolicy.MaxHtlcMsat, policy.MaxHtlcMsat)
+	}
+	if policy.Disabled != expectedPolicy.Disabled {
+		return errors.New("edge should be disabled but isn't")
+	}
+
+	return nil
+}
+
+// handlePolicyUpdateWatchRequest checks that if the expected policy can be
+// found either in the node's interval state or describe graph response. If
+// found, it will signal the request by closing the event channel. Otherwise it
+// does nothing but returns nil.
+func (hn *HarnessNode) handlePolicyUpdateWatchRequest(req *chanWatchRequest) {
+	op := req.chanPoint
+
+	// Get a list of known policies for this chanPoint+advertisingNode
+	// combination. Start searching in the node state first.
+	policies, ok := hn.policyUpdates[op.String()][req.advertisingNode]
+
+	if !ok {
+		// If it cannot be found in the node state, try searching it
+		// from the node's DescribeGraph.
+		policyMap := hn.getChannelPolicies(req.includeUnannounced)
+		policies, ok = policyMap[op.String()][req.advertisingNode]
+		if !ok {
+			return
+		}
+	}
+
+	// Check if there's a matched policy.
+	for _, policy := range policies {
+		if CheckChannelPolicy(policy, req.policy) == nil {
+			close(req.eventChan)
+			return
+		}
+	}
+}
+
+// getChannelPolicies queries the channel graph and formats the policies into
+// the format defined in type policyUpdateMap.
+func (hn *HarnessNode) getChannelPolicies(include bool) policyUpdateMap {
+
+	ctxt, cancel := context.WithTimeout(
+		context.Background(), DefaultTimeout,
+	)
+	defer cancel()
+
+	graph, err := hn.DescribeGraph(ctxt, &lnrpc.ChannelGraphRequest{
+		IncludeUnannounced: include,
+	})
+	if err != nil {
+		hn.PrintErr("DescribeGraph got err: %v", err)
+		return nil
+	}
+
+	policyUpdates := policyUpdateMap{}
+
+	for _, e := range graph.Edges {
+
+		policies := policyUpdates[e.ChanPoint]
+
+		// If the map[op] is nil, we need to initialize the map first.
+		if policies == nil {
+			policies = make(map[string][]*lnrpc.RoutingPolicy)
+		}
+
+		if e.Node1Policy != nil {
+			policies[e.Node1Pub] = append(
+				policies[e.Node1Pub], e.Node1Policy,
+			)
+		}
+
+		if e.Node2Policy != nil {
+			policies[e.Node2Pub] = append(
+				policies[e.Node2Pub], e.Node2Policy,
+			)
+		}
+
+		policyUpdates[e.ChanPoint] = policies
+	}
+
+	return policyUpdates
 }

@@ -2269,64 +2269,6 @@ func dustHelper(chantype channeldb.ChannelType, localDustLimit,
 	return isDust
 }
 
-// getDustSum is a wrapper method that calls the underlying channel's dust sum
-// method.
-//
-// NOTE: Part of the dustHandler interface.
-func (l *channelLink) getDustSum(remote bool) lnwire.MilliSatoshi {
-	return l.channel.GetDustSum(remote)
-}
-
-// getFeeRate is a wrapper method that retrieves the underlying channel's
-// feerate.
-//
-// NOTE: Part of the dustHandler interface.
-func (l *channelLink) getFeeRate() chainfee.SatPerKWeight {
-	return l.channel.CommitFeeRate()
-}
-
-// getDustClosure returns a closure that can be used by the switch or mailbox
-// to evaluate whether a given HTLC is dust.
-//
-// NOTE: Part of the dustHandler interface.
-func (l *channelLink) getDustClosure() dustClosure {
-	localDustLimit := l.channel.State().LocalChanCfg.DustLimit
-	remoteDustLimit := l.channel.State().RemoteChanCfg.DustLimit
-	chanType := l.channel.State().ChanType
-
-	return dustHelper(chanType, localDustLimit, remoteDustLimit)
-}
-
-// dustClosure is a function that evaluates whether an HTLC is dust. It returns
-// true if the HTLC is dust. It takes in a feerate, a boolean denoting whether
-// the HTLC is incoming (i.e. one that the remote sent), a boolean denoting
-// whether to evaluate on the local or remote commit, and finally an HTLC
-// amount to test.
-type dustClosure func(chainfee.SatPerKWeight, bool, bool, btcutil.Amount) bool
-
-// dustHelper is used to construct the dustClosure.
-func dustHelper(chantype channeldb.ChannelType, localDustLimit,
-	remoteDustLimit btcutil.Amount) dustClosure {
-
-	isDust := func(feerate chainfee.SatPerKWeight, incoming,
-		localCommit bool, amt btcutil.Amount) bool {
-
-		if localCommit {
-			return lnwallet.HtlcIsDust(
-				chantype, incoming, true, feerate, amt,
-				localDustLimit,
-			)
-		}
-
-		return lnwallet.HtlcIsDust(
-			chantype, incoming, false, feerate, amt,
-			remoteDustLimit,
-		)
-	}
-
-	return isDust
-}
-
 // AttachMailBox updates the current mailbox used by this link, and hooks up
 // the mailbox's message and packet outboxes to the link's upstream and
 // downstream chans, respectively.

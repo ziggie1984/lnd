@@ -157,7 +157,8 @@ var byteOrder = binary.BigEndian
 const (
 	// kgtnOutputConfTarget is the default confirmation target we'll use for
 	// sweeps of CSV delayed outputs.
-	kgtnOutputConfTarget = 6
+	// kgtnOutputConfTarget = 6
+	kgtOutputFeeRate = 250
 )
 
 var (
@@ -775,7 +776,11 @@ func (u *UtxoNursery) sweepMatureOutputs(classHeight uint32,
 	utxnLog.Infof("Sweeping %v CSV-delayed outputs with sweep tx for "+
 		"height %v", len(kgtnOutputs), classHeight)
 
-	feePref := sweep.FeePreference{ConfTarget: kgtnOutputConfTarget}
+	utxnLog.Infof("(ziggie)")
+
+	//feePref := sweep.FeePreference{ConfTarget: kgtnOutputConfTarget}
+	feePref := sweep.FeePreference{FeeRate: kgtOutputFeeRate}
+
 	for _, output := range kgtnOutputs {
 		// Create local copy to prevent pointer to loop variable to be
 		// passed in with disastrous consequences.

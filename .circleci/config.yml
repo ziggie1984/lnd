@@ -57,7 +57,7 @@ jobs:
   multiarch:
     machine:
       enabled: true
-      image: circleci/classic:201808-01
+      image: ubuntu-2204:2022.04.1
     steps:
       - run:
           command: |

@@ -126,7 +126,7 @@ release: clean-mobile
 
 docker-release:
 	@$(call print, "Building release helper docker image.")
-	if [ "$(tag)" = "" ]; then echo "Must specify tag=<commit_or_tag>!"; exit 1; fi
+	# if [ "$(tag)" = "" ]; then echo "Must specify tag=<commit_or_tag>!"; exit 1; fi
 
 	docker build -t lnd-release-helper -f make/builder.Dockerfile make/
 

@@ -7,11 +7,11 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
@@ -23,6 +23,7 @@ import (
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
 	"github.com/lightningnetwork/lnd/watchtower/wtmock"
 	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
+	"github.com/stretchr/testify/require"
 )
 
 const csvDelay uint32 = 144
@@ -103,13 +104,13 @@ func genTaskTest(
 
 	// Parse the key pairs for all keys used in the test.
 	revSK, revPK := btcec.PrivKeyFromBytes(
-		btcec.S256(), revPrivBytes,
+		revPrivBytes,
 	)
 	_, toLocalPK := btcec.PrivKeyFromBytes(
-		btcec.S256(), toLocalPrivBytes,
+		toLocalPrivBytes,
 	)
 	toRemoteSK, toRemotePK := btcec.PrivKeyFromBytes(
-		btcec.S256(), toRemotePrivBytes,
+		toRemotePrivBytes,
 	)
 
 	// Create the signer, and add the revocation and to-remote privkeys.
@@ -124,8 +125,8 @@ func genTaskTest(
 	// the breach transaction, which we will continue to modify.
 	breachTxn := wire.NewMsgTx(2)
 	breachInfo := &lnwallet.BreachRetribution{
-		RevokedStateNum:   stateNum,
-		BreachTransaction: breachTxn,
+		RevokedStateNum: stateNum,
+		BreachTxHash:    breachTxn.TxHash(),
 		KeyRing: &lnwallet.CommitmentKeyRing{
 			RevocationKey: revPK,
 			ToLocalKey:    toLocalPK,
@@ -602,12 +603,10 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	// Now, we'll construct, sign, and encrypt the blob containing the parts
 	// needed to reconstruct the justice transaction.
 	hint, encBlob, err := task.craftSessionPayload(test.signer)
-	if err != nil {
-		t.Fatalf("unable to craft session payload: %v", err)
-	}
+	require.NoError(t, err, "unable to craft session payload")
 
 	// Verify that the breach hint matches the breach txid's prefix.
-	breachTxID := test.breachInfo.BreachTransaction.TxHash()
+	breachTxID := test.breachInfo.BreachTxHash
 	expHint := blob.NewBreachHintFromHash(&breachTxID)
 	if hint != expHint {
 		t.Fatalf("breach hint mismatch, want: %x, got: %v",
@@ -618,9 +617,7 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	// contents.
 	key := blob.NewBreachKeyFromHash(&breachTxID)
 	jKit, err := blob.Decrypt(key, encBlob, policy.BlobType)
-	if err != nil {
-		t.Fatalf("unable to decrypt blob: %v", err)
-	}
+	require.NoError(t, err, "unable to decrypt blob")
 
 	keyRing := test.breachInfo.KeyRing
 	expToLocalPK := keyRing.ToLocalKey.SerializeCompressed()

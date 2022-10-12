@@ -8,7 +8,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/go-errors/errors"
 	mig "github.com/lightningnetwork/lnd/channeldb/migration"
@@ -19,6 +19,9 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb/migration21"
 	"github.com/lightningnetwork/lnd/channeldb/migration23"
 	"github.com/lightningnetwork/lnd/channeldb/migration24"
+	"github.com/lightningnetwork/lnd/channeldb/migration25"
+	"github.com/lightningnetwork/lnd/channeldb/migration26"
+	"github.com/lightningnetwork/lnd/channeldb/migration27"
 	"github.com/lightningnetwork/lnd/channeldb/migration_01_to_11"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/kvdb"
@@ -205,6 +208,24 @@ var (
 			number:    24,
 			migration: migration24.MigrateFwdPkgCleanup,
 		},
+		{
+			// Save the initial local/remote balances in channel
+			// info.
+			number:    25,
+			migration: migration25.MigrateInitialBalances,
+		},
+		{
+			// Migrate the initial local/remote balance fields into
+			// tlv records.
+			number:    26,
+			migration: migration26.MigrateBalancesToTlvRecords,
+		},
+		{
+			// Patch the initial local/remote balance fields with
+			// empty values for historical channels.
+			number:    27,
+			migration: migration27.MigrateHistoricalBalances,
+		},
 	}
 
 	// Big endian is the preferred byte order, due to cursor scans over
@@ -263,13 +284,15 @@ func Open(dbPath string, modifiers ...OptionModifier) (*DB, error) {
 // CreateWithBackend creates channeldb instance using the passed kvdb.Backend.
 // Any necessary schemas migrations due to updates will take place as necessary.
 func CreateWithBackend(backend kvdb.Backend, modifiers ...OptionModifier) (*DB, error) {
-	if err := initChannelDB(backend); err != nil {
-		return nil, err
-	}
-
 	opts := DefaultOptions()
 	for _, modifier := range modifiers {
 		modifier(&opts)
+	}
+
+	if !opts.NoMigration {
+		if err := initChannelDB(backend); err != nil {
+			return nil, err
+		}
 	}
 
 	chanDB := &DB{
@@ -291,16 +314,18 @@ func CreateWithBackend(backend kvdb.Backend, modifiers ...OptionModifier) (*DB, 
 	chanDB.graph, err = NewChannelGraph(
 		backend, opts.RejectCacheSize, opts.ChannelCacheSize,
 		opts.BatchCommitInterval, opts.PreAllocCacheNumNodes,
-		opts.UseGraphCache,
+		opts.UseGraphCache, opts.NoMigration,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	// Synchronize the version of database and apply migrations if needed.
-	if err := chanDB.syncVersions(dbVersions); err != nil {
-		backend.Close()
-		return nil, err
+	if !opts.NoMigration {
+		if err := chanDB.syncVersions(dbVersions); err != nil {
+			backend.Close()
+			return nil, err
+		}
 	}
 
 	return chanDB, nil
@@ -1033,7 +1058,7 @@ func (c *ChannelStateDB) pruneLinkNode(openChannels []*OpenChannel,
 	return c.linkNodeDB.DeleteLinkNode(remotePub)
 }
 
-// PruneLinkNodes attempts to prune all link nodes found within the databse with
+// PruneLinkNodes attempts to prune all link nodes found within the database with
 // whom we no longer have any open channels with.
 func (c *ChannelStateDB) PruneLinkNodes() error {
 	allLinkNodes, err := c.linkNodeDB.FetchAllLinkNodes()
@@ -1185,7 +1210,7 @@ func (c *ChannelStateDB) AbandonChannel(chanPoint *wire.OutPoint,
 		}
 
 		// If the channel was already closed, then we don't return an
-		// error as we'd like fro this step to be repeatable.
+		// error as we'd like this step to be repeatable.
 		return nil
 	case err != nil:
 		return err
@@ -1243,10 +1268,12 @@ func (c *ChannelStateDB) GetChannelOpeningState(outPoint []byte) ([]byte, error)
 			return ErrChannelNotFound
 		}
 
-		serializedState = bucket.Get(outPoint)
-		if serializedState == nil {
+		stateBytes := bucket.Get(outPoint)
+		if stateBytes == nil {
 			return ErrChannelNotFound
 		}
+
+		serializedState = append(serializedState, stateBytes...)
 
 		return nil
 	}, func() {

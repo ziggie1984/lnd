@@ -10,18 +10,20 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/hdkeychain"
-	"github.com/btcsuite/btcutil/psbt"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/input"
@@ -322,15 +324,28 @@ func (w *WalletKit) internalScope() waddrmgr.KeyScope {
 	}
 }
 
-// ListUnspent returns useful information about each unspent output owned by the
-// wallet, as reported by the underlying `ListUnspentWitness`; the information
-// returned is: outpoint, amount in satoshis, address, address type,
-// scriptPubKey in hex and number of confirmations.  The result is filtered to
-// contain outputs whose number of confirmations is between a
-// minimum and maximum number of confirmations specified by the user, with 0
-// meaning unconfirmed.
+// ListUnspent returns useful information about each unspent output owned by
+// the wallet, as reported by the underlying `ListUnspentWitness`; the
+// information returned is: outpoint, amount in satoshis, address, address
+// type, scriptPubKey in hex and number of confirmations. The result is
+// filtered to contain outputs whose number of confirmations is between a
+// minimum and maximum number of confirmations specified by the user.
 func (w *WalletKit) ListUnspent(ctx context.Context,
 	req *ListUnspentRequest) (*ListUnspentResponse, error) {
+
+	// Force min_confs and max_confs to be zero if unconfirmed_only is
+	// true.
+	if req.UnconfirmedOnly && (req.MinConfs != 0 || req.MaxConfs != 0) {
+		return nil, fmt.Errorf("min_confs and max_confs must be zero if " +
+			"unconfirmed_only is true")
+	}
+
+	// When unconfirmed_only is inactive and max_confs is zero (default
+	// values), we will override max_confs to be a MaxInt32, in order
+	// to return all confirmed and unconfirmed utxos as a default response.
+	if req.MaxConfs == 0 && !req.UnconfirmedOnly {
+		req.MaxConfs = math.MaxInt32
+	}
 
 	// Validate the confirmation arguments.
 	minConfs, maxConfs, err := lnrpc.ParseConfs(req.MinConfs, req.MaxConfs)
@@ -409,7 +424,7 @@ func (w *WalletKit) LeaseOutput(ctx context.Context,
 	// other concurrent processes attempting to lease the same UTXO.
 	var expiration time.Time
 	err = w.cfg.CoinSelectionLocker.WithCoinSelectLock(func() error {
-		expiration, err = w.cfg.Wallet.LeaseOutput(
+		expiration, _, _, err = w.cfg.Wallet.LeaseOutput(
 			lockID, *op, duration,
 		)
 		return err
@@ -527,6 +542,9 @@ func (w *WalletKit) NextAddr(ctx context.Context,
 	case AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH:
 		return nil, fmt.Errorf("invalid address type for next "+
 			"address: %v", req.Type)
+
+	case AddressType_TAPROOT_PUBKEY:
+		addrType = lnwallet.TaprootPubkey
 	}
 
 	addr, err := w.cfg.Wallet.NewAddress(addrType, req.Change, account)
@@ -843,22 +861,25 @@ func (w *WalletKit) BumpFee(ctx context.Context,
 			"transaction")
 	}
 
-	var witnessType input.WitnessType
-	switch utxo.AddressType {
-	case lnwallet.WitnessPubKey:
-		witnessType = input.WitnessKeyHash
-	case lnwallet.NestedWitnessPubKey:
-		witnessType = input.NestedWitnessKeyHash
-	default:
-		return nil, fmt.Errorf("unknown input witness %v", op)
-	}
-
 	signDesc := &input.SignDescriptor{
 		Output: &wire.TxOut{
 			PkScript: utxo.PkScript,
 			Value:    int64(utxo.Value),
 		},
 		HashType: txscript.SigHashAll,
+	}
+
+	var witnessType input.WitnessType
+	switch utxo.AddressType {
+	case lnwallet.WitnessPubKey:
+		witnessType = input.WitnessKeyHash
+	case lnwallet.NestedWitnessPubKey:
+		witnessType = input.NestedWitnessKeyHash
+	case lnwallet.TaprootPubkey:
+		witnessType = input.TaprootPubKeySpend
+		signDesc.HashType = txscript.SigHashDefault
+	default:
+		return nil, fmt.Errorf("unknown input witness %v", op)
 	}
 
 	// We'll use the current height as the height hint since we're dealing
@@ -869,8 +890,9 @@ func (w *WalletKit) BumpFee(ctx context.Context,
 			err)
 	}
 
-	input := input.NewBaseInput(op, witnessType, signDesc, uint32(currentHeight))
-	if _, err = w.cfg.Sweeper.SweepInput(input, sweep.Params{Fee: feePreference}); err != nil {
+	inp := input.NewBaseInput(op, witnessType, signDesc, uint32(currentHeight))
+	sweepParams := sweep.Params{Fee: feePreference}
+	if _, err = w.cfg.Sweeper.SweepInput(inp, sweepParams); err != nil {
 		return nil, err
 	}
 
@@ -989,7 +1011,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 		err         error
 		packet      *psbt.Packet
 		feeSatPerKW chainfee.SatPerKWeight
-		locks       []*wtxmgr.LockedOutput
+		locks       []*base.ListLeasedOutputResult
 		rawPsbt     bytes.Buffer
 	)
 
@@ -1175,9 +1197,11 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 }
 
 // marshallLeases converts the lock leases to the RPC format.
-func marshallLeases(locks []*wtxmgr.LockedOutput) []*UtxoLease {
+func marshallLeases(locks []*base.ListLeasedOutputResult) []*UtxoLease {
 	rpcLocks := make([]*UtxoLease, len(locks))
 	for idx, lock := range locks {
+		lock := lock
+
 		rpcLocks[idx] = &UtxoLease{
 			Id: lock.LockID[:],
 			Outpoint: &lnrpc.OutPoint{
@@ -1186,6 +1210,8 @@ func marshallLeases(locks []*wtxmgr.LockedOutput) []*UtxoLease {
 				OutputIndex: lock.Outpoint.Index,
 			},
 			Expiration: uint64(lock.Expiration.Unix()),
+			PkScript:   lock.PkScript,
+			Value:      uint64(lock.Value),
 		}
 	}
 
@@ -1210,7 +1236,22 @@ func (w *WalletKit) SignPsbt(_ context.Context, req *SignPsbtRequest) (
 		bytes.NewReader(req.FundedPsbt), false,
 	)
 	if err != nil {
+		log.Debugf("Error parsing PSBT: %v, raw input: %x", err,
+			req.FundedPsbt)
 		return nil, fmt.Errorf("error parsing PSBT: %v", err)
+	}
+
+	// Before we attempt to sign the packet, ensure that every input either
+	// has a witness UTXO, or a non witness UTXO.
+	for idx := range packet.UnsignedTx.TxIn {
+		in := packet.Inputs[idx]
+
+		// Doesn't have either a witness or non witness UTXO so we need
+		// to exit here as otherwise signing will fail.
+		if in.WitnessUtxo == nil && in.NonWitnessUtxo == nil {
+			return nil, fmt.Errorf("input (index=%v) doesn't "+
+				"specify any UTXO info", idx)
+		}
 	}
 
 	// Let the wallet do the heavy lifting. This will sign all inputs that
@@ -1254,13 +1295,18 @@ func (w *WalletKit) FinalizePsbt(_ context.Context,
 		account = req.Account
 	}
 
-	// Parse the funded PSBT. No additional checks are required at this
-	// level as the wallet will perform all of them.
+	// Parse the funded PSBT.
 	packet, err := psbt.NewFromRawBytes(
 		bytes.NewReader(req.FundedPsbt), false,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing PSBT: %v", err)
+	}
+
+	// The only check done at this level is to validate that the PSBT is
+	// not complete. The wallet performs all other checks.
+	if packet.IsComplete() {
+		return nil, fmt.Errorf("PSBT is already fully signed")
 	}
 
 	// Let the wallet do the heavy lifting. This will sign all inputs that
@@ -1326,6 +1372,9 @@ func marshalWalletAccount(internalScope waddrmgr.KeyScope,
 	case waddrmgr.KeyScopeBIP0084:
 		addrType = AddressType_WITNESS_PUBKEY_HASH
 
+	case waddrmgr.KeyScopeBIP0086:
+		addrType = AddressType_TAPROOT_PUBKEY
+
 	case internalScope:
 		addrType = AddressType_WITNESS_PUBKEY_HASH
 
@@ -1384,6 +1433,10 @@ func (w *WalletKit) ListAccounts(ctx context.Context,
 		keyScope := waddrmgr.KeyScopeBIP0049Plus
 		keyScopeFilter = &keyScope
 
+	case AddressType_TAPROOT_PUBKEY:
+		keyScope := waddrmgr.KeyScopeBIP0086
+		keyScopeFilter = &keyScope
+
 	default:
 		return nil, fmt.Errorf("unhandled address type %v", req.AddressType)
 	}
@@ -1399,6 +1452,7 @@ func (w *WalletKit) ListAccounts(ctx context.Context,
 		// wallet in the response if they don't have any keys imported.
 		if account.AccountName == waddrmgr.ImportedAddrAccountName &&
 			account.ImportedKeyCount == 0 {
+
 			continue
 		}
 
@@ -1436,6 +1490,10 @@ func parseAddrType(addrType AddressType,
 
 	case AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH:
 		addrTyp := waddrmgr.WitnessPubKey
+		return &addrTyp, nil
+
+	case AddressType_TAPROOT_PUBKEY:
+		addrTyp := waddrmgr.TaprootPubKey
 		return &addrTyp, nil
 
 	default:
@@ -1525,7 +1583,7 @@ func (w *WalletKit) ImportAccount(ctx context.Context,
 func (w *WalletKit) ImportPublicKey(ctx context.Context,
 	req *ImportPublicKeyRequest) (*ImportPublicKeyResponse, error) {
 
-	pubKey, err := btcec.ParsePubKey(req.PublicKey, btcec.S256())
+	pubKey, err := btcec.ParsePubKey(req.PublicKey)
 	if err != nil {
 		return nil, err
 	}

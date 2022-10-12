@@ -25,6 +25,10 @@ var allTestCases = []*testCase{
 		test: testBasicChannelFunding,
 	},
 	{
+		name: "basic funding flow with all input types",
+		test: testChannelFundingInputTypes,
+	},
+	{
 		name: "unconfirmed channel funding",
 		test: testUnconfirmedChannelFunding,
 	},
@@ -83,6 +87,10 @@ var allTestCases = []*testCase{
 	{
 		name: "update channel status",
 		test: testUpdateChanStatus,
+	},
+	{
+		name: "test update node announcement rpc",
+		test: testUpdateNodeAnnouncement,
 	},
 	{
 		name: "list outgoing payments",
@@ -156,6 +164,10 @@ var allTestCases = []*testCase{
 	{
 		name: "derive shared key",
 		test: testDeriveSharedKey,
+	},
+	{
+		name: "sign output raw",
+		test: testSignOutputRaw,
 	},
 	{
 		name: "async payments benchmark",
@@ -378,5 +390,21 @@ var allTestCases = []*testCase{
 	{
 		name: "remote signer",
 		test: testRemoteSigner,
+	},
+	{
+		name: "3rd party anchor spend",
+		test: testAnchorThirdPartySpend,
+	},
+	{
+		name: "taproot",
+		test: testTaproot,
+	},
+	{
+		name: "addpeer config",
+		test: testAddPeerConfig,
+	},
+	{
+		name: "resolution handoff",
+		test: testResHandoff,
 	},
 }

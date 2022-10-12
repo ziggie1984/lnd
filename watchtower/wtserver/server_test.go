@@ -6,16 +6,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/watchtower/blob"
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
 	"github.com/lightningnetwork/lnd/watchtower/wtmock"
 	"github.com/lightningnetwork/lnd/watchtower/wtserver"
 	"github.com/lightningnetwork/lnd/watchtower/wtwire"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -35,10 +36,8 @@ var (
 func randPubKey(t *testing.T) *btcec.PublicKey {
 	t.Helper()
 
-	sk, err := btcec.NewPrivateKey(btcec.S256())
-	if err != nil {
-		t.Fatalf("unable to generate pubkey: %v", err)
-	}
+	sk, err := btcec.NewPrivateKey()
+	require.NoError(t, err, "unable to generate pubkey")
 
 	return sk.PubKey()
 }
@@ -63,9 +62,7 @@ func initServer(t *testing.T, db wtserver.DB,
 		},
 		ChainHash: testnetChainHash,
 	})
-	if err != nil {
-		t.Fatalf("unable to create server: %v", err)
-	}
+	require.NoError(t, err, "unable to create server")
 
 	if err = s.Start(); err != nil {
 		t.Fatalf("unable to start server: %v", err)
@@ -101,9 +98,7 @@ func TestServerOnlyAcceptOnePeer(t *testing.T) {
 
 	var b bytes.Buffer
 	_, err := wtwire.WriteMessage(&b, init, 0)
-	if err != nil {
-		t.Fatalf("unable to write message: %v", err)
-	}
+	require.NoError(t, err, "unable to write message")
 
 	msg := b.Bytes()
 

@@ -1380,6 +1380,14 @@
               ]
             },
             "collectionFormat": "multi"
+          },
+          {
+            "name": "time_pref",
+            "description": "The time preference for this payment. Set to -1 to optimize for fees\nonly, to 1 to optimize for reliability only or a value inbetween for a mix.",
+            "in": "query",
+            "required": false,
+            "type": "number",
+            "format": "double"
           }
         ],
         "tags": [
@@ -1801,7 +1809,9 @@
               "WITNESS_PUBKEY_HASH",
               "NESTED_PUBKEY_HASH",
               "UNUSED_WITNESS_PUBKEY_HASH",
-              "UNUSED_NESTED_PUBKEY_HASH"
+              "UNUSED_NESTED_PUBKEY_HASH",
+              "TAPROOT_PUBKEY",
+              "UNUSED_TAPROOT_PUBKEY"
             ],
             "default": "WITNESS_PUBKEY_HASH"
           },
@@ -1903,6 +1913,13 @@
           {
             "name": "reversed",
             "description": "If set, the payments returned will result from seeking backwards from the\nspecified index offset. This can be used to paginate backwards. The order\nof the returned payments is always oldest first (ascending index order).",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "count_total_payments",
+            "description": "If set, all payments (complete and incomplete, independent of the\nmax_payments parameter) will be counted. Note that setting this to true will\nincrease the run time of the call significantly on systems that have a lot\nof payments, as all of them have to be iterated through to be counted.",
             "in": "query",
             "required": false,
             "type": "boolean"
@@ -2761,6 +2778,10 @@
         "chan_status_flags": {
           "type": "string",
           "description": "A set of flags showing the current state of the channel."
+        },
+        "private": {
+          "type": "boolean",
+          "description": "Whether this channel is advertised to the network or not."
         }
       }
     },
@@ -2770,11 +2791,6 @@
         "channel": {
           "$ref": "#/definitions/PendingChannelsResponsePendingChannel",
           "title": "The pending channel"
-        },
-        "confirmation_height": {
-          "type": "integer",
-          "format": "int64",
-          "title": "The height at which this channel will be confirmed"
         },
         "commit_fee": {
           "type": "string",
@@ -2919,10 +2935,12 @@
         "WITNESS_PUBKEY_HASH",
         "NESTED_PUBKEY_HASH",
         "UNUSED_WITNESS_PUBKEY_HASH",
-        "UNUSED_NESTED_PUBKEY_HASH"
+        "UNUSED_NESTED_PUBKEY_HASH",
+        "TAPROOT_PUBKEY",
+        "UNUSED_TAPROOT_PUBKEY"
       ],
       "default": "WITNESS_PUBKEY_HASH",
-      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)",
+      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)\n- `p2tr`: Pay to taproot pubkey (`TAPROOT_PUBKEY` = 4)",
       "title": "`AddressType` has to be one of:"
     },
     "lnrpcAmount": {
@@ -3883,7 +3901,7 @@
       "properties": {
         "addr": {
           "$ref": "#/definitions/lnrpcLightningAddress",
-          "title": "Lightning address of the peer, in the format `\u003cpubkey\u003e@host`"
+          "description": "Lightning address of the peer to connect to."
         },
         "perm": {
           "type": "boolean",
@@ -4429,6 +4447,10 @@
             "$ref": "#/definitions/lnrpcFeature"
           },
           "description": "Features that our node has advertised in our init message, node\nannouncements and invoices."
+        },
+        "require_htlc_interceptor": {
+          "type": "boolean",
+          "description": "Indicates whether the HTLC interceptor API is in always-on mode."
         }
       }
     },
@@ -4600,6 +4622,11 @@
             "format": "byte"
           },
           "description": "An optional set of key-value TLV records. This is useful within the context\nof the SendToRoute call as it allows callers to specify arbitrary K-V pairs\nto drop off at each hop within the onion."
+        },
+        "metadata": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment metadata to send along with the payment to the payee."
         }
       }
     },
@@ -4675,7 +4702,7 @@
         "r_hash": {
           "type": "string",
           "format": "byte",
-          "description": "The hash of the preimage. When using REST, this field must be encoded as\nbase64."
+          "description": "The hash of the preimage. When using REST, this field must be encoded as\nbase64.\nNote: Output only, don't specify for creating an invoice."
         },
         "value": {
           "type": "string",
@@ -4696,16 +4723,16 @@
         "creation_date": {
           "type": "string",
           "format": "int64",
-          "title": "When this invoice was created"
+          "description": "When this invoice was created.\nNote: Output only, don't specify for creating an invoice."
         },
         "settle_date": {
           "type": "string",
           "format": "int64",
-          "title": "When this invoice was settled"
+          "description": "When this invoice was settled.\nNote: Output only, don't specify for creating an invoice."
         },
         "payment_request": {
           "type": "string",
-          "description": "A bare-bones invoice for a payment within the Lightning Network. With the\ndetails of the invoice, the sender has all the data necessary to send a\npayment to the recipient."
+          "description": "A bare-bones invoice for a payment within the Lightning Network. With the\ndetails of the invoice, the sender has all the data necessary to send a\npayment to the recipient.\nNote: Output only, don't specify for creating an invoice."
         },
         "description_hash": {
           "type": "string",
@@ -4740,12 +4767,12 @@
         "add_index": {
           "type": "string",
           "format": "uint64",
-          "description": "The \"add\" index of this invoice. Each newly created invoice will increment\nthis index making it monotonically increasing. Callers to the\nSubscribeInvoices call can use this to instantly get notified of all added\ninvoices with an add_index greater than this one."
+          "description": "The \"add\" index of this invoice. Each newly created invoice will increment\nthis index making it monotonically increasing. Callers to the\nSubscribeInvoices call can use this to instantly get notified of all added\ninvoices with an add_index greater than this one.\nNote: Output only, don't specify for creating an invoice."
         },
         "settle_index": {
           "type": "string",
           "format": "uint64",
-          "description": "The \"settle\" index of this invoice. Each newly settled invoice will\nincrement this index making it monotonically increasing. Callers to the\nSubscribeInvoices call can use this to instantly get notified of all\nsettled invoices with an settle_index greater than this one."
+          "description": "The \"settle\" index of this invoice. Each newly settled invoice will\nincrement this index making it monotonically increasing. Callers to the\nSubscribeInvoices call can use this to instantly get notified of all\nsettled invoices with an settle_index greater than this one.\nNote: Output only, don't specify for creating an invoice."
         },
         "amt_paid": {
           "type": "string",
@@ -4755,39 +4782,39 @@
         "amt_paid_sat": {
           "type": "string",
           "format": "int64",
-          "description": "The amount that was accepted for this invoice, in satoshis. This will ONLY\nbe set if this invoice has been settled. We provide this field as if the\ninvoice was created with a zero value, then we need to record what amount\nwas ultimately accepted. Additionally, it's possible that the sender paid\nMORE that was specified in the original invoice. So we'll record that here\nas well."
+          "description": "The amount that was accepted for this invoice, in satoshis. This will ONLY\nbe set if this invoice has been settled. We provide this field as if the\ninvoice was created with a zero value, then we need to record what amount\nwas ultimately accepted. Additionally, it's possible that the sender paid\nMORE that was specified in the original invoice. So we'll record that here\nas well.\nNote: Output only, don't specify for creating an invoice."
         },
         "amt_paid_msat": {
           "type": "string",
           "format": "int64",
-          "description": "The amount that was accepted for this invoice, in millisatoshis. This will\nONLY be set if this invoice has been settled. We provide this field as if\nthe invoice was created with a zero value, then we need to record what\namount was ultimately accepted. Additionally, it's possible that the sender\npaid MORE that was specified in the original invoice. So we'll record that\nhere as well."
+          "description": "The amount that was accepted for this invoice, in millisatoshis. This will\nONLY be set if this invoice has been settled. We provide this field as if\nthe invoice was created with a zero value, then we need to record what\namount was ultimately accepted. Additionally, it's possible that the sender\npaid MORE that was specified in the original invoice. So we'll record that\nhere as well.\nNote: Output only, don't specify for creating an invoice."
         },
         "state": {
           "$ref": "#/definitions/InvoiceInvoiceState",
-          "description": "The state the invoice is in."
+          "description": "The state the invoice is in.\nNote: Output only, don't specify for creating an invoice."
         },
         "htlcs": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/lnrpcInvoiceHTLC"
           },
-          "description": "List of HTLCs paying to this invoice [EXPERIMENTAL]."
+          "description": "List of HTLCs paying to this invoice [EXPERIMENTAL].\nNote: Output only, don't specify for creating an invoice."
         },
         "features": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/lnrpcFeature"
           },
-          "description": "List of features advertised on the invoice."
+          "description": "List of features advertised on the invoice.\nNote: Output only, don't specify for creating an invoice."
         },
         "is_keysend": {
           "type": "boolean",
-          "description": "Indicates if this invoice was a spontaneous payment that arrived via keysend\n[EXPERIMENTAL]."
+          "description": "Indicates if this invoice was a spontaneous payment that arrived via keysend\n[EXPERIMENTAL].\nNote: Output only, don't specify for creating an invoice."
         },
         "payment_addr": {
           "type": "string",
           "format": "byte",
-          "description": "The payment address of this invoice. This value will be used in MPP\npayments, and also for newer invoices that always require the MPP payload\nfor added end-to-end security."
+          "description": "The payment address of this invoice. This value will be used in MPP\npayments, and also for newer invoices that always require the MPP payload\nfor added end-to-end security.\nNote: Output only, don't specify for creating an invoice."
         },
         "is_amp": {
           "type": "boolean",
@@ -4798,7 +4825,7 @@
           "additionalProperties": {
             "$ref": "#/definitions/lnrpcAMPInvoiceState"
           },
-          "description": "Maps a 32-byte hex-encoded set ID to the sub-invoice AMP state for the\ngiven set ID. This field is always populated for AMP invoices, and can be\nused along side LookupInvoice to obtain the HTLC information related to a\ngiven sub-invoice.",
+          "description": "Maps a 32-byte hex-encoded set ID to the sub-invoice AMP state for the\ngiven set ID. This field is always populated for AMP invoices, and can be\nused along side LookupInvoice to obtain the HTLC information related to a\ngiven sub-invoice.\nNote: Output only, don't specify for creating an invoice.",
           "title": "[EXPERIMENTAL]:"
         }
       }
@@ -4908,11 +4935,11 @@
       "properties": {
         "pubkey": {
           "type": "string",
-          "title": "The identity pubkey of the Lightning node"
+          "description": "The identity pubkey of the Lightning node."
         },
         "host": {
           "type": "string",
-          "title": "The network location of the lightning node, e.g. `69.69.69.69:1337` or\n`localhost:10011`"
+          "description": "The network location of the lightning node, e.g. `69.69.69.69:1337` or\n`localhost:10011`."
         }
       }
     },
@@ -5013,6 +5040,11 @@
           "type": "string",
           "format": "uint64",
           "description": "The index of the last item in the set of returned payments. This can be used\nas the index_offset to continue seeking forwards in the next request."
+        },
+        "total_num_payments": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Will only be set if count_total_payments in the request was set. Represents\nthe total number of payments (complete and incomplete, independent of the\nnumber of payments requested in the query) currently present in the payments\ndatabase."
         }
       }
     },
@@ -5425,6 +5457,52 @@
           "description": "The index of the output on the transaction."
         }
       }
+    },
+    "lnrpcOutputDetail": {
+      "type": "object",
+      "properties": {
+        "output_type": {
+          "$ref": "#/definitions/lnrpcOutputScriptType",
+          "title": "The type of the output"
+        },
+        "address": {
+          "type": "string",
+          "title": "The address"
+        },
+        "pk_script": {
+          "type": "string",
+          "title": "The pkscript in hex"
+        },
+        "output_index": {
+          "type": "string",
+          "format": "int64",
+          "title": "The output index used in the raw transaction"
+        },
+        "amount": {
+          "type": "string",
+          "format": "int64",
+          "title": "The value of the output coin in satoshis"
+        },
+        "is_our_address": {
+          "type": "boolean",
+          "title": "Denotes if the output is controlled by the internal wallet"
+        }
+      }
+    },
+    "lnrpcOutputScriptType": {
+      "type": "string",
+      "enum": [
+        "SCRIPT_TYPE_PUBKEY_HASH",
+        "SCRIPT_TYPE_SCRIPT_HASH",
+        "SCRIPT_TYPE_WITNESS_V0_PUBKEY_HASH",
+        "SCRIPT_TYPE_WITNESS_V0_SCRIPT_HASH",
+        "SCRIPT_TYPE_PUBKEY",
+        "SCRIPT_TYPE_MULTISIG",
+        "SCRIPT_TYPE_NULLDATA",
+        "SCRIPT_TYPE_NON_STANDARD",
+        "SCRIPT_TYPE_WITNESS_UNKNOWN"
+      ],
+      "default": "SCRIPT_TYPE_PUBKEY_HASH"
     },
     "lnrpcPayReq": {
       "type": "object",
@@ -6407,7 +6485,14 @@
           "items": {
             "type": "string"
           },
-          "title": "Addresses that received funds for this transaction"
+          "description": "Addresses that received funds for this transaction. Deprecated as it is\nnow incorporated in the output_details field."
+        },
+        "output_details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/lnrpcOutputDetail"
+          },
+          "title": "Outputs that received funds for this transaction"
         },
         "raw_tx_hex": {
           "type": "string",
@@ -6535,6 +6620,11 @@
           "type": "string",
           "format": "int64",
           "title": "The unconfirmed balance of a wallet(with 0 confirmations)"
+        },
+        "locked_balance": {
+          "type": "string",
+          "format": "int64",
+          "description": "The total amount of wallet UTXOs held in outputs that are locked for\nother usage."
         },
         "account_balance": {
           "type": "object",

@@ -5,10 +5,10 @@ package funding
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,11 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/chanacceptor"
@@ -76,8 +77,9 @@ var (
 		0x6a, 0x49, 0x18, 0x83, 0x31, 0x98, 0x47, 0x53,
 	}
 
-	alicePrivKey, alicePubKey = btcec.PrivKeyFromBytes(btcec.S256(),
-		alicePrivKeyBytes[:])
+	alicePrivKey, alicePubKey = btcec.PrivKeyFromBytes(
+		alicePrivKeyBytes[:],
+	)
 
 	aliceTCPAddr, _ = net.ResolveTCPAddr("tcp", "10.0.0.2:9001")
 
@@ -93,8 +95,7 @@ var (
 		0x1e, 0xb, 0x4c, 0xfd, 0x9e, 0xc5, 0x8c, 0xe9,
 	}
 
-	bobPrivKey, bobPubKey = btcec.PrivKeyFromBytes(btcec.S256(),
-		bobPrivKeyBytes[:])
+	bobPrivKey, bobPubKey = btcec.PrivKeyFromBytes(bobPrivKeyBytes[:])
 
 	bobTCPAddr, _ = net.ResolveTCPAddr("tcp", "10.0.0.2:9000")
 
@@ -103,12 +104,13 @@ var (
 		Address:     bobTCPAddr,
 	}
 
-	testSig = &btcec.Signature{
-		R: new(big.Int),
-		S: new(big.Int),
-	}
-	_, _ = testSig.R.SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
-	_, _ = testSig.S.SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	testRBytes, _ = hex.DecodeString("8ce2bc69281ce27da07e6683571319d18e949ddfa2965fb6caa1bf0314f882d7")
+	testSBytes, _ = hex.DecodeString("299105481d63e0f4bc2a88121167221b6700d72a0ead154c03be696a292d24ae")
+	testRScalar   = new(btcec.ModNScalar)
+	testSScalar   = new(btcec.ModNScalar)
+	_             = testRScalar.SetByteSlice(testRBytes)
+	_             = testSScalar.SetByteSlice(testSBytes)
+	testSig       = ecdsa.NewSignature(testRScalar, testSScalar)
 
 	testKeyLoc = keychain.KeyLocator{Family: keychain.KeyFamilyNodeKey}
 
@@ -347,9 +349,7 @@ func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
 		cdb, netParams, chainNotifier, wc, signer, keyRing, bio,
 		estimator,
 	)
-	if err != nil {
-		t.Fatalf("unable to create test ln wallet: %v", err)
-	}
+	require.NoError(t, err, "unable to create test ln wallet")
 
 	var chanIDSeed [32]byte
 
@@ -362,7 +362,7 @@ func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
 		Notifier:     chainNotifier,
 		FeeEstimator: estimator,
 		SignMessage: func(_ keychain.KeyLocator,
-			_ []byte, _ bool) (*btcec.Signature, error) {
+			_ []byte, _ bool) (*ecdsa.Signature, error) {
 
 			return testSig, nil
 		},
@@ -457,9 +457,7 @@ func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
 	}
 
 	f, err := NewFundingManager(fundingCfg)
-	if err != nil {
-		t.Fatalf("failed creating fundingManager: %v", err)
-	}
+	require.NoError(t, err, "failed creating fundingManager")
 	if err = f.Start(); err != nil {
 		t.Fatalf("failed starting fundingManager: %v", err)
 	}
@@ -510,7 +508,7 @@ func recreateAliceFundingManager(t *testing.T, alice *testNode) {
 		Notifier:     oldCfg.Notifier,
 		FeeEstimator: oldCfg.FeeEstimator,
 		SignMessage: func(_ keychain.KeyLocator,
-			_ []byte, _ bool) (*btcec.Signature, error) {
+			_ []byte, _ bool) (*ecdsa.Signature, error) {
 
 			return testSig, nil
 		},
@@ -555,9 +553,7 @@ func recreateAliceFundingManager(t *testing.T, alice *testNode) {
 		ReservationTimeout:    oldCfg.ReservationTimeout,
 		OpenChannelPredicate:  chainedAcceptor,
 	})
-	if err != nil {
-		t.Fatalf("failed recreating aliceFundingManager: %v", err)
-	}
+	require.NoError(t, err, "failed recreating aliceFundingManager")
 
 	alice.fundingMgr = f
 	alice.msgChan = aliceMsgChan
@@ -576,28 +572,20 @@ func setupFundingManagers(t *testing.T,
 	options ...cfgOption) (*testNode, *testNode) {
 
 	aliceTestDir, err := ioutil.TempDir("", "alicelnwallet")
-	if err != nil {
-		t.Fatalf("unable to create temp directory: %v", err)
-	}
+	require.NoError(t, err, "unable to create temp directory")
 
 	alice, err := createTestFundingManager(
 		t, alicePrivKey, aliceAddr, aliceTestDir, options...,
 	)
-	if err != nil {
-		t.Fatalf("failed creating fundingManager: %v", err)
-	}
+	require.NoError(t, err, "failed creating fundingManager")
 
 	bobTestDir, err := ioutil.TempDir("", "boblnwallet")
-	if err != nil {
-		t.Fatalf("unable to create temp directory: %v", err)
-	}
+	require.NoError(t, err, "unable to create temp directory")
 
 	bob, err := createTestFundingManager(
 		t, bobPrivKey, bobAddr, bobTestDir, options...,
 	)
-	if err != nil {
-		t.Fatalf("failed creating fundingManager: %v", err)
-	}
+	require.NoError(t, err, "failed creating fundingManager")
 
 	// With the funding manager's created, we'll now attempt to mimic a
 	// connection pipe between them. In order to intercept the messages
@@ -996,6 +984,7 @@ func assertAddedToRouterGraph(t *testing.T, alice, bob *testNode,
 func assertChannelAnnouncements(t *testing.T, alice, bob *testNode,
 	capacity btcutil.Amount, customMinHtlc []lnwire.MilliSatoshi,
 	customMaxHtlc []lnwire.MilliSatoshi) {
+
 	t.Helper()
 
 	// After the FundingLocked message is sent, Alice and Bob will each
@@ -1965,9 +1954,7 @@ func TestFundingManagerFundingTimeout(t *testing.T) {
 	// Bob will at this point be waiting for the funding transaction to be
 	// confirmed, so the channel should be considered pending.
 	pendingChannels, err := bob.fundingMgr.cfg.Wallet.Cfg.Database.FetchPendingChannels()
-	if err != nil {
-		t.Fatalf("unable to fetch pending channels: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch pending channels")
 	if len(pendingChannels) != 1 {
 		t.Fatalf("Expected Bob to have 1 pending channel, had  %v",
 			len(pendingChannels))
@@ -2011,9 +1998,7 @@ func TestFundingManagerFundingNotTimeoutInitiator(t *testing.T) {
 	// Alice will at this point be waiting for the funding transaction to be
 	// confirmed, so the channel should be considered pending.
 	pendingChannels, err := alice.fundingMgr.cfg.Wallet.Cfg.Database.FetchPendingChannels()
-	if err != nil {
-		t.Fatalf("unable to fetch pending channels: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch pending channels")
 	if len(pendingChannels) != 1 {
 		t.Fatalf("Expected Alice to have 1 pending channel, had  %v",
 			len(pendingChannels))
@@ -2584,7 +2569,7 @@ func TestFundingManagerPrivateRestart(t *testing.T) {
 }
 
 // TestFundingManagerCustomChannelParameters checks that custom requirements we
-// specify during the channel funding flow is preserved correcly on both sides.
+// specify during the channel funding flow is preserved correctly on both sides.
 func TestFundingManagerCustomChannelParameters(t *testing.T) {
 	t.Parallel()
 
@@ -2763,9 +2748,7 @@ func TestFundingManagerCustomChannelParameters(t *testing.T) {
 	// Check that the custom channel parameters were properly set in the
 	// channel reservation.
 	resCtx, err := alice.fundingMgr.getReservationCtx(bobPubKey, chanID)
-	if err != nil {
-		t.Fatalf("unable to find ctx: %v", err)
-	}
+	require.NoError(t, err, "unable to find ctx")
 
 	// Alice's CSV delay should be 4 since Bob sent the default value, and
 	// Bob's should be 67 since Alice sent the custom value.
@@ -2780,7 +2763,7 @@ func TestFundingManagerCustomChannelParameters(t *testing.T) {
 	}
 
 	// The max value in flight Alice can have should be maxValueAcceptChannel,
-	// which is the default value and the maxium Bob can offer should be
+	// which is the default value and the maximum Bob can offer should be
 	// maxValueInFlight.
 	if err := assertMaxHtlc(resCtx,
 		maxValueAcceptChannel, maxValueInFlight); err != nil {
@@ -2789,9 +2772,7 @@ func TestFundingManagerCustomChannelParameters(t *testing.T) {
 
 	// Also make sure the parameters are properly set on Bob's end.
 	resCtx, err = bob.fundingMgr.getReservationCtx(alicePubKey, chanID)
-	if err != nil {
-		t.Fatalf("unable to find ctx: %v", err)
-	}
+	require.NoError(t, err, "unable to find ctx")
 
 	if err := assertDelay(resCtx, csvDelay, 4); err != nil {
 		t.Fatal(err)
@@ -3362,7 +3343,6 @@ func TestGetUpfrontShutdownScript(t *testing.T) {
 				t.Fatalf("expected address: %x, got: %x",
 					test.expectedScript, addr)
 			}
-
 		})
 	}
 }

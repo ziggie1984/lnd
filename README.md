@@ -5,8 +5,10 @@ This repository is used to build LND Docker container images that are distribute
 Docker images are published to https://hub.docker.com/r/btcpayserver/lnd/
 
 Versions:
- - [0.15.2-beta](https://hub.docker.com/layers/btcpayserver/lnd/v0.15.2-beta/images/sha256-889a04d4955c86b1b1ba6ec25e04270343ddf08dc4e28bff3b6d56cdfa879f9d?context=explore)
+ - [0.15.4-beta](https://hub.docker.com/layers/btcpayserver/lnd/v0.15.4-beta-1/images/sha256-cadbbff93cf36146e24fa4f32170b4b9d278a2e1acfdc50470790a94506ee9c3?context=explore)
+    - Includes 0.20.2-beta Loop
  - [Other versions are tagged](https://github.com/btcpayserver/lnd/tags), but obsoleted and not supported.
+    - All LND versions prior to 0.15.4 contain a consensus bug that prevents them from properly parsing transactions with more than 500,000 witness items per input (https://github.com/btcsuite/btcd/issues/1906)
     - All LND versions prior to 0.15.2 contain a bug that prevents them from properly parsing Taproot transactions with script size over 11000 bytes (https://github.com/lightningnetwork/lnd/issues/7002)
     - LND version 0.14.0-beta shipped with check that made it incompatable with c-lightning and eclair (https://github.com/lightningnetwork/lnd/issues/5890)
     - All LND versions prior to 0.13.3 contain specification-level vulnerability (https://lists.linuxfoundation.org/pipermail/lightning-dev/2021-October/003257.html)

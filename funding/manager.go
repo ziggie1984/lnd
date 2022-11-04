@@ -2457,7 +2457,7 @@ func (f *Manager) waitForFundingWithTimeout(
 	// If we are not the initiator, we have no money at stake and will
 	// timeout waiting for the funding transaction to confirm after a
 	// while.
-	if !ch.IsInitiator {
+	if !ch.IsInitiator && !ch.IsZeroConf() {
 		f.wg.Add(1)
 		go f.waitForTimeout(ch, cancelChan, timeoutChan)
 	}
@@ -3194,15 +3194,13 @@ func (f *Manager) annAfterSixConfs(completeChan *channeldb.OpenChannel,
 // a zero-conf channel. This will wait for the real confirmation, add the
 // confirmed SCID to the router graph, and then announce after six confs.
 func (f *Manager) waitForZeroConfChannel(c *channeldb.OpenChannel,
-	pendingID [32]byte) error {
+	_ [32]byte) error {
 
 	// First we'll check whether the channel is confirmed on-chain. If it
 	// is already confirmed, the chainntnfs subsystem will return with the
 	// confirmed tx. Otherwise, we'll wait here until confirmation occurs.
 	confChan, err := f.waitForFundingWithTimeout(c)
-	if err == ErrConfirmationTimeout {
-		return f.fundingTimeout(c, pendingID)
-	} else if err != nil {
+	if err != nil {
 		return fmt.Errorf("error waiting for zero-conf funding "+
 			"confirmation for ChannelPoint(%v): %v",
 			c.FundingOutpoint, err)

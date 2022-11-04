@@ -20,7 +20,7 @@ RUN make \
 &&  make install tags="signrpc walletrpc chainrpc invoicesrpc routerrpc"
 
 # Build loop binary
-RUN git clone --depth 1 --branch v0.15.0-beta https://github.com/lightninglabs/loop.git /go/src/github.com/lightninglabs/loop
+RUN git clone --depth 1 --branch v0.20.2-beta https://github.com/lightninglabs/loop.git /go/src/github.com/lightninglabs/loop
 WORKDIR /go/src/github.com/lightninglabs/loop/cmd
 
 RUN go install ./...
@@ -79,4 +79,3 @@ COPY docker-initunlocklnd.sh /docker-initunlocklnd.sh
 EXPOSE 9735
 ENTRYPOINT  [ "/usr/bin/tini", "-g", "--", "/docker-entrypoint.sh" ]
 CMD [ "lnd" ]
-

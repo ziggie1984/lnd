@@ -44,10 +44,12 @@ if [[ "$1" == "lnd" || "$1" == "lncli" ]]; then
             ENV="mainnet"
         elif [[ $LND_ENVIRONMENT == "testnet" ]]; then
             ENV="testnet"
+   	elif [[ $LND_ENVIRONMENT == "signet" ]]; then
+	    ENV="signet"	
         elif [[ $LND_ENVIRONMENT == "regtest" ]]; then
             ENV="regtest"
         else
-            echo "Unknown value for LND_ENVIRONMENT, expected mainnet, testnet or regtest"
+            echo "Unknown value for LND_ENVIRONMENT, expected mainnet, testnet, signet or regtest"
         fi
         shopt -u nocasematch
 

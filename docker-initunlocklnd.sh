@@ -91,8 +91,8 @@ fi
 if [ ! -z "$LND_HOST_FOR_LOOP" ]; then
     echo "[initunlocklnd] Preparing to start Loop"
 
-    if [[ $LND_ENVIRONMENT == "regtest" ]]; then
-        echo "[initunlocklnd] Loop can't be started for regtest"
+    if [ $LND_ENVIRONMENT == "regtest" ] || [ $LND_ENVIRONMENT == "signet" ]; then
+        echo "[initunlocklnd] Loop can't be started for regtest and signet"
     elif [ -f "$MACAROON_FILE" ]; then
         sleep 10
 

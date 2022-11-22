@@ -219,4 +219,8 @@ var allTestCasesTemp = []*lntemp.TestCase{
 		Name:     "failing link",
 		TestFunc: testFailingChannel,
 	},
+	{
+		Name:     "sign verify message with addr",
+		TestFunc: testSignVerifyMessageWithAddr,
+	},
 }

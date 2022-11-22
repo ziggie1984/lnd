@@ -1073,3 +1073,109 @@ func assertChannelConstraintsEqual(ht *lntemp.HarnessTest,
 	require.Equal(ht, want.MaxAcceptedHtlcs, got.MaxAcceptedHtlcs,
 		"MaxAcceptedHtlcs mismatched")
 }
+
+// testSignVerifyMessageWithAddr tests signing and also verifying a signature
+// on a message with a provided address.
+func testSignVerifyMessageWithAddr(ht *lntemp.HarnessTest) {
+
+	// Using different nodes to sign the message and verify the signature
+	alice, bob := ht.Alice, ht.Bob
+
+	// test an lnd wallet created p2wkh address.
+	respAddr := alice.RPC.NewAddress(&lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_WITNESS_PUBKEY_HASH,
+	})
+
+	aliceMsg := []byte("alice msg")
+
+	respSig := alice.RPC.SignMessageWithAddr(
+		&walletrpc.SignMessageWithAddrRequest{
+			Msg:  aliceMsg,
+			Addr: respAddr.Address,
+		})
+
+	respValid := bob.RPC.VerifyMessageWithAddr(
+		&walletrpc.VerifyMessageWithAddrRequest{
+			Msg:       aliceMsg,
+			Signature: respSig.Signature,
+			Addr:      respAddr.Address,
+		})
+
+	require.Equal(ht, true, respValid.Valid, respSig.Signature)
+
+	// test an lnd wallet created np2pkh address.
+	respAddr = alice.RPC.NewAddress(&lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_NESTED_PUBKEY_HASH,
+	})
+
+	respSig = alice.RPC.SignMessageWithAddr(
+		&walletrpc.SignMessageWithAddrRequest{
+			Msg:  aliceMsg,
+			Addr: respAddr.Address,
+		})
+
+	respValid = bob.RPC.VerifyMessageWithAddr(
+		&walletrpc.VerifyMessageWithAddrRequest{
+			Msg:       aliceMsg,
+			Signature: respSig.Signature,
+			Addr:      respAddr.Address,
+		})
+
+	require.Equal(ht, true, respValid.Valid)
+
+	// test an lnd wallet created np2pkh address.
+	respAddr = alice.RPC.NewAddress(&lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+	})
+
+	respSig = alice.RPC.SignMessageWithAddr(
+		&walletrpc.SignMessageWithAddrRequest{
+			Msg:  aliceMsg,
+			Addr: respAddr.Address,
+		})
+
+	respValid = bob.RPC.VerifyMessageWithAddr(
+		&walletrpc.VerifyMessageWithAddrRequest{
+			Msg:       aliceMsg,
+			Signature: respSig.Signature,
+			Addr:      respAddr.Address,
+		})
+
+	require.Equal(ht, true, respValid.Valid)
+
+	// p2pkh address type is not supported by the lnd wallet therefore
+	// using an external source for address and signature creation
+	externalMsg := []byte("external msg")
+	externalAddr := "msS5c4VihSiJ64QzvMMEmWh6rYBnuWo2xH"
+	// base64 encoded signature created with bitcoin-core regtest
+	externalSig := "H5DqqM7Cc8xZnYBr7j3gD4XD+AuQsim9Un/IxBrrhBA7I9//" +
+		"3exuQRg+u7HpwG65yobPsew6RMUteyuxyNkLF5E="
+
+	respValid = alice.RPC.VerifyMessageWithAddr(
+		&walletrpc.VerifyMessageWithAddrRequest{
+			Msg:       externalMsg,
+			Signature: externalSig,
+			Addr:      externalAddr,
+		})
+
+	require.Equal(ht, true, respValid.Valid)
+
+	// address does not correspond to the signature here
+	// valid legacy bitcoin address
+	externalAddr = "mugbg8CqFe9CbdrYjFTkMhmL3JxuEXkNbY"
+
+	// base64 encoded signature created with bitcoin-core regtest but with
+	// the address msS5c4VihSiJ64QzvMMEmWh6rYBnuWo2xH
+	externalSig = "H5DqqM7Cc8xZnYBr7j3gD4XD+AuQsim9Un/IxBrrhBA7I9//" +
+		"3exuQRg+u7HpwG65yobPsew6RMUteyuxyNkLF5E="
+
+	respValid = alice.RPC.VerifyMessageWithAddr(
+		&walletrpc.VerifyMessageWithAddrRequest{
+			Msg:       externalMsg,
+			Signature: externalSig,
+			Addr:      externalAddr,
+		})
+
+	require.NotEqual(ht, true, respValid.Valid)
+
+}

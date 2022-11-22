@@ -57,6 +57,20 @@ type WalletKitClient interface {
 	// account name filter can be provided to filter through all of the
 	// wallet accounts and return the addresses of only those matching.
 	ListAddresses(ctx context.Context, in *ListAddressesRequest, opts ...grpc.CallOption) (*ListAddressesResponse, error)
+	// SignMessageWithAddr returns a signature with the private key of the provided
+	// address. The address lookup in the wallet will consider the default account
+	// but can be changed with a cmd argument. In addition the address type is
+	// needed to safe type and not check the address for all possible types. In
+	// case the address type and the address do not match, no other types are
+	// considered
+	SignMessageWithAddr(ctx context.Context, in *SignMessageWithAddrRequest, opts ...grpc.CallOption) (*SignMessageWithAddrResponse, error)
+	// VerifyMessageWithAddr returns a signature with the private key of the
+	// provided address. The address lookup in the wallet will consider the default
+	// account but can be changed with a cmd argument. In addition the address type
+	// is needed to safe type and not check the address for all possible types. In
+	// case the address type and the address do not match, no other types are
+	// considered
+	VerifyMessageWithAddr(ctx context.Context, in *VerifyMessageWithAddrRequest, opts ...grpc.CallOption) (*VerifyMessageWithAddrResponse, error)
 	// ImportAccount imports an account backed by an account extended public key.
 	// The master key fingerprint denotes the fingerprint of the root key
 	// corresponding to the account public key (also known as the key with
@@ -303,6 +317,24 @@ func (c *walletKitClient) ListAddresses(ctx context.Context, in *ListAddressesRe
 	return out, nil
 }
 
+func (c *walletKitClient) SignMessageWithAddr(ctx context.Context, in *SignMessageWithAddrRequest, opts ...grpc.CallOption) (*SignMessageWithAddrResponse, error) {
+	out := new(SignMessageWithAddrResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/SignMessageWithAddr", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) VerifyMessageWithAddr(ctx context.Context, in *VerifyMessageWithAddrRequest, opts ...grpc.CallOption) (*VerifyMessageWithAddrResponse, error) {
+	out := new(VerifyMessageWithAddrResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/VerifyMessageWithAddr", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletKitClient) ImportAccount(ctx context.Context, in *ImportAccountRequest, opts ...grpc.CallOption) (*ImportAccountResponse, error) {
 	out := new(ImportAccountResponse)
 	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ImportAccount", in, out, opts...)
@@ -462,6 +494,20 @@ type WalletKitServer interface {
 	// account name filter can be provided to filter through all of the
 	// wallet accounts and return the addresses of only those matching.
 	ListAddresses(context.Context, *ListAddressesRequest) (*ListAddressesResponse, error)
+	// SignMessageWithAddr returns a signature with the private key of the provided
+	// address. The address lookup in the wallet will consider the default account
+	// but can be changed with a cmd argument. In addition the address type is
+	// needed to safe type and not check the address for all possible types. In
+	// case the address type and the address do not match, no other types are
+	// considered
+	SignMessageWithAddr(context.Context, *SignMessageWithAddrRequest) (*SignMessageWithAddrResponse, error)
+	// VerifyMessageWithAddr returns a signature with the private key of the
+	// provided address. The address lookup in the wallet will consider the default
+	// account but can be changed with a cmd argument. In addition the address type
+	// is needed to safe type and not check the address for all possible types. In
+	// case the address type and the address do not match, no other types are
+	// considered
+	VerifyMessageWithAddr(context.Context, *VerifyMessageWithAddrRequest) (*VerifyMessageWithAddrResponse, error)
 	// ImportAccount imports an account backed by an account extended public key.
 	// The master key fingerprint denotes the fingerprint of the root key
 	// corresponding to the account public key (also known as the key with
@@ -644,6 +690,12 @@ func (UnimplementedWalletKitServer) RequiredReserve(context.Context, *RequiredRe
 }
 func (UnimplementedWalletKitServer) ListAddresses(context.Context, *ListAddressesRequest) (*ListAddressesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAddresses not implemented")
+}
+func (UnimplementedWalletKitServer) SignMessageWithAddr(context.Context, *SignMessageWithAddrRequest) (*SignMessageWithAddrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignMessageWithAddr not implemented")
+}
+func (UnimplementedWalletKitServer) VerifyMessageWithAddr(context.Context, *VerifyMessageWithAddrRequest) (*VerifyMessageWithAddrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method VerifyMessageWithAddr not implemented")
 }
 func (UnimplementedWalletKitServer) ImportAccount(context.Context, *ImportAccountRequest) (*ImportAccountResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ImportAccount not implemented")
@@ -873,6 +925,42 @@ func _WalletKit_ListAddresses_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WalletKitServer).ListAddresses(ctx, req.(*ListAddressesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_SignMessageWithAddr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignMessageWithAddrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).SignMessageWithAddr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/SignMessageWithAddr",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).SignMessageWithAddr(ctx, req.(*SignMessageWithAddrRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_VerifyMessageWithAddr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyMessageWithAddrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).VerifyMessageWithAddr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/VerifyMessageWithAddr",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).VerifyMessageWithAddr(ctx, req.(*VerifyMessageWithAddrRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1157,6 +1245,14 @@ var WalletKit_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAddresses",
 			Handler:    _WalletKit_ListAddresses_Handler,
+		},
+		{
+			MethodName: "SignMessageWithAddr",
+			Handler:    _WalletKit_SignMessageWithAddr_Handler,
+		},
+		{
+			MethodName: "VerifyMessageWithAddr",
+			Handler:    _WalletKit_VerifyMessageWithAddr_Handler,
 		},
 		{
 			MethodName: "ImportAccount",

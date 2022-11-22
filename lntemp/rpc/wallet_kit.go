@@ -125,6 +125,32 @@ func (h *HarnessRPC) ListAddresses(
 	return key
 }
 
+// SignMessage makes a RPC call to the SignMessage and asserts.
+func (h *HarnessRPC) SignMessageWithAddr(
+	req *walletrpc.SignMessageWithAddrRequest) *walletrpc.SignMessageWithAddrResponse {
+
+	ctxt, cancel := context.WithTimeout(h.runCtx, DefaultTimeout)
+	defer cancel()
+
+	key, err := h.WalletKit.SignMessageWithAddr(ctxt, req)
+	h.NoError(err, "SignMessageWithAddr")
+
+	return key
+}
+
+// SignMessage makes a RPC call to the SignMessage and asserts.
+func (h *HarnessRPC) VerifyMessageWithAddr(
+	req *walletrpc.VerifyMessageWithAddrRequest) *walletrpc.VerifyMessageWithAddrResponse {
+
+	ctxt, cancel := context.WithTimeout(h.runCtx, DefaultTimeout)
+	defer cancel()
+
+	key, err := h.WalletKit.VerifyMessageWithAddr(ctxt, req)
+	h.NoError(err, "VerifyMessageWithAddr")
+
+	return key
+}
+
 // ListSweeps makes a ListSweeps RPC call to the node's WalletKit client.
 func (h *HarnessRPC) ListSweeps(verbose bool) *walletrpc.ListSweepsResponse {
 	ctxt, cancel := context.WithTimeout(h.runCtx, DefaultTimeout)

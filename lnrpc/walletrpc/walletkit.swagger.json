@@ -504,6 +504,39 @@
         ]
       }
     },
+    "/v2/wallet/signmessagewithaddr": {
+      "post": {
+        "summary": "SignMessageWithAddr returns a signature with the private key of the provided\naddress. The address lookup in the wallet will consider the default account\nbut can be changed with a cmd argument. In addition the address type is\nneeded to safe type and not check the address for all possible types. In\ncase the address type and the address do not match, no other types are\nconsidered",
+        "operationId": "WalletKit_SignMessageWithAddr",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/walletrpcSignMessageWithAddrResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/walletrpcSignMessageWithAddrRequest"
+            }
+          }
+        ],
+        "tags": [
+          "WalletKit"
+        ]
+      }
+    },
     "/v2/wallet/sweeps": {
       "get": {
         "summary": "ListSweeps returns a list of the sweep transactions our node has produced.\nNote that these sweeps may not be confirmed yet, as we record sweeps on\nbroadcast, not confirmation.",
@@ -774,6 +807,39 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/walletrpcReleaseOutputRequest"
+            }
+          }
+        ],
+        "tags": [
+          "WalletKit"
+        ]
+      }
+    },
+    "/v2/wallet/verifymessagewithaddr": {
+      "post": {
+        "summary": "VerifyMessageWithAddr returns a signature with the private key of the\nprovided address. The address lookup in the wallet will consider the default\naccount but can be changed with a cmd argument. In addition the address type\nis needed to safe type and not check the address for all possible types. In\ncase the address type and the address do not match, no other types are\nconsidered",
+        "operationId": "WalletKit_VerifyMessageWithAddr",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/walletrpcVerifyMessageWithAddrResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/walletrpcVerifyMessageWithAddrRequest"
             }
           }
         ],
@@ -1714,6 +1780,29 @@
         }
       }
     },
+    "walletrpcSignMessageWithAddrRequest": {
+      "type": "object",
+      "properties": {
+        "msg": {
+          "type": "string",
+          "format": "byte",
+          "description": "The message to be signed. When using REST, this field must be encoded as\nbase64."
+        },
+        "addr": {
+          "type": "string",
+          "title": "The address which will be used to lookup the private key and sign the\ncorresponding message"
+        }
+      }
+    },
+    "walletrpcSignMessageWithAddrResponse": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "type": "string",
+          "title": "The signature for the given message"
+        }
+      }
+    },
     "walletrpcSignPsbtRequest": {
       "type": "object",
       "properties": {
@@ -1843,6 +1932,37 @@
           "type": "string",
           "format": "uint64",
           "description": "The value of the leased output in satoshis."
+        }
+      }
+    },
+    "walletrpcVerifyMessageWithAddrRequest": {
+      "type": "object",
+      "properties": {
+        "msg": {
+          "type": "string",
+          "format": "byte",
+          "description": "The message to be signed. When using REST, this field must be encoded as\nbase64."
+        },
+        "signature": {
+          "type": "string",
+          "title": "The signature to be verified over the given message"
+        },
+        "addr": {
+          "type": "string",
+          "title": "The address which will be used to lookup the public key and verify the\nthe signature"
+        }
+      }
+    },
+    "walletrpcVerifyMessageWithAddrResponse": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "title": "Whether the signature was valid over the given message"
+        },
+        "pubkey": {
+          "type": "string",
+          "title": "The pubkey recovered from the signature"
         }
       }
     },

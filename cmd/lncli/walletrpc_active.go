@@ -52,6 +52,8 @@ var (
 		Usage: "Interact with wallet addresses.",
 		Subcommands: []cli.Command{
 			listAddressesCommand,
+			signMessageWithAddrCommand,
+			verifyMessageWithAddrCommand,
 		},
 	}
 )
@@ -1190,6 +1192,179 @@ func listAddresses(ctx *cli.Context) error {
 
 	printRespJSON(resp)
 
+	return nil
+}
+
+var signMessageWithAddrCommand = cli.Command{
+	Name:  "signmessagewithaddr",
+	Usage: "Signs a message with the private key of the provided address",
+	Description: `
+	Sign a message with the private key of the specified address, and 
+	return the signature. Signing is soley done in the ecdsa compact 
+	signature format. This is also done when signing with a P2TR address
+	meaning that the private key of the P2TR address is used to sign the
+	provided message with the ecdsa format. Only addresses are accepted
+	which are owned by the lnd wallet.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "msg",
+			Usage: "the message to sign for",
+		},
+		cli.StringFlag{
+			Name: "address",
+			Usage: "specify the address which private key " +
+				"will be used to sign the message",
+		},
+	},
+	Action: actionDecorator(signMessageWithAddr),
+}
+
+func signMessageWithAddr(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	fmt.Printf("%d,%d", ctx.NArg(), ctx.NumFlags())
+	if ctx.NArg() > 2 || ctx.NumFlags() > 2 {
+		return cli.ShowCommandHelp(ctx, "signmessagewithaddr")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	var (
+		args = ctx.Args()
+		msg  []byte
+		addr string
+	)
+	switch {
+	case ctx.IsSet("msg"):
+		msg = []byte(ctx.String("msg"))
+	case ctx.Args().Present():
+		msg = []byte(ctx.Args().First())
+		args = args.Tail()
+	default:
+		return fmt.Errorf("msg argument missing")
+	}
+
+	switch {
+	case ctx.IsSet("address"):
+		addr = ctx.String("address")
+	case ctx.Args().Present():
+		addr = args.First()
+		args = args.Tail()
+	default:
+		return fmt.Errorf("address argument missing")
+	}
+
+	resp, err := walletClient.SignMessageWithAddr(ctxc,
+		&walletrpc.SignMessageWithAddrRequest{
+			Msg:  msg,
+			Addr: addr,
+		})
+
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+	return nil
+}
+
+var verifyMessageWithAddrCommand = cli.Command{
+	Name: "verifymessagewithaddr",
+	Usage: "Verify a message signed with the private key of the " +
+		"provided address",
+	Description: `
+	Verifies a message signed with the signature of the public key
+	of the provided address. The signature must be in compact ecdsa format
+	The verification is independant whether the address belongs to the
+	wallet or not. This is achieved by only accepting ecdsa compacted 
+	signatures. When verifying a signature with a taproot address, the 
+	signature still has to be in the ecdsa compact format. Supports address
+	formats P2PKH, P2WKH, NP2WKH, P2TR 
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "msg",
+			Usage: "the message to sign",
+		},
+		cli.StringFlag{
+			Name: "sig",
+			Usage: "the base64 encoded compact signature " +
+				"of the message",
+		},
+		cli.StringFlag{
+			Name: "address",
+			Usage: "specify the address which corresponding" +
+				"public key will be used",
+		},
+	},
+	Action: actionDecorator(verifyMessageWithAddr),
+}
+
+func verifyMessageWithAddr(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() > 3 || ctx.NumFlags() > 3 {
+		return cli.ShowCommandHelp(ctx, "signmessagewithaddr")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	var (
+		args = ctx.Args()
+		msg  []byte
+		sig  string
+		addr string
+	)
+	switch {
+	case ctx.IsSet("msg"):
+		msg = []byte(ctx.String("msg"))
+	case ctx.Args().Present():
+		msg = []byte(ctx.Args().First())
+		args = args.Tail()
+	default:
+		return fmt.Errorf("msg argument missing")
+	}
+
+	switch {
+	case ctx.IsSet("sig"):
+		sig = ctx.String("sig")
+	case args.Present():
+		sig = args.First()
+		args = args.Tail()
+
+	default:
+		return fmt.Errorf("signature argument missing")
+	}
+
+	switch {
+	case ctx.IsSet("address"):
+		addr = ctx.String("address")
+	case ctx.Args().Present():
+		addr = args.First()
+		args = args.Tail()
+	default:
+		return fmt.Errorf("address argument missing")
+	}
+
+	resp, err := walletClient.VerifyMessageWithAddr(ctxc,
+		&walletrpc.VerifyMessageWithAddrRequest{
+			Msg:       msg,
+			Signature: sig,
+			Addr:      addr,
+		})
+
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
 	return nil
 }
 

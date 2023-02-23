@@ -92,8 +92,8 @@ var openChannelCommand = cli.Command{
 	close out to another address.
 
 	One can manually set the fee to be used for the funding transaction via
-	either the --conf_target or --sat_per_vbyte arguments. This is
-	optional.`,
+	--conf_target, --sat_per_vbyte or --sat_per_kweight arguments. 
+	This is optional.`,
 	ArgsUsage: "node-key local-amt push-amt",
 	Flags: []cli.Flag{
 		cli.StringFlag{
@@ -143,15 +143,17 @@ var openChannelCommand = cli.Command{
 				"used for fee estimation",
 		},
 		cli.Int64Flag{
-			Name:   "sat_per_byte",
-			Usage:  "Deprecated, use sat_per_vbyte instead.",
-			Hidden: true,
-		},
-		cli.Int64Flag{
 			Name: "sat_per_vbyte",
 			Usage: "(optional) a manual fee expressed in " +
 				"sat/vbyte that should be used when crafting " +
 				"the transaction",
+		},
+		cli.Uint64Flag{
+			Name: "sat_per_kweight",
+			Usage: "(optional) a manual fee expressed in " +
+				"sat/kweight that should be used when " +
+				"crafting the transaction. As an example " +
+				"250 sat/kw equals 1 sat/vbyte",
 		},
 		cli.BoolFlag{
 			Name: "private",
@@ -269,10 +271,10 @@ func openChannel(ctx *cli.Context) error {
 		return nil
 	}
 
-	// Check that only the field sat_per_vbyte or the deprecated field
-	// sat_per_byte is used.
-	feeRateFlag, err := checkNotBothSet(
-		ctx, "sat_per_vbyte", "sat_per_byte",
+	// Check that only the sat_per_vbyte or
+	// sat_per_kweight is used.
+	_, err = checkNotBothSet(
+		ctx, "sat_per_vbyte", "sat_per_kweight",
 	)
 	if err != nil {
 		return err
@@ -281,7 +283,7 @@ func openChannel(ctx *cli.Context) error {
 	minConfs := int32(ctx.Uint64("min_confs"))
 	req := &lnrpc.OpenChannelRequest{
 		TargetConf:                 int32(ctx.Int64("conf_target")),
-		SatPerVbyte:                ctx.Uint64(feeRateFlag),
+		SatPerVbyte:                ctx.Uint64("sat_per_vbyte"),
 		MinHtlcMsat:                ctx.Int64("min_htlc_msat"),
 		RemoteCsvDelay:             uint32(ctx.Uint64("remote_csv_delay")),
 		MinConfs:                   minConfs,
@@ -292,6 +294,7 @@ func openChannel(ctx *cli.Context) error {
 		ZeroConf:                   ctx.Bool("zero_conf"),
 		ScidAlias:                  ctx.Bool("scid_alias"),
 		RemoteChanReserveSat:       ctx.Uint64("remote_reserve_sats"),
+		SatPerKweight:              ctx.Uint64("sat_per_kweight"),
 	}
 
 	switch {
@@ -725,7 +728,8 @@ var batchOpenChannelCommand = cli.Command{
 	close out to another address.
 
 	One can manually set the fee to be used for the funding transaction via
-	either the --conf_target or --sat_per_vbyte arguments. This is optional.
+	--conf_target, --sat_per_vbyte or --sat_per_kweight arguments. 
+	This is optional.
 `,
 	ArgsUsage: "channels-json",
 	Flags: []cli.Flag{
@@ -740,6 +744,13 @@ var batchOpenChannelCommand = cli.Command{
 			Usage: "(optional) a manual fee expressed in " +
 				"sat/vByte that should be used when crafting " +
 				"the transaction",
+		},
+		cli.Uint64Flag{
+			Name: "sat_per_kweight",
+			Usage: "(optional) a manual fee expressed in " +
+				"sat/kweight that should be used when " +
+				"crafting the transaction. As an example " +
+				"250 sat/kw equals 1 sat/vbyte",
 		},
 		cli.Uint64Flag{
 			Name: "min_confs",
@@ -782,6 +793,15 @@ func batchOpenChannel(ctx *cli.Context) error {
 		return nil
 	}
 
+	// Check that not both the sat_per_kweight or sat_per_vbyte field
+	// is used.
+	_, err := checkNotBothSet(
+		ctx, "sat_per_vbyte", "sat_per_kweight",
+	)
+	if err != nil {
+		return err
+	}
+
 	minConfs := int32(ctx.Uint64("min_confs"))
 	req := &lnrpc.BatchOpenChannelRequest{
 		TargetConf:       int32(ctx.Int64("conf_target")),
@@ -789,6 +809,7 @@ func batchOpenChannel(ctx *cli.Context) error {
 		MinConfs:         minConfs,
 		SpendUnconfirmed: minConfs == 0,
 		Label:            ctx.String("label"),
+		SatPerKweight:    ctx.Uint64("sat_per_kweight"),
 	}
 
 	// Let's try and parse the JSON part of the CLI now. Fortunately we can
@@ -988,7 +1009,9 @@ func checkPsbtFlags(req *lnrpc.OpenChannelRequest) error {
 		return fmt.Errorf("specifying minimum confirmations for PSBT " +
 			"funding is not supported")
 	}
-	if req.TargetConf != 0 || req.SatPerVbyte != 0 { // nolint:staticcheck
+	if req.TargetConf != 0 || req.SatPerKweight != 0 ||
+		req.SatPerVbyte != 0 {
+
 		return fmt.Errorf("setting fee estimation parameters not " +
 			"supported for PSBT funding")
 	}

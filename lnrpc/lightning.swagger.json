@@ -820,12 +820,12 @@
             "format": "int32"
           },
           {
-            "name": "sat_per_byte",
-            "description": "Deprecated, use sat_per_vbyte.\nA manual fee rate set in sat/vbyte that should be used when crafting the\nclosure transaction.",
+            "name": "sat_per_kweight",
+            "description": "A manual fee rate set in sat/kweight that should be used when crafting the\ntransaction.\n//\nNOTE: This field is only respected if we're the initiator of the channel.",
             "in": "query",
             "required": false,
             "type": "string",
-            "format": "int64"
+            "format": "uint64"
           },
           {
             "name": "delivery_address",
@@ -3331,6 +3331,11 @@
         "label": {
           "type": "string",
           "description": "An optional label for the batch transaction, limited to 500 characters."
+        },
+        "sat_per_kweight": {
+          "type": "string",
+          "format": "uint64",
+          "description": "A manual fee rate set in sat/kweight that should be used when crafting the\ntransaction."
         }
       }
     },
@@ -4323,6 +4328,11 @@
           "type": "string",
           "format": "uint64",
           "description": "The fee rate in satoshi/vbyte."
+        },
+        "sat_per_kweight": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The fee rate in satoshi/kweight."
         }
       }
     },
@@ -5726,10 +5736,10 @@
           "format": "int32",
           "description": "The target number of blocks that the funding transaction should be\nconfirmed by."
         },
-        "sat_per_byte": {
+        "sat_per_kweight": {
           "type": "string",
-          "format": "int64",
-          "description": "Deprecated, use sat_per_vbyte.\nA manual fee rate set in sat/vbyte that should be used when crafting the\nfunding transaction."
+          "format": "uint64",
+          "description": "A manual fee rate set in sat/kweight that should be used when crafting the\nfunding transaction."
         },
         "private": {
           "type": "boolean",
@@ -6591,10 +6601,10 @@
           "format": "uint64",
           "description": "A manual fee rate set in sat/vbyte that should be used when crafting the\ntransaction."
         },
-        "sat_per_byte": {
+        "sat_per_kweight": {
           "type": "string",
-          "format": "int64",
-          "description": "Deprecated, use sat_per_vbyte.\nA manual fee rate set in sat/vbyte that should be used when crafting the\ntransaction."
+          "format": "uint64",
+          "description": "A manual fee rate set in sat/kweight that should be used when crafting the\ntransaction."
         },
         "send_all": {
           "type": "boolean",
@@ -6668,10 +6678,10 @@
           "format": "uint64",
           "description": "A manual fee rate set in sat/vbyte that should be used when crafting the\ntransaction."
         },
-        "sat_per_byte": {
+        "sat_per_kweight": {
           "type": "string",
-          "format": "int64",
-          "description": "Deprecated, use sat_per_vbyte.\nA manual fee rate set in sat/vbyte that should be used when crafting the\ntransaction."
+          "format": "uint64",
+          "description": "A manual fee rate set in sat/kweight that should be used when crafting the\ntransaction."
         },
         "label": {
           "type": "string",

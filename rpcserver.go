@@ -222,27 +222,25 @@ func stringInSlice(a string, slice []string) bool {
 	return false
 }
 
-// calculateFeeRate uses either satPerByte or satPerVByte, but not both, from a
-// request to calculate the fee rate. It provides compatibility for the
-// deprecated field, satPerByte. Once the field is safe to be removed, the
-// check can then be deleted.
-func calculateFeeRate(satPerByte, satPerVByte uint64, targetConf uint32,
+// calculateFeeRate uses either satPerKWeight or satPerVByte,
+// but not both, from a request to calculate the fee rate.
+func calculateFeeRate(
+	satPerKWeight, satPerVByte uint64, targetConf uint32,
 	estimator chainfee.Estimator) (chainfee.SatPerKWeight, error) {
 
 	var feeRate chainfee.SatPerKWeight
 
-	// We only allow using either the deprecated field or the new field.
-	if satPerByte != 0 && satPerVByte != 0 {
-		return feeRate, fmt.Errorf("either SatPerByte or " +
+	// We either allow satPerKWeight or satPerVByte.
+	if satPerKWeight != 0 && satPerVByte != 0 {
+		return feeRate, fmt.Errorf("either SatPerKWeight or " +
 			"SatPerVByte should be set, but not both")
 	}
 
-	// Default to satPerVByte, and overwrite it if satPerByte is set.
+	// Default to satPerVByte, and overwrite it if satPerKWeight is set.
 	satPerKw := chainfee.SatPerKVByte(satPerVByte * 1000).FeePerKWeight()
-	if satPerByte != 0 {
-		satPerKw = chainfee.SatPerKVByte(
-			satPerByte * 1000,
-		).FeePerKWeight()
+
+	if satPerKWeight != 0 {
+		satPerKw = chainfee.SatPerKWeight(satPerKWeight)
 	}
 
 	// Based on the passed fee related parameters, we'll determine an
@@ -255,6 +253,12 @@ func calculateFeeRate(satPerByte, satPerVByte uint64, targetConf uint32,
 	)
 	if err != nil {
 		return feeRate, err
+	}
+
+	// A security measure to prevent very high fees, especially
+	// when the fee is specified via satPerKWeight.
+	if feeRate > sweep.DefaultMaxFeeRate {
+		feeRate = sweep.DefaultMaxFeeRate
 	}
 
 	return feeRate, nil
@@ -1224,11 +1228,9 @@ func (r *rpcServer) EstimateFee(ctx context.Context,
 	totalFee := int64(tx.TotalInput) - totalOutput
 
 	resp := &lnrpc.EstimateFeeResponse{
-		FeeSat:      totalFee,
-		SatPerVbyte: uint64(feePerKw.FeePerKVByte() / 1000),
-
-		// Deprecated field.
-		FeerateSatPerByte: int64(feePerKw.FeePerKVByte() / 1000),
+		FeeSat:        totalFee,
+		SatPerVbyte:   uint64(feePerKw.FeePerKVByte() / 1000),
+		SatPerKweight: uint64(feePerKw),
 	}
 
 	rpcsLog.Debugf("[estimatefee] fee estimate for conf target %d: %v",
@@ -1244,8 +1246,8 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 
 	// Calculate an appropriate fee rate for this transaction.
 	feePerKw, err := calculateFeeRate(
-		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
-		uint32(in.TargetConf), r.server.cc.FeeEstimator,
+		in.SatPerKweight, in.SatPerVbyte, uint32(in.TargetConf),
+		r.server.cc.FeeEstimator,
 	)
 	if err != nil {
 		return nil, err
@@ -1457,8 +1459,8 @@ func (r *rpcServer) SendMany(ctx context.Context,
 
 	// Calculate an appropriate fee rate for this transaction.
 	feePerKw, err := calculateFeeRate(
-		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
-		uint32(in.TargetConf), r.server.cc.FeeEstimator,
+		in.SatPerKweight, in.SatPerVbyte, uint32(in.TargetConf),
+		r.server.cc.FeeEstimator,
 	)
 	if err != nil {
 		return nil, err
@@ -1875,7 +1877,9 @@ func newPsbtAssembler(req *lnrpc.OpenChannelRequest, normalizedMinConfs int32,
 			"minimum confirmation is not supported for PSBT " +
 			"funding")
 	}
-	if req.SatPerByte != 0 || req.SatPerVbyte != 0 || req.TargetConf != 0 { // nolint:staticcheck
+	if req.SatPerKweight != 0 || req.SatPerVbyte != 0 ||
+		req.TargetConf != 0 {
+
 		return nil, fmt.Errorf("specifying fee estimation parameters " +
 			"is not supported for PSBT funding")
 	}
@@ -2049,8 +2053,8 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 
 	// Calculate an appropriate fee rate for this transaction.
 	feeRate, err := calculateFeeRate(
-		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
-		uint32(in.TargetConf), r.server.cc.FeeEstimator,
+		in.SatPerKweight, in.SatPerVbyte, uint32(in.TargetConf),
+		r.server.cc.FeeEstimator,
 	)
 	if err != nil {
 		return nil, err
@@ -2391,8 +2395,8 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 
 	// If force closing a channel, the fee set in the commitment transaction
 	// is used.
-	if in.Force && (in.SatPerByte != 0 || in.SatPerVbyte != 0 || // nolint:staticcheck
-		in.TargetConf != 0) {
+	if in.Force && (in.SatPerVbyte != 0 || in.TargetConf != 0 ||
+		in.SatPerKweight != 0) {
 
 		return fmt.Errorf("force closing a channel uses a pre-defined fee")
 	}
@@ -2526,8 +2530,8 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		// an appropriate fee rate for the cooperative closure
 		// transaction.
 		feeRate, err := calculateFeeRate(
-			uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
-			uint32(in.TargetConf), r.server.cc.FeeEstimator,
+			in.SatPerKweight, in.SatPerVbyte, uint32(in.TargetConf),
+			r.server.cc.FeeEstimator,
 		)
 		if err != nil {
 			return err

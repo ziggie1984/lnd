@@ -560,9 +560,9 @@ func runWalletImportAccountScenario(ht *lntest.HarnessTest,
 	// balance updates accordingly.
 	alice := ht.Alice
 	req := &lnrpc.SendCoinsRequest{
-		Addr:       externalAddr,
-		Amount:     utxoAmt,
-		SatPerByte: 1,
+		Addr:        externalAddr,
+		Amount:      utxoAmt,
+		SatPerVbyte: 1,
 	}
 	alice.RPC.SendCoins(req)
 
@@ -593,9 +593,9 @@ func runWalletImportAccountScenario(ht *lntest.HarnessTest,
 	// Send coins to Carol's address and confirm them, making sure the
 	// balance updates accordingly.
 	req = &lnrpc.SendCoinsRequest{
-		Addr:       externalAddr,
-		Amount:     utxoAmt,
-		SatPerByte: 1,
+		Addr:        externalAddr,
+		Amount:      utxoAmt,
+		SatPerVbyte: 1,
 	}
 	alice.RPC.SendCoins(req)
 
@@ -733,9 +733,9 @@ func testWalletImportPubKeyScenario(ht *lntest.HarnessTest,
 		// Send coins to Carol's address and confirm them, making sure
 		// the balance updates accordingly.
 		req := &lnrpc.SendCoinsRequest{
-			Addr:       carolAddrResp.Address,
-			Amount:     utxoAmt,
-			SatPerByte: 1,
+			Addr:        carolAddrResp.Address,
+			Amount:      utxoAmt,
+			SatPerVbyte: 1,
 		}
 		alice.RPC.SendCoins(req)
 

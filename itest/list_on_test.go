@@ -515,4 +515,20 @@ var allTestCases = []*lntest.TestCase{
 		Name:     "lookup htlc resolution",
 		TestFunc: testLookupHtlcResolution,
 	},
+	{
+		Name:     "openchannel feerate",
+		TestFunc: testOpenChannelFeerate,
+	},
+	{
+		Name:     "sendcoins feerate",
+		TestFunc: testSendCoinsFeerate,
+	},
+	{
+		Name:     "sendmany feerate",
+		TestFunc: testSendManyFeerate,
+	},
+	{
+		Name:     "fundpsbt feerate",
+		TestFunc: testFundFeerate,
+	},
 }

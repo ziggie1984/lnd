@@ -828,17 +828,15 @@ func (w *WalletKit) BumpFee(ctx context.Context,
 	}
 
 	// We only allow using either the deprecated field or the new field.
-	if in.SatPerByte != 0 && in.SatPerVbyte != 0 {
-		return nil, fmt.Errorf("either SatPerByte or " +
+	if in.SatPerKweight != 0 && in.SatPerVbyte != 0 {
+		return nil, fmt.Errorf("either SatPerKweight or " +
 			"SatPerVbyte should be set, but not both")
 	}
 
 	// Construct the request's fee preference.
 	satPerKw := chainfee.SatPerKVByte(in.SatPerVbyte * 1000).FeePerKWeight()
-	if in.SatPerByte != 0 {
-		satPerKw = chainfee.SatPerKVByte(
-			in.SatPerByte * 1000,
-		).FeePerKWeight()
+	if in.SatPerKweight != 0 {
+		satPerKw = chainfee.SatPerKWeight(in.SatPerKweight)
 	}
 	feePreference := sweep.FeePreference{
 		ConfTarget: uint32(in.TargetConf),
@@ -1129,6 +1127,10 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 		feeSatPerKW = chainfee.SatPerKVByte(
 			req.GetSatPerVbyte() * 1000,
 		).FeePerKWeight()
+
+	// Convert the fee to sat/kW from the specified sat/vByte.
+	case req.GetSatPerKweight() != 0:
+		feeSatPerKW = chainfee.SatPerKWeight(req.GetSatPerKweight())
 
 	default:
 		return nil, fmt.Errorf("fee definition missing, need to " +

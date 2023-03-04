@@ -935,10 +935,10 @@ message BumpFeeRequest {
 
     /*
     Deprecated, use sat_per_vbyte.
-    The fee rate, expressed in sat/vbyte, that should be used to spend the input
-    with.
+    The fee rate, expressed in sat/kweight, that should be used to spend the
+    input with.
     */
-    uint32 sat_per_byte = 3 [deprecated = true];
+    uint64 sat_per_kweight = 3;
 
     /*
     Whether this input must be force-swept. This means that it is swept even
@@ -1043,26 +1043,32 @@ message FundPsbtRequest {
         input with.
         */
         uint64 sat_per_vbyte = 4;
+
+        /*
+        The fee rate, expressed in sat/kweight, that should be used to spend the
+        input with.
+        */
+        uint64 sat_per_kweight = 5;
     }
 
     /*
     The name of the account to fund the PSBT with. If empty, the default wallet
     account is used.
     */
-    string account = 5;
+    string account = 6;
 
     // The minimum number of confirmations each one of your outputs used for
     // the transaction must satisfy.
-    int32 min_confs = 6;
+    int32 min_confs = 7;
 
     // Whether unconfirmed outputs should be used as inputs for the transaction.
-    bool spend_unconfirmed = 7;
+    bool spend_unconfirmed = 8;
 
     // The address type for the change. If empty, P2WPKH addresses will be used
     // for default accounts and single imported public keys. For custom
     // accounts, no change type should be provided as the coin selection key
     // scope will always be used to generate the change address.
-    ChangeAddressType change_type = 8;
+    ChangeAddressType change_type = 9;
 }
 message FundPsbtResponse {
     /*

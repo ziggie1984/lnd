@@ -247,7 +247,8 @@ func (h *htlcSuccessResolver) broadcastReSignedSuccessTx() (
 			&secondLevelInput,
 			sweep.Params{
 				Fee: sweep.FeePreference{
-					ConfTarget: secondLevelConfTarget,
+					// ConfTarget: secondLevelConfTarget,
+					FeeRate: secondLevelFeerate,
 				},
 			},
 		)

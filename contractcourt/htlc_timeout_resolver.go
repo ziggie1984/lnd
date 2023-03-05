@@ -335,7 +335,8 @@ func (h *htlcTimeoutResolver) spendHtlcOutput() (*chainntnfs.SpendDetail, error)
 			&inp,
 			sweep.Params{
 				Fee: sweep.FeePreference{
-					ConfTarget: secondLevelConfTarget,
+					// ConfTarget: secondLevelConfTarget,
+					FeeRate: secondLevelFeerate,
 				},
 			},
 		)

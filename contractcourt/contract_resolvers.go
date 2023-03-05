@@ -24,6 +24,10 @@ const (
 	// secondLevelConfTarget is the confirmation target we'll use when
 	// adding fees to our second-level HTLC transactions.
 	secondLevelConfTarget = 6
+
+	// secondLevelFeerate is the feerate in sat/KW we'll use when
+	// adding fees to our second-level HTLC transactions.
+	secondLevelFeerate = 500
 )
 
 // ContractResolver is an interface which packages a state machine which is

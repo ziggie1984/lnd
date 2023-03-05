@@ -21,7 +21,8 @@ import (
 const (
 	// commitOutputConfTarget is the default confirmation target we'll use
 	// for sweeps of commit outputs that belong to us.
-	commitOutputConfTarget = 6
+	commitOutputConfTarget           = 6
+	commitOutputFeerateSatPerKweight = 253
 )
 
 // commitSweepResolver is a resolver that will attempt to sweep the commitment
@@ -316,7 +317,8 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 	// sweeper.
 	c.log.Infof("sweeping commit output")
 
-	feePref := sweep.FeePreference{ConfTarget: commitOutputConfTarget}
+	// feePref := sweep.FeePreference{ConfTarget: commitOutputConfTarget}
+	feePref := sweep.FeePreference{FeeRate: commitOutputFeerateSatPerKweight}
 	resultChan, err := c.Sweeper.SweepInput(inp, sweep.Params{Fee: feePref})
 	if err != nil {
 		c.log.Errorf("unable to sweep input: %v", err)

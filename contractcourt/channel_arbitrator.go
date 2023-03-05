@@ -22,6 +22,7 @@ import (
 	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/sweep"
 )
@@ -1217,7 +1218,8 @@ func (c *ChannelArbitrator) sweepAnchors(anchors *lnwallet.AnchorResolutions,
 			&anchorInput,
 			sweep.Params{
 				Fee: sweep.FeePreference{
-					ConfTarget: deadline,
+					// ConfTarget: deadline,
+					FeeRate: chainfee.SatPerKWeight(deadline),
 				},
 				Force:          true,
 				ExclusiveGroup: &exclusiveGroup,
@@ -1339,7 +1341,9 @@ func (c *ChannelArbitrator) findCommitmentDeadline(heightHint uint32,
 	// When we couldn't find a deadline height from our HTLCs, we will fall
 	// back to the default value.
 	case deadlineMinHeight == math.MaxUint32:
-		deadline = anchorSweepConfTarget
+		// deadline = anchorSweepConfTarget
+		// sat/kweight
+		deadline = 700
 
 	// When the deadline is passed, we will fall back to the smallest conf
 	// target (1 block).
@@ -1347,7 +1351,8 @@ func (c *ChannelArbitrator) findCommitmentDeadline(heightHint uint32,
 		log.Warnf("ChannelArbitrator(%v): deadline is passed with "+
 			"deadlineMinHeight=%d, heightHint=%d",
 			c.cfg.ChanPoint, deadlineMinHeight, heightHint)
-		deadline = 1
+		// sat/KW
+		deadline = 1000
 	}
 
 	log.Debugf("ChannelArbitrator(%v): calculated deadline: %d, "+

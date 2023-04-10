@@ -456,6 +456,7 @@ func (h *htlcTimeoutResolver) sweepSecondLevelTx() error {
 			h.broadcastHeight,
 		))
 	}
+
 	_, err := h.Sweeper.SweepInput(
 		inp,
 		sweep.Params{
@@ -463,6 +464,8 @@ func (h *htlcTimeoutResolver) sweepSecondLevelTx() error {
 				ConfTarget: secondLevelConfTarget,
 			},
 			Force: true,
+			MaxSweepFeeRate: h.Sweeper.MaxSweepFeeRate(
+				inp.WitnessType()),
 		},
 	)
 	if err != nil {
@@ -678,6 +681,8 @@ func (h *htlcTimeoutResolver) handleCommitSpend(
 				Fee: sweep.FeePreference{
 					ConfTarget: sweepConfTarget,
 				},
+				MaxSweepFeeRate: h.Sweeper.MaxSweepFeeRate(
+					inp.WitnessType()),
 			},
 		)
 		if err != nil {
@@ -689,8 +694,8 @@ func (h *htlcTimeoutResolver) handleCommitSpend(
 		claimOutpoint = *op
 		fallthrough
 
-	// Finally, if this was an output on our commitment transaction, we'll
-	// wait for the second-level HTLC output to be spent, and for that
+	// Finally, if this was an HTLC output on our commitment transaction,
+	// we'll wait for the second-level HTLC output to be spent, and for that
 	// transaction itself to confirm.
 	case h.htlcResolution.SignedTimeoutTx != nil:
 		log.Infof("%T(%v): waiting for nursery/sweeper to spend CSV "+

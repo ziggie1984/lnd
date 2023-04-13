@@ -1,4 +1,4 @@
-FROM golang:1.20.3-buster as builder
+FROM golang:1.20.3-bullseye as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
@@ -28,7 +28,7 @@ RUN go install ./...
 
 
 # Force the builder machine to take make an arm runtime image. This is fine as long as the builder does not run any program
-FROM arm64v8/debian:stretch-slim as final
+FROM arm64v8/debian:bullseye-slim as final
 
 COPY --from=builder /opt/tini /usr/bin/tini
 COPY --from=builder /usr/bin/qemu-aarch64-static /usr/bin/qemu-aarch64-static

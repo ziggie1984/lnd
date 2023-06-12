@@ -3290,7 +3290,7 @@ func (f *Manager) extractAnnounceParams(c *channeldb.OpenChannel) (
 func (f *Manager) addToRouterGraph(completeChan *channeldb.OpenChannel,
 	shortChanID *lnwire.ShortChannelID,
 	peerAlias *lnwire.ShortChannelID,
-	ourPolicy *channeldb.ChannelEdgePolicy) error {
+	ourPolicy *channeldb.ChannelEdgePolicy, shouldAnnounce bool) error {
 
 	chanID := lnwire.NewChanIDFromOutPoint(&completeChan.FundingOutpoint)
 
@@ -3301,7 +3301,7 @@ func (f *Manager) addToRouterGraph(completeChan *channeldb.OpenChannel,
 		&completeChan.LocalChanCfg.MultiSigKey,
 		completeChan.RemoteChanCfg.MultiSigKey.PubKey, *shortChanID,
 		chanID, fwdMinHTLC, fwdMaxHTLC, ourPolicy,
-		completeChan.ChanType,
+		completeChan.ChanType, shouldAnnounce,
 	)
 	if err != nil {
 		return fmt.Errorf("error generating channel "+
@@ -3479,8 +3479,15 @@ func (f *Manager) annAfterSixConfs(completeChan *channeldb.OpenChannel,
 			}
 
 			err = f.addToRouterGraph(
-				completeChan, &baseScid, nil, ourPolicy,
-			)
+				completeChan, &baseScid, nil, ourPolicy, true)
+			if err != nil {
+				return fmt.Errorf("failed to re-add to "+
+					"router graph: %v", err)
+			}
+		} else if !isScidFeature {
+			shortChanID := completeChan.ShortChanID()
+			err = f.addToRouterGraph(
+				completeChan, &shortChanID, nil, nil, true)
 			if err != nil {
 				return fmt.Errorf("failed to re-add to "+
 					"router graph: %v", err)
@@ -3570,7 +3577,7 @@ func (f *Manager) waitForZeroConfChannel(c *channeldb.OpenChannel,
 		// alias since we'll be using the confirmed SCID from now on
 		// regardless if it's public or not.
 		err = f.addToRouterGraph(
-			c, &confChan.shortChanID, nil, ourPolicy,
+			c, &confChan.shortChanID, nil, ourPolicy, isPublic,
 		)
 		if err != nil {
 			return fmt.Errorf("failed adding confirmed zero-conf "+
@@ -3919,7 +3926,16 @@ func (f *Manager) handleChannelReadyReceived(channel *channeldb.OpenChannel,
 		peerAlias = &foundAlias
 	}
 
-	err := f.addToRouterGraph(channel, scid, peerAlias, nil)
+	// A channel is an announced channel if the ChannelFlag is set and the
+	// number of required confirmations for the funding tx matches the
+	// minimum required depth for a channel of six confirmations. A channel
+	// can be usable before six confirmations but we still keep the channel
+	// unannounced even for public channels until six confirmations are
+	// reached.
+	shouldAnnounce := channel.ChannelFlags&lnwire.FFAnnounceChannel == 1 &&
+		channel.NumConfsRequired >= 6
+
+	err := f.addToRouterGraph(channel, scid, peerAlias, nil, shouldAnnounce)
 	if err != nil {
 		return fmt.Errorf("failed adding to router graph: %w", err)
 	}
@@ -4036,8 +4052,8 @@ func (f *Manager) newChanAnnouncement(localPubKey,
 	remotePubKey *btcec.PublicKey, localFundingKey *keychain.KeyDescriptor,
 	remoteFundingKey *btcec.PublicKey, shortChanID lnwire.ShortChannelID,
 	chanID lnwire.ChannelID, fwdMinHTLC, fwdMaxHTLC lnwire.MilliSatoshi,
-	ourPolicy *channeldb.ChannelEdgePolicy,
-	chanType channeldb.ChannelType) (*chanAnnouncement, error) {
+	ourPolicy *channeldb.ChannelEdgePolicy, chanType channeldb.ChannelType,
+	shouldAnnounce bool) (*chanAnnouncement, error) {
 
 	chainHash := *f.cfg.Wallet.Cfg.NetParams.GenesisHash
 
@@ -4112,6 +4128,10 @@ func (f *Manager) newChanAnnouncement(localPubKey,
 	// max_htlc field.
 	msgFlags := lnwire.ChanUpdateRequiredMaxHtlc
 
+	if !shouldAnnounce {
+		msgFlags |= lnwire.ChanUpdateDontForward
+	}
+
 	// We announce the channel with the default values. Some of
 	// these values can later be changed by crafting a new ChannelUpdate.
 	chanUpdateAnn := &lnwire.ChannelUpdate{
@@ -4141,7 +4161,8 @@ func (f *Manager) newChanAnnouncement(localPubKey,
 	case ourPolicy != nil:
 		// If ourPolicy is non-nil, modify the default parameters of the
 		// ChannelUpdate.
-		chanUpdateAnn.MessageFlags = ourPolicy.MessageFlags
+		// We are not reusing the MessageFlags because a channel might
+		// change from unannounced to announced during its lifetime.
 		chanUpdateAnn.ChannelFlags = ourPolicy.ChannelFlags
 		chanUpdateAnn.TimeLockDelta = ourPolicy.TimeLockDelta
 		chanUpdateAnn.HtlcMinimumMsat = ourPolicy.MinHTLC
@@ -4254,7 +4275,7 @@ func (f *Manager) announceChannel(localIDKey, remoteIDKey *btcec.PublicKey,
 	// only use the channel announcement message from the returned struct.
 	ann, err := f.newChanAnnouncement(localIDKey, remoteIDKey,
 		localFundingKey, remoteFundingKey, shortChanID, chanID,
-		0, 0, nil, chanType,
+		0, 0, nil, chanType, true,
 	)
 	if err != nil {
 		log.Errorf("can't generate channel announcement: %v", err)

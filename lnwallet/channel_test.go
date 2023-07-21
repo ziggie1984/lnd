@@ -5,6 +5,7 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"runtime"
@@ -7556,8 +7557,13 @@ func TestChannelMaxFeeRate(t *testing.T) {
 
 	assertMaxFeeRate(aliceChannel, 1.0, 676794154)
 	assertMaxFeeRate(aliceChannel, 0.001, 676794)
-	assertMaxFeeRate(aliceChannel, 0.000001, 676)
-	assertMaxFeeRate(aliceChannel, 0.0000001, chainfee.FeePerKwFloor)
+
+	// When the fee allocation would push our max fee rate below our current
+	// commitment fee rate of the channel which is 6000 sat/kw and was
+	// definied when creating the test channel, we cap the max fee rate at
+	// the current fee rate.
+	assertMaxFeeRate(aliceChannel, 0.000001, 6000)
+	assertMaxFeeRate(aliceChannel, 0.0000001, 6000)
 
 	// Check that anchor channels are capped at their max fee rate.
 	anchorChannel, _, err := CreateTestChannels(
@@ -7574,8 +7580,17 @@ func TestChannelMaxFeeRate(t *testing.T) {
 	// to slightly lower fee rates.
 	assertMaxFeeRate(anchorChannel, 1.0, 435941555)
 	assertMaxFeeRate(anchorChannel, 0.001, 435941)
-	assertMaxFeeRate(anchorChannel, 0.000001, 435)
-	assertMaxFeeRate(anchorChannel, 0.0000001, chainfee.FeePerKwFloor)
+
+	// When due to the fee allocation the resulting max fee rate would fall
+	// below the current commitment fee rate, we cap it at the current fee
+	// rate which is 6000 sat/kw and was definied when creating the test
+	// channel.
+	// When calculating the max fee of the commitment transaction there
+	// are some minor rounding differences (5999 sat/kw) because when
+	// calculating the actual fee of the commmitment tx the fee is always
+	// rounded down according to BOLT 03.
+	assertMaxFeeRate(anchorChannel, 0.000001, 5999)
+	assertMaxFeeRate(anchorChannel, 0.0000001, 5999)
 }
 
 // TestIdealCommitFeeRate tests that we correctly compute the ideal commitment
@@ -7599,6 +7614,29 @@ func TestIdealCommitFeeRate(t *testing.T) {
 		if err := c.validateFeeRate(feeRate); err != nil {
 			t.Fatalf("fee rate validation failed: %v", err)
 		}
+	}
+
+	// maxFeeRate calculates the maximum feerate a channel is allowed to
+	// allocate to fees. This function prevents us from using contants and
+	// making it easier to reason about the test. We do not use the function
+	// `MaxFeeRate` explicitly.
+	maxFeeRate := func(c *LightningChannel,
+		maxFeeAlloc float64) chainfee.SatPerKWeight {
+
+		balance, weight := c.availableBalance(AdditionalHtlc)
+		feeRate := c.localCommitChain.tip().feePerKw
+		currentFee := feeRate.FeeForWeight(weight)
+
+		maxBalance := balance.ToSatoshis() + currentFee
+		expectedFee := math.Max(
+			float64(maxBalance)*maxFeeAlloc, float64(currentFee),
+		)
+
+		maxFeeRate := chainfee.SatPerKWeight(
+			expectedFee / (float64(weight) / 1000),
+		)
+
+		return maxFeeRate
 	}
 
 	// propertyTest tests that the validateFeeRate function always passes
@@ -7637,8 +7675,9 @@ func TestIdealCommitFeeRate(t *testing.T) {
 
 		// If the maximum fee is lower than the network fee and above
 		// the min relay fee, use the maximum fee.
+		maxFeeRate := maxFeeRate(aliceChannel, 1.0)
 		assertIdealFeeRate(
-			aliceChannel, 700000000, 0, 0, 1.0, 676794154,
+			aliceChannel, 700000000, 0, 0, 1.0, maxFeeRate,
 		)
 
 		// If the network fee is lower than the max fee and above the
@@ -7653,12 +7692,12 @@ func TestIdealCommitFeeRate(t *testing.T) {
 			aliceChannel, 500000000, 600000000, 0, 1.0, 600000000,
 		)
 
-		// The absolute maximum fee rate we can pay (ie, using a max
+		// The maximum fee rate we can pay (ie, using a max
 		// allocation of 1) is still below the minimum relay fee. In
 		// this case, use the absolute max fee.
 		assertIdealFeeRate(
-			aliceChannel, 800000000, 700000000, 0, 0.001,
-			676794154,
+			aliceChannel, 800000000, 700000000, 0, 1e-3,
+			maxFeeRate,
 		)
 	})
 
@@ -7681,37 +7720,39 @@ func TestIdealCommitFeeRate(t *testing.T) {
 		// Anchor commitments are heavier, hence the same allocation
 		// leads to slightly lower fee rates.
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 0, chainfee.FeePerKwFloor,
+			anchorChannel, 7e8, 0, chainfee.FeePerKwFloor,
 			0.1, chainfee.FeePerKwFloor,
 		)
 
 		// If the maximum fee is lower than the network fee, use the
 		// maximum fee.
+		maxFee := maxFeeRate(anchorChannel, 1e-3)
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 0, 1000000, 0.001, 435941,
+			anchorChannel, 700000000, 0, 1e6, 1e-3, maxFee,
 		)
 
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 0, 700, 0.000001, 435,
+			anchorChannel, 700000000, 0, 700, 1e-6, 700,
 		)
 
+		// We cap the fee rate at the old feerate of the channel.
+		maxFee = maxFeeRate(anchorChannel, 1e-7)
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 0, 1000000, 0.0000001,
-			chainfee.FeePerKwFloor,
+			anchorChannel, 700000000, 0, 1e6, 1e-7, maxFee,
 		)
 
 		// If the maximum anchor commit fee rate is less than the
 		// maximum fee, use the max anchor commit fee since this is an
 		// anchor channel.
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 0, 400000, 0.001, 400000,
+			anchorChannel, 700000000, 0, 400000, 1e-3, 400000,
 		)
 
 		// If the minimum relay fee is above the max anchor commitment
 		// fee rate but still below our max fee rate then use the min
 		// relay fee.
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 400000, 300000, 0.001,
+			anchorChannel, 700000000, 400000, 300000, 1e-4,
 			400000,
 		)
 
@@ -7719,16 +7760,17 @@ func TestIdealCommitFeeRate(t *testing.T) {
 		// below the max fee rate when the max fee allocation is set to
 		// 1, the minimum relay fee is used.
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 500000, 300000, 0.001,
+			anchorChannel, 700000000, 500000, 300000, 1e-3,
 			500000,
 		)
 
 		// The absolute maximum fee rate we can pay (ie, using a max
 		// allocation of 1) is still below the minimum relay fee. In
 		// this case, use the absolute max fee.
+		maxFee = maxFeeRate(anchorChannel, 1)
 		assertIdealFeeRate(
-			anchorChannel, 700000000, 450000000, 300000, 0.001,
-			435941555,
+			anchorChannel, 700000000, 450000000, 300000, 1e-3,
+			maxFee,
 		)
 	})
 }

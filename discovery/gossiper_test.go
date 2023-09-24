@@ -735,7 +735,7 @@ func createTestCtx(t *testing.T, startHeight uint32) (*testCtx, error) {
 		return false
 	}
 
-	signAliasUpdate := func(*lnwire.ChannelUpdate) (*ecdsa.Signature,
+	signAliasUpdate := func(u *lnwire.ChannelUpdate) (*ecdsa.Signature,
 		error) {
 
 		return nil, nil
@@ -3119,7 +3119,6 @@ func TestSendChannelUpdateReliably(t *testing.T) {
 		t.Fatal("gossiper did not request notification upon peer " +
 			"connection")
 	}
-
 	// Now that the remote peer is offline, we'll send a new channel update.
 	batch.chanUpdAnn1.Timestamp++
 	if err := signUpdate(selfKeyPriv, batch.chanUpdAnn1); err != nil {
@@ -3195,7 +3194,8 @@ func TestSendChannelUpdateReliably(t *testing.T) {
 	require.NoError(t, err, "unable to process remote channel proof")
 
 	// Now that we've constructed our full proof, we can assert that the
-	// channel has been announced.
+	// channel has been announced. We anticipate the local ChanAnnouncement
+	// and the local ChanUpdate.
 	for i := 0; i < 2; i++ {
 		select {
 		case <-ctx.broadcastedMessage:

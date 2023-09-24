@@ -1746,7 +1746,9 @@ func (r *ChannelRouter) processUpdate(msg interface{},
 		// new edge policy to the proper directional edge within the
 		// channel graph.
 		if err = r.cfg.Graph.UpdateEdgePolicy(msg, op...); err != nil {
-			err := errors.Errorf("unable to add channel: %v", err)
+			err := errors.Errorf("unable to update channel "+
+				"policy: %v", err)
+
 			log.Error(err)
 			return err
 		}

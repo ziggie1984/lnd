@@ -6,6 +6,7 @@ package walletrpc
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,9 +14,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -120,6 +124,18 @@ var (
 			Entity: "onchain",
 			Action: "read",
 		}},
+		"/walletrpc.WalletKit/ListAddresses": {{
+			Entity: "onchain",
+			Action: "read",
+		}},
+		"/walletrpc.WalletKit/SignMessageWithAddr": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
+		"/walletrpc.WalletKit/VerifyMessageWithAddr": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
 		"/walletrpc.WalletKit/FundPsbt": {{
 			Entity: "onchain",
 			Action: "write",
@@ -145,6 +161,10 @@ var (
 			Action: "write",
 		}},
 		"/walletrpc.WalletKit/ImportPublicKey": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
+		"/walletrpc.WalletKit/ImportTapscript": {{
 			Entity: "onchain",
 			Action: "write",
 		}},
@@ -368,6 +388,7 @@ func (w *WalletKit) ListUnspent(ctx context.Context,
 		utxos, err = w.cfg.Wallet.ListUnspentWitness(
 			minConfs, maxConfs, req.Account,
 		)
+
 		return err
 	})
 	if err != nil {
@@ -1002,7 +1023,11 @@ func (w *WalletKit) LabelTransaction(ctx context.Context,
 // externally and no additional inputs are added. If the specified inputs aren't
 // enough to fund the outputs with the given fee rate, an error is returned.
 // After either selecting or verifying the inputs, all input UTXOs are locked
-// with an internal app ID.
+// with an internal app ID. A custom address type for change can be specified
+// for default accounts and single imported public keys (only P2TR for now).
+// Otherwise, P2WPKH will be used by default. No custom address type should be
+// provided for custom accounts as we will always generate the change address
+// using the coin selection key scope.
 //
 // NOTE: If this method returns without an error, it is the caller's
 // responsibility to either spend the locked UTXOs (by finalizing and then
@@ -1157,6 +1182,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 		// generating a new change address.
 		changeIndex, err = w.cfg.Wallet.FundPsbt(
 			packet, minConfs, feeSatPerKW, account,
+			keyScopeFromChangeAddressType(req.ChangeType),
 		)
 		if err != nil {
 			return fmt.Errorf("wallet couldn't fund PSBT: %v", err)
@@ -1222,6 +1248,21 @@ func marshallLeases(locks []*base.ListLeasedOutputResult) []*UtxoLease {
 	return rpcLocks
 }
 
+// keyScopeFromChangeAddressType maps a ChangeAddressType from protobuf to a
+// KeyScope. If the type is ChangeAddressType_CHANGE_ADDRESS_TYPE_UNSPECIFIED,
+// it returns nil.
+func keyScopeFromChangeAddressType(
+	changeAddressType ChangeAddressType) *waddrmgr.KeyScope {
+
+	switch changeAddressType {
+	case ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR:
+		return &waddrmgr.KeyScopeBIP0086
+
+	default:
+		return nil
+	}
+}
+
 // SignPsbt expects a partial transaction with all inputs and outputs fully
 // declared and tries to sign all unsigned inputs that have all required fields
 // (UTXO information, BIP32 derivation information, witness or sig scripts)
@@ -1261,7 +1302,7 @@ func (w *WalletKit) SignPsbt(_ context.Context, req *SignPsbtRequest) (
 	// Let the wallet do the heavy lifting. This will sign all inputs that
 	// we have the UTXO for. If some inputs can't be signed and don't have
 	// witness data attached, they will just be skipped.
-	err = w.cfg.Wallet.SignPsbt(packet)
+	signedInputs, err := w.cfg.Wallet.SignPsbt(packet)
 	if err != nil {
 		return nil, fmt.Errorf("error signing PSBT: %v", err)
 	}
@@ -1274,7 +1315,8 @@ func (w *WalletKit) SignPsbt(_ context.Context, req *SignPsbtRequest) (
 	}
 
 	return &SignPsbtResponse{
-		SignedPsbt: signedPsbtBytes.Bytes(),
+		SignedPsbt:   signedPsbtBytes.Bytes(),
+		SignedInputs: signedInputs,
 	}, nil
 }
 
@@ -1415,6 +1457,38 @@ func marshalWalletAccount(internalScope waddrmgr.KeyScope,
 	return rpcAccount, nil
 }
 
+// marshalWalletAddressList converts the list of address into its RPC
+// representation.
+func marshalWalletAddressList(w *WalletKit, account *waddrmgr.AccountProperties,
+	addressList []lnwallet.AddressProperty) (*AccountWithAddresses, error) {
+
+	// Get the RPC representation of account.
+	rpcAccount, err := marshalWalletAccount(
+		w.internalScope(), account,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	addresses := make([]*AddressProperty, len(addressList))
+	for idx, addr := range addressList {
+		addresses[idx] = &AddressProperty{
+			Address:    addr.Address,
+			IsInternal: addr.Internal,
+			Balance:    int64(addr.Balance),
+		}
+	}
+
+	rpcAddressList := &AccountWithAddresses{
+		Name:           rpcAccount.Name,
+		AddressType:    rpcAccount.AddressType,
+		DerivationPath: rpcAccount.DerivationPath,
+		Addresses:      addresses,
+	}
+
+	return rpcAddressList, nil
+}
+
 // ListAccounts retrieves all accounts belonging to the wallet by default. A
 // name and key scope filter can be provided to filter through all of the wallet
 // accounts and return only those matching.
@@ -1493,6 +1567,61 @@ func (w *WalletKit) RequiredReserve(ctx context.Context,
 	}, nil
 }
 
+// ListAddresses retrieves all the addresses along with their balance. An
+// account name filter can be provided to filter through all of the
+// wallet accounts and return the addresses of only those matching.
+func (w *WalletKit) ListAddresses(ctx context.Context,
+	req *ListAddressesRequest) (*ListAddressesResponse, error) {
+
+	addressLists, err := w.cfg.Wallet.ListAddresses(
+		req.AccountName,
+		req.ShowCustomAccounts,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a slice of accounts from addressLists map.
+	accounts := make([]*waddrmgr.AccountProperties, 0, len(addressLists))
+	for account := range addressLists {
+		accounts = append(accounts, account)
+	}
+
+	// Sort the accounts by derivation path.
+	sort.Slice(accounts, func(i, j int) bool {
+		scopeI := accounts[i].KeyScope
+		scopeJ := accounts[j].KeyScope
+		if scopeI.Purpose == scopeJ.Purpose {
+			if scopeI.Coin == scopeJ.Coin {
+				acntNumI := accounts[i].AccountNumber
+				acntNumJ := accounts[j].AccountNumber
+				return acntNumI < acntNumJ
+			}
+
+			return scopeI.Coin < scopeJ.Coin
+		}
+
+		return scopeI.Purpose < scopeJ.Purpose
+	})
+
+	rpcAddressLists := make([]*AccountWithAddresses, 0, len(addressLists))
+	for _, account := range accounts {
+		addressList := addressLists[account]
+		rpcAddressList, err := marshalWalletAddressList(
+			w, account, addressList,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		rpcAddressLists = append(rpcAddressLists, rpcAddressList)
+	}
+
+	return &ListAddressesResponse{
+		AccountWithAddresses: rpcAddressLists,
+	}, nil
+}
+
 // parseAddrType parses an address type from its RPC representation to a
 // *waddrmgr.AddressType.
 func parseAddrType(addrType AddressType,
@@ -1526,6 +1655,182 @@ func parseAddrType(addrType AddressType,
 	}
 }
 
+// msgSignaturePrefix is a prefix used to prevent inadvertently signing a
+// transaction or a signature. It is prepended in front of the message and
+// follows the same standard as bitcoin core and btcd.
+const msgSignaturePrefix = "Bitcoin Signed Message:\n"
+
+// SignMessageWithAddr signs a message with the private key of the provided
+// address. The address needs to belong to the lnd wallet.
+func (w *WalletKit) SignMessageWithAddr(ctx context.Context,
+	req *SignMessageWithAddrRequest) (*SignMessageWithAddrResponse, error) {
+
+	addr, err := btcutil.DecodeAddress(req.Addr, w.cfg.ChainParams)
+	if err != nil {
+		return nil, fmt.Errorf("unable to decode address: %w", err)
+	}
+
+	if !addr.IsForNet(w.cfg.ChainParams) {
+		return nil, fmt.Errorf("encoded address is for "+
+			"the wrong network %s", req.Addr)
+	}
+
+	// Fetch address infos from own wallet and check whether it belongs
+	// to the lnd wallet.
+	managedAddr, err := w.cfg.Wallet.AddressInfo(addr)
+	if err != nil {
+		return nil, fmt.Errorf("address could not be found in the "+
+			"wallet database: %w", err)
+	}
+
+	// Verifying by checking the interface type that the wallet knows about
+	// the public and private keys so it can sign the message with the
+	// private key of this address.
+	pubKey, ok := managedAddr.(waddrmgr.ManagedPubKeyAddress)
+	if !ok {
+		return nil, fmt.Errorf("private key to address is unknown")
+	}
+
+	digest, err := doubleHashMessage(msgSignaturePrefix, string(req.Msg))
+	if err != nil {
+		return nil, err
+	}
+
+	// For all address types (P2WKH, NP2WKH,P2TR) the ECDSA compact signing
+	// algorithm is used. For P2TR addresses this represents a special case.
+	// ECDSA is used to create a compact signature which makes the public
+	// key of the signature recoverable. For Schnorr no known compact
+	// signing algorithm exists yet.
+	privKey, err := pubKey.PrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("no private key could be "+
+			"fetched from wallet database: %w", err)
+	}
+
+	sigBytes, err := ecdsa.SignCompact(privKey, digest, pubKey.Compressed())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create signature: %w", err)
+	}
+
+	// Bitcoin signatures are base64 encoded (being compatible with
+	// bitcoin-core and btcd).
+	sig := base64.StdEncoding.EncodeToString(sigBytes)
+
+	return &SignMessageWithAddrResponse{
+		Signature: sig,
+	}, nil
+}
+
+// VerifyMessageWithAddr verifies a signature on a message with a provided
+// address, it checks both the validity of the signature itself and then
+// verifies whether the signature corresponds to the public key of the
+// provided address. There is no dependence on the private key of the address
+// therefore also external addresses are allowed to verify signatures.
+// Supported address types are P2PKH, P2WKH, NP2WKH, P2TR.
+func (w *WalletKit) VerifyMessageWithAddr(ctx context.Context,
+	req *VerifyMessageWithAddrRequest) (*VerifyMessageWithAddrResponse,
+	error) {
+
+	sig, err := base64.StdEncoding.DecodeString(req.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("malformed base64 encoding of "+
+			"the signature: %w", err)
+	}
+
+	digest, err := doubleHashMessage(msgSignaturePrefix, string(req.Msg))
+	if err != nil {
+		return nil, err
+	}
+
+	pk, wasCompressed, err := ecdsa.RecoverCompact(sig, digest)
+	if err != nil {
+		return nil, fmt.Errorf("unable to recover public key "+
+			"from compact signature: %w", err)
+	}
+
+	var serializedPubkey []byte
+	if wasCompressed {
+		serializedPubkey = pk.SerializeCompressed()
+	} else {
+		serializedPubkey = pk.SerializeUncompressed()
+	}
+
+	addr, err := btcutil.DecodeAddress(req.Addr, w.cfg.ChainParams)
+	if err != nil {
+		return nil, fmt.Errorf("unable to decode address: %w", err)
+	}
+
+	if !addr.IsForNet(w.cfg.ChainParams) {
+		return nil, fmt.Errorf("encoded address is for"+
+			"the wrong network %s", req.Addr)
+	}
+
+	var (
+		address    btcutil.Address
+		pubKeyHash = btcutil.Hash160(serializedPubkey)
+	)
+
+	// Ensure the address is one of the supported types.
+	switch addr.(type) {
+	case *btcutil.AddressPubKeyHash:
+		address, err = btcutil.NewAddressPubKeyHash(
+			pubKeyHash, w.cfg.ChainParams,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case *btcutil.AddressWitnessPubKeyHash:
+		address, err = btcutil.NewAddressWitnessPubKeyHash(
+			pubKeyHash, w.cfg.ChainParams,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case *btcutil.AddressScriptHash:
+		// Check if address is a Nested P2WKH (NP2WKH).
+		address, err = btcutil.NewAddressWitnessPubKeyHash(
+			pubKeyHash, w.cfg.ChainParams,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		witnessScript, err := txscript.PayToAddrScript(address)
+		if err != nil {
+			return nil, err
+		}
+
+		address, err = btcutil.NewAddressScriptHashFromHash(
+			btcutil.Hash160(witnessScript), w.cfg.ChainParams,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case *btcutil.AddressTaproot:
+		// Only addresses without a tapscript are allowed because
+		// the verification is using the internal key.
+		tapKey := txscript.ComputeTaprootKeyNoScript(pk)
+		address, err = btcutil.NewAddressTaproot(
+			schnorr.SerializePubKey(tapKey),
+			w.cfg.ChainParams,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported address type")
+	}
+
+	return &VerifyMessageWithAddrResponse{
+		Valid:  req.Addr == address.EncodeAddress(),
+		Pubkey: serializedPubkey,
+	}, nil
+}
+
 // ImportAccount imports an account backed by an account extended public key.
 // The master key fingerprint denotes the fingerprint of the root key
 // corresponding to the account public key (also known as the key with
@@ -1545,7 +1850,7 @@ func parseAddrType(addrType AddressType,
 // distinction between the standard BIP-0049 address schema (nested witness
 // pubkeys everywhere) and our own BIP-0049Plus address schema (nested pubkeys
 // externally, witness pubkeys internally).
-func (w *WalletKit) ImportAccount(ctx context.Context,
+func (w *WalletKit) ImportAccount(_ context.Context,
 	req *ImportAccountRequest) (*ImportAccountResponse, error) {
 
 	accountPubKey, err := hdkeychain.NewKeyFromString(req.ExtendedPublicKey)
@@ -1604,14 +1909,27 @@ func (w *WalletKit) ImportAccount(ctx context.Context,
 // address type can usually be inferred from the key's version, but in the case
 // of legacy versions (xpub, tpub), an address type must be specified as we
 // intend to not support importing BIP-44 keys into the wallet using the legacy
-// pay-to-pubkey-hash (P2PKH) scheme.
-func (w *WalletKit) ImportPublicKey(ctx context.Context,
+// pay-to-pubkey-hash (P2PKH) scheme. For Taproot keys, this will only watch
+// the BIP-0086 style output script. Use ImportTapscript for more advanced key
+// spend or script spend outputs.
+func (w *WalletKit) ImportPublicKey(_ context.Context,
 	req *ImportPublicKeyRequest) (*ImportPublicKeyResponse, error) {
 
-	pubKey, err := btcec.ParsePubKey(req.PublicKey)
+	var (
+		pubKey *btcec.PublicKey
+		err    error
+	)
+	switch req.AddressType {
+	case AddressType_TAPROOT_PUBKEY:
+		pubKey, err = schnorr.ParsePubKey(req.PublicKey)
+
+	default:
+		pubKey, err = btcec.ParsePubKey(req.PublicKey)
+	}
 	if err != nil {
 		return nil, err
 	}
+
 	addrType, err := parseAddrType(req.AddressType, true)
 	if err != nil {
 		return nil, err
@@ -1622,4 +1940,85 @@ func (w *WalletKit) ImportPublicKey(ctx context.Context,
 	}
 
 	return &ImportPublicKeyResponse{}, nil
+}
+
+// ImportTapscript imports a Taproot script and internal key and adds the
+// resulting Taproot output key as a watch-only output script into the wallet.
+// For BIP-0086 style Taproot keys (no root hash commitment and no script spend
+// path) use ImportPublicKey.
+//
+// NOTE: Taproot keys imported through this RPC currently _cannot_ be used for
+// funding PSBTs. Only tracking the balance and UTXOs is currently supported.
+func (w *WalletKit) ImportTapscript(_ context.Context,
+	req *ImportTapscriptRequest) (*ImportTapscriptResponse, error) {
+
+	internalKey, err := schnorr.ParsePubKey(req.InternalPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing internal key: %v", err)
+	}
+
+	var tapscript *waddrmgr.Tapscript
+	switch {
+	case req.GetFullTree() != nil:
+		tree := req.GetFullTree()
+		leaves := make([]txscript.TapLeaf, len(tree.AllLeaves))
+		for idx, leaf := range tree.AllLeaves {
+			leaves[idx] = txscript.TapLeaf{
+				LeafVersion: txscript.TapscriptLeafVersion(
+					leaf.LeafVersion,
+				),
+				Script: leaf.Script,
+			}
+		}
+
+		tapscript = input.TapscriptFullTree(internalKey, leaves...)
+
+	case req.GetPartialReveal() != nil:
+		partialReveal := req.GetPartialReveal()
+		if partialReveal.RevealedLeaf == nil {
+			return nil, fmt.Errorf("missing revealed leaf")
+		}
+
+		revealedLeaf := txscript.TapLeaf{
+			LeafVersion: txscript.TapscriptLeafVersion(
+				partialReveal.RevealedLeaf.LeafVersion,
+			),
+			Script: partialReveal.RevealedLeaf.Script,
+		}
+		if len(partialReveal.FullInclusionProof)%32 != 0 {
+			return nil, fmt.Errorf("invalid inclusion proof "+
+				"length, expected multiple of 32, got %d",
+				len(partialReveal.FullInclusionProof)%32)
+		}
+
+		tapscript = input.TapscriptPartialReveal(
+			internalKey, revealedLeaf,
+			partialReveal.FullInclusionProof,
+		)
+
+	case req.GetRootHashOnly() != nil:
+		rootHash := req.GetRootHashOnly()
+		if len(rootHash) == 0 {
+			return nil, fmt.Errorf("missing root hash")
+		}
+
+		tapscript = input.TapscriptRootHashOnly(internalKey, rootHash)
+
+	case req.GetFullKeyOnly():
+		tapscript = input.TapscriptFullKeyOnly(internalKey)
+
+	default:
+		return nil, fmt.Errorf("invalid script")
+	}
+
+	taprootScope := waddrmgr.KeyScopeBIP0086
+	addr, err := w.cfg.Wallet.ImportTaprootScript(taprootScope, tapscript)
+	if err != nil {
+		return nil, fmt.Errorf("error importing script into wallet: %v",
+			err)
+	}
+
+	return &ImportTapscriptResponse{
+		P2TrAddress: addr.Address().String(),
+	}, nil
 }

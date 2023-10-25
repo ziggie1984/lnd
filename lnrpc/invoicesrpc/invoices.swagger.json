@@ -261,7 +261,7 @@
         "expiry": {
           "type": "string",
           "format": "int64",
-          "description": "Payment request expiry time in seconds. Default is 3600 (1 hour)."
+          "description": "Payment request expiry time in seconds. Default is 86400 (24 hours)."
         },
         "fallback_addr": {
           "type": "string",
@@ -469,18 +469,17 @@
         },
         "settled": {
           "type": "boolean",
-          "description": "The field is deprecated. Use the state field instead (compare to SETTLED).",
-          "title": "Whether this invoice has been fulfilled"
+          "description": "Whether this invoice has been fulfilled.\n\nThe field is deprecated. Use the state field instead (compare to SETTLED)."
         },
         "creation_date": {
           "type": "string",
           "format": "int64",
-          "description": "When this invoice was created.\nNote: Output only, don't specify for creating an invoice."
+          "description": "When this invoice was created.\nMeasured in seconds since the unix epoch.\nNote: Output only, don't specify for creating an invoice."
         },
         "settle_date": {
           "type": "string",
           "format": "int64",
-          "description": "When this invoice was settled.\nNote: Output only, don't specify for creating an invoice."
+          "description": "When this invoice was settled.\nMeasured in seconds since the unix epoch.\nNote: Output only, don't specify for creating an invoice."
         },
         "payment_request": {
           "type": "string",
@@ -494,7 +493,7 @@
         "expiry": {
           "type": "string",
           "format": "int64",
-          "description": "Payment request expiry time in seconds. Default is 3600 (1 hour)."
+          "description": "Payment request expiry time in seconds. Default is 86400 (24 hours)."
         },
         "fallback_addr": {
           "type": "string",
@@ -514,7 +513,7 @@
         },
         "private": {
           "type": "boolean",
-          "description": "Whether this invoice should include routing hints for private channels."
+          "description": "Whether this invoice should include routing hints for private channels.\nNote: When enabled, if value and value_msat are zero, a large number of\nhints with these channels can be included, which might not be desirable."
         },
         "add_index": {
           "type": "string",

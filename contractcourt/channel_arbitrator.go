@@ -14,8 +14,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -1460,6 +1462,10 @@ const (
 	// other party time it out, or eventually learn of the pre-image, in
 	// which case we'll claim on chain.
 	HtlcIncomingWatchAction = 5
+
+	// HtlcIncomingDustFinalAction indicates that we should mark an incoming
+	// dust htlc as final because it can't be claimed on-chain.
+	HtlcIncomingDustFinalAction = 6
 )
 
 // String returns a human readable string describing a chain action.
@@ -1482,6 +1488,9 @@ func (c ChainAction) String() string {
 
 	case HtlcIncomingWatchAction:
 		return "HtlcIncomingWatchAction"
+
+	case HtlcIncomingDustFinalAction:
+		return "HtlcIncomingDustFinalAction"
 
 	default:
 		return "<unknown action>"
@@ -1698,6 +1707,10 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 				"needed for incoming dust htlc=%x",
 				c.cfg.ChanPoint, htlc.RHash[:])
 
+			actionMap[HtlcIncomingDustFinalAction] = append(
+				actionMap[HtlcIncomingDustFinalAction], htlc,
+			)
+
 			continue
 		}
 
@@ -1736,7 +1749,7 @@ func (c *ChannelArbitrator) isPreimageAvailable(hash lntypes.Hash) (bool,
 	invoice, err := c.cfg.Registry.LookupInvoice(hash)
 	switch err {
 	case nil:
-	case channeldb.ErrInvoiceNotFound, channeldb.ErrNoInvoicesCreated:
+	case invoices.ErrInvoiceNotFound, invoices.ErrNoInvoicesCreated:
 		return false, nil
 	default:
 		return false, err
@@ -2211,6 +2224,36 @@ func (c *ChannelArbitrator) prepContractResolutions(
 					resolver.SupplementState(chanState)
 				}
 				htlcResolvers = append(htlcResolvers, resolver)
+			}
+
+		// We've lost an htlc because it isn't manifested on the
+		// commitment transaction that closed the channel.
+		case HtlcIncomingDustFinalAction:
+			for _, htlc := range htlcs {
+				htlc := htlc
+
+				key := models.CircuitKey{
+					ChanID: c.cfg.ShortChanID,
+					HtlcID: htlc.HtlcIndex,
+				}
+
+				// Mark this dust htlc as final failed.
+				chainArbCfg := c.cfg.ChainArbitratorConfig
+				err := chainArbCfg.PutFinalHtlcOutcome(
+					key.ChanID, key.HtlcID, false,
+				)
+				if err != nil {
+					return nil, nil, err
+				}
+
+				// Send notification.
+				chainArbCfg.HtlcNotifier.NotifyFinalHtlcEvent(
+					key,
+					channeldb.FinalHtlcInfo{
+						Settled:  false,
+						Offchain: false,
+					},
+				)
 			}
 
 		// Finally, if this is an outgoing HTLC we've sent, then we'll

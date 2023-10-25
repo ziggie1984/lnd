@@ -171,7 +171,8 @@ var sendPaymentCommand = cli.Command{
 	For invoice with payment address:
 	    --dest=N --amt=A --payment_hash=H --final_cltv_delta=T --pay_addr=H
 	`,
-	ArgsUsage: "dest amt payment_hash final_cltv_delta pay_addr | --pay_req=[payment request]",
+	ArgsUsage: "dest amt payment_hash final_cltv_delta pay_addr | " +
+		"--pay_req=R [--pay_addr=H]",
 	Flags: append(paymentFlags(),
 		cli.StringFlag{
 			Name: "dest, d",
@@ -244,7 +245,7 @@ func confirmPayReq(resp *lnrpc.PayReq, amt, feeLimit int64) error {
 	return nil
 }
 
-func parsePayAddr(ctx *cli.Context) ([]byte, error) {
+func parsePayAddr(ctx *cli.Context, args cli.Args) ([]byte, error) {
 	var (
 		payAddr []byte
 		err     error
@@ -253,8 +254,8 @@ func parsePayAddr(ctx *cli.Context) ([]byte, error) {
 	case ctx.IsSet("pay_addr"):
 		payAddr, err = hex.DecodeString(ctx.String("pay_addr"))
 
-	case ctx.Args().Present():
-		payAddr, err = hex.DecodeString(ctx.Args().First())
+	case args.Present():
+		payAddr, err = hex.DecodeString(args.First())
 	}
 
 	if err != nil {
@@ -283,7 +284,7 @@ func sendPayment(ctx *cli.Context) error {
 	// details of the payment are encoded within the request.
 	if ctx.IsSet("pay_req") {
 		req := &routerrpc.SendPaymentRequest{
-			PaymentRequest:    ctx.String("pay_req"),
+			PaymentRequest:    stripPrefix(ctx.String("pay_req")),
 			Amt:               ctx.Int64("amt"),
 			DestCustomRecords: make(map[uint64][]byte),
 		}
@@ -291,7 +292,10 @@ func sendPayment(ctx *cli.Context) error {
 		// We'll attempt to parse a payment address as well, given that
 		// if the user is using an AMP invoice, then they may be trying
 		// to specify that value manually.
-		payAddr, err := parsePayAddr(ctx)
+		//
+		// Don't parse unnamed arguments to prevent confusion with the main
+		// unnamed argument format for non-AMP payments.
+		payAddr, err := parsePayAddr(ctx, nil)
 		if err != nil {
 			return err
 		}
@@ -394,10 +398,11 @@ func sendPayment(ctx *cli.Context) error {
 		if err != nil {
 			return err
 		}
+		args = args.Tail()
 		req.FinalCltvDelta = int32(delta)
 	}
 
-	payAddr, err := parsePayAddr(ctx)
+	payAddr, err := parsePayAddr(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -757,9 +762,9 @@ func formatPayment(ctxc context.Context, payment *lnrpc.Payment,
 		state := htlc.Status.String()
 		if htlc.Failure != nil {
 			state = fmt.Sprintf(
-				"%v @ %v",
+				"%v @ %s hop",
 				htlc.Failure.Code,
-				htlc.Failure.FailureSourceIndex,
+				ordinalNumber(htlc.Failure.FailureSourceIndex),
 			)
 		}
 
@@ -827,7 +832,7 @@ func payInvoice(ctx *cli.Context) error {
 	}
 
 	req := &routerrpc.SendPaymentRequest{
-		PaymentRequest:    payReq,
+		PaymentRequest:    stripPrefix(payReq),
 		Amt:               ctx.Int64("amt"),
 		DestCustomRecords: make(map[uint64][]byte),
 	}
@@ -1224,6 +1229,18 @@ var listPaymentsCommand = cli.Command{
 				"be counted; can take a long time on systems " +
 				"with many payments",
 		},
+		cli.Uint64Flag{
+			Name: "creation_date_start",
+			Usage: "timestamp in seconds, if set, filter " +
+				"payments with creation date greater than or " +
+				"equal to it",
+		},
+		cli.Uint64Flag{
+			Name: "creation_date_end",
+			Usage: "timestamp in seconds, if set, filter " +
+				"payments with creation date less than or " +
+				"equal to it",
+		},
 	},
 	Action: actionDecorator(listPayments),
 }
@@ -1239,6 +1256,8 @@ func listPayments(ctx *cli.Context) error {
 		MaxPayments:        uint64(ctx.Uint("max_payments")),
 		Reversed:           !ctx.Bool("paginate_forwards"),
 		CountTotalPayments: ctx.Bool("count_total_payments"),
+		CreationDateStart:  ctx.Uint64("creation_date_start"),
+		CreationDateEnd:    ctx.Uint64("creation_date_end"),
 	}
 
 	payments, err := client.ListPayments(ctxc, req)
@@ -1292,6 +1311,11 @@ var forwardingHistoryCommand = cli.Command{
 			Name:  "max_events",
 			Usage: "the max number of events to return",
 		},
+		cli.BoolFlag{
+			Name: "skip_peer_alias_lookup",
+			Usage: "skip the peer alias lookup per forwarding " +
+				"event in order to improve performance",
+		},
 	},
 	Action: actionDecorator(forwardingHistory),
 }
@@ -1342,7 +1366,8 @@ func forwardingHistory(ctx *cli.Context) error {
 	case args.Present():
 		i, err := strconv.ParseInt(args.First(), 10, 64)
 		if err != nil {
-			return fmt.Errorf("unable to decode index_offset: %v", err)
+			return fmt.Errorf("unable to decode index_offset: %v",
+				err)
 		}
 		indexOffset = uint32(i)
 		args = args.Tail()
@@ -1354,16 +1379,22 @@ func forwardingHistory(ctx *cli.Context) error {
 	case args.Present():
 		m, err := strconv.ParseInt(args.First(), 10, 64)
 		if err != nil {
-			return fmt.Errorf("unable to decode max_events: %v", err)
+			return fmt.Errorf("unable to decode max_events: %v",
+				err)
 		}
 		maxEvents = uint32(m)
 	}
 
+	// By default we will look up the peers' alias information unless the
+	// skip_peer_alias_lookup flag is specified.
+	lookupPeerAlias := !ctx.Bool("skip_peer_alias_lookup")
+
 	req := &lnrpc.ForwardingHistoryRequest{
-		StartTime:    startTime,
-		EndTime:      endTime,
-		IndexOffset:  indexOffset,
-		NumMaxEvents: maxEvents,
+		StartTime:       startTime,
+		EndTime:         endTime,
+		IndexOffset:     indexOffset,
+		NumMaxEvents:    maxEvents,
+		PeerAliasLookup: lookupPeerAlias,
 	}
 	resp, err := client.ForwardingHistory(ctxc, req)
 	if err != nil {
@@ -1618,4 +1649,18 @@ var clearCode = fmt.Sprintf("%c[%dA%c[2K", ESC, 1, ESC)
 // clearLines erases the last count lines in the terminal window.
 func clearLines(count int) {
 	_, _ = fmt.Print(strings.Repeat(clearCode, count))
+}
+
+// ordinalNumber returns the ordinal number as a string of a number.
+func ordinalNumber(num uint32) string {
+	switch num {
+	case 1:
+		return "1st"
+	case 2:
+		return "2nd"
+	case 3:
+		return "3rd"
+	default:
+		return fmt.Sprintf("%dth", num)
+	}
 }

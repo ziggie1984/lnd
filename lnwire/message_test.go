@@ -259,6 +259,7 @@ func BenchmarkReadMessage(b *testing.B) {
 func makeAllMessages(t testing.TB, r *rand.Rand) []lnwire.Message {
 	msgAll := []lnwire.Message{}
 
+	msgAll = append(msgAll, newMsgWarning(t, r))
 	msgAll = append(msgAll, newMsgInit(t, r))
 	msgAll = append(msgAll, newMsgError(t, r))
 	msgAll = append(msgAll, newMsgPing(t, r))
@@ -291,6 +292,19 @@ func makeAllMessages(t testing.TB, r *rand.Rand) []lnwire.Message {
 	msgAll = append(msgAll, newMsgReplyChannelRangeZlib(t, r))
 
 	return msgAll
+}
+
+func newMsgWarning(tb testing.TB, r io.Reader) *lnwire.Warning {
+	tb.Helper()
+
+	msg := lnwire.NewWarning()
+
+	_, err := r.Read(msg.ChanID[:])
+	require.NoError(tb, err, "unable to generate chan id")
+
+	msg.Data = createExtraData(tb, r)
+
+	return msg
 }
 
 func newMsgInit(t testing.TB, r io.Reader) *lnwire.Init {
@@ -676,7 +690,7 @@ func newMsgChannelUpdate(t testing.TB, r *rand.Rand) *lnwire.ChannelUpdate {
 	// as being part of the ChannelUpdate, to pass
 	// serialization tests, as it will be ignored if the bit
 	// is not set.
-	if msgFlags&lnwire.ChanUpdateOptionMaxHtlc == 0 {
+	if msgFlags&lnwire.ChanUpdateRequiredMaxHtlc == 0 {
 		maxHtlc = 0
 	}
 

@@ -2,7 +2,6 @@ package peer
 
 import (
 	"bytes"
-	"io/ioutil"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channelnotifier"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lntest/mock"
@@ -44,11 +44,10 @@ func TestPeerChannelClosureAcceptFeeResponder(t *testing.T) {
 
 	mockSwitch := &mockMessageSwitch{}
 
-	alicePeer, bobChan, cleanUp, err := createTestPeer(
-		notifier, broadcastTxChan, noUpdate, mockSwitch,
+	alicePeer, bobChan, err := createTestPeer(
+		t, notifier, broadcastTxChan, noUpdate, mockSwitch,
 	)
 	require.NoError(t, err, "unable to create test channels")
-	defer cleanUp()
 
 	chanID := lnwire.NewChanIDFromOutPoint(bobChan.ChannelPoint())
 
@@ -148,11 +147,10 @@ func TestPeerChannelClosureAcceptFeeInitiator(t *testing.T) {
 
 	mockSwitch := &mockMessageSwitch{}
 
-	alicePeer, bobChan, cleanUp, err := createTestPeer(
-		notifier, broadcastTxChan, noUpdate, mockSwitch,
+	alicePeer, bobChan, err := createTestPeer(
+		t, notifier, broadcastTxChan, noUpdate, mockSwitch,
 	)
 	require.NoError(t, err, "unable to create test channels")
-	defer cleanUp()
 
 	chanID := lnwire.NewChanIDFromOutPoint(bobChan.ChannelPoint())
 	mockLink := newMockUpdateHandler(chanID)
@@ -271,11 +269,10 @@ func TestPeerChannelClosureFeeNegotiationsResponder(t *testing.T) {
 
 	mockSwitch := &mockMessageSwitch{}
 
-	alicePeer, bobChan, cleanUp, err := createTestPeer(
-		notifier, broadcastTxChan, noUpdate, mockSwitch,
+	alicePeer, bobChan, err := createTestPeer(
+		t, notifier, broadcastTxChan, noUpdate, mockSwitch,
 	)
 	require.NoError(t, err, "unable to create test channels")
-	defer cleanUp()
 
 	chanID := lnwire.NewChanIDFromOutPoint(bobChan.ChannelPoint())
 
@@ -457,11 +454,10 @@ func TestPeerChannelClosureFeeNegotiationsInitiator(t *testing.T) {
 
 	mockSwitch := &mockMessageSwitch{}
 
-	alicePeer, bobChan, cleanUp, err := createTestPeer(
-		notifier, broadcastTxChan, noUpdate, mockSwitch,
+	alicePeer, bobChan, err := createTestPeer(
+		t, notifier, broadcastTxChan, noUpdate, mockSwitch,
 	)
 	require.NoError(t, err, "unable to create test channels")
-	defer cleanUp()
 
 	chanID := lnwire.NewChanIDFromOutPoint(bobChan.ChannelPoint())
 	mockLink := newMockUpdateHandler(chanID)
@@ -785,14 +781,13 @@ func TestCustomShutdownScript(t *testing.T) {
 			mockSwitch := &mockMessageSwitch{}
 
 			// Open a channel.
-			alicePeer, bobChan, cleanUp, err := createTestPeer(
-				notifier, broadcastTxChan, test.update,
+			alicePeer, bobChan, err := createTestPeer(
+				t, notifier, broadcastTxChan, test.update,
 				mockSwitch,
 			)
 			if err != nil {
 				t.Fatalf("unable to create test channels: %v", err)
 			}
-			defer cleanUp()
 
 			chanPoint := bobChan.ChannelPoint()
 			chanID := lnwire.NewChanIDFromOutPoint(chanPoint)
@@ -1003,10 +998,7 @@ func TestPeerCustomMessage(t *testing.T) {
 	t.Parallel()
 
 	// Set up node Alice.
-	alicePath, err := ioutil.TempDir("", "alicedb")
-	require.NoError(t, err)
-
-	dbAlice, err := channeldb.Open(alicePath)
+	dbAlice, err := channeldb.Open(t.TempDir())
 	require.NoError(t, err)
 
 	aliceKey, err := btcec.NewPrivateKey()
@@ -1044,6 +1036,14 @@ func TestPeerCustomMessage(t *testing.T) {
 		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 
+	// TODO(yy): change ChannelNotifier to be an interface.
+	channelNotifier := channelnotifier.New(dbAlice.ChannelStateDB())
+	require.NoError(t, channelNotifier.Start())
+	t.Cleanup(func() {
+		require.NoError(t, channelNotifier.Stop(),
+			"stop channel notifier failed")
+	})
+
 	alicePeer := NewBrontide(Config{
 		PubKeyBytes: remoteKey,
 		ChannelDB:   dbAlice.ChannelStateDB(),
@@ -1066,7 +1066,8 @@ func TestPeerCustomMessage(t *testing.T) {
 			}
 			return nil
 		},
-		PongBuf: make([]byte, lnwire.MaxPongBytes),
+		PongBuf:         make([]byte, lnwire.MaxPongBytes),
+		ChannelNotifier: channelNotifier,
 	})
 
 	// Set up the init sequence.

@@ -39,8 +39,10 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/signal"
+	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/tor"
 )
 
@@ -252,6 +254,8 @@ var (
 //
 // See LoadConfig for further details regarding the configuration
 // loading+parsing process.
+//
+//nolint:lll
 type Config struct {
 	ShowVersion bool `short:"V" long:"version" description:"Display version information and exit"`
 
@@ -267,6 +271,7 @@ type Config struct {
 	TLSAutoRefresh     bool          `long:"tlsautorefresh" description:"Re-generate TLS certificate and key if the IPs or domains are changed"`
 	TLSDisableAutofill bool          `long:"tlsdisableautofill" description:"Do not include the interface IPs or the system hostname in TLS certificate, use first --tlsextradomain as Common Name instead, if set"`
 	TLSCertDuration    time.Duration `long:"tlscertduration" description:"The duration for which the auto-generated TLS certificate will be valid for"`
+	TLSEncryptKey      bool          `long:"tlsencryptkey" description:"Automatically encrypts the TLS private key and generates ephemeral TLS key pairs when the wallet is locked or not initialized"`
 
 	NoMacaroons     bool          `long:"no-macaroons" description:"Disable macaroon authentication, can only be used if server is not listening on a public interface."`
 	AdminMacPath    string        `long:"adminmacaroonpath" description:"Path to write the admin macaroon for lnd's RPC and REST services if it doesn't exist"`
@@ -368,6 +373,8 @@ type Config struct {
 
 	KeepFailedPaymentAttempts bool `long:"keep-failed-payment-attempts" description:"Keeps persistent record of all failed payment attempts for successfully settled payments."`
 
+	StoreFinalHtlcResolutions bool `long:"store-final-htlc-resolutions" description:"Persistently store the final resolution of incoming htlcs."`
+
 	DefaultRemoteMaxHtlcs uint16 `long:"default-remote-max-htlcs" description:"The default max_htlc applied when opening or accepting channels. This value limits the number of concurrent HTLCs that the remote party can add to the commitment. The maximum possible value is 483."`
 
 	NumGraphSyncPeers      int           `long:"numgraphsyncpeers" description:"The number of peers that we should receive new graph updates from. This option can be tuned to save bandwidth for light clients or routing nodes."`
@@ -439,6 +446,10 @@ type Config struct {
 
 	RemoteSigner *lncfg.RemoteSigner `group:"remotesigner" namespace:"remotesigner"`
 
+	Sweeper *lncfg.Sweeper `group:"sweeper" namespace:"sweeper"`
+
+	Htlcswitch *lncfg.Htlcswitch `group:"htlcswitch" namespace:"htlcswitch"`
+
 	// LogWriter is the root logger that all of the daemon's subloggers are
 	// hooked up to.
 	LogWriter *build.RotatingLogWriter
@@ -454,9 +465,14 @@ type Config struct {
 
 	// ActiveNetParams contains parameters of the target chain.
 	ActiveNetParams chainreg.BitcoinNetParams
+
+	// Estimator is used to estimate routing probabilities.
+	Estimator routing.Estimator
 }
 
 // DefaultConfig returns all default values for the Config struct.
+//
+//nolint:lll
 func DefaultConfig() Config {
 	return Config{
 		LndDir:            DefaultLndDir,
@@ -613,6 +629,7 @@ func DefaultConfig() Config {
 		Gossip: &lncfg.Gossip{
 			MaxChannelUpdateBurst: discovery.DefaultMaxChannelUpdateBurst,
 			ChannelUpdateInterval: discovery.DefaultChannelUpdateInterval,
+			SubBatchDelay:         discovery.DefaultSubBatchDelay,
 		},
 		Invoices: &lncfg.Invoices{
 			HoldExpiryDelta: lncfg.DefaultHoldInvoiceExpiryDelta,
@@ -635,6 +652,12 @@ func DefaultConfig() Config {
 		RemoteSigner: &lncfg.RemoteSigner{
 			Timeout: lncfg.DefaultRemoteSignerRPCTimeout,
 		},
+		Sweeper: &lncfg.Sweeper{
+			BatchWindowDuration: sweep.DefaultBatchWindowDuration,
+		},
+		Htlcswitch: &lncfg.Htlcswitch{
+			MailboxDeliveryTimeout: htlcswitch.DefaultMailboxDeliveryTimeout,
+		},
 	}
 }
 
@@ -642,10 +665,10 @@ func DefaultConfig() Config {
 // line options.
 //
 // The configuration proceeds as follows:
-// 	1) Start with a default config with sane settings
-// 	2) Pre-parse the command line to check for an alternative config file
-// 	3) Load configuration file overwriting defaults with any specified options
-// 	4) Parse CLI options and overwrite/add any specified options
+//  1. Start with a default config with sane settings
+//  2. Pre-parse the command line to check for an alternative config file
+//  3. Load configuration file overwriting defaults with any specified options
+//  4. Parse CLI options and overwrite/add any specified options
 func LoadConfig(interceptor signal.Interceptor) (*Config, error) {
 	// Pre-parse the command line options to pick up an alternative config
 	// file.
@@ -683,7 +706,7 @@ func LoadConfig(interceptor signal.Interceptor) (*Config, error) {
 	// User did specify an explicit --configfile, so we check that it does
 	// exist under that path to avoid surprises.
 	case configFilePath != DefaultConfigFile:
-		if !fileExists(configFilePath) {
+		if !lnrpc.FileExists(configFilePath) {
 			return nil, fmt.Errorf("specified config file does "+
 				"not exist in %s", configFilePath)
 		}
@@ -957,6 +980,13 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 			"non-wumbo channel size %v", cfg.MaxChanSize,
 			MaxFundingAmount,
 		)
+	}
+
+	// Ensure that the amount data for revoked commitment transactions is
+	// stored if the watchtower client is active.
+	if cfg.DB.NoRevLogAmtData && cfg.WtClient.Active {
+		return nil, mkErr("revocation log amount data must be stored " +
+			"if the watchtower client is active")
 	}
 
 	// Ensure a valid max channel fee allocation was set.
@@ -1388,12 +1418,18 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		)
 	}
 
+	towerDir := filepath.Join(
+		cfg.Watchtower.TowerDir,
+		cfg.registeredChains.PrimaryChain().String(),
+		lncfg.NormalizeNetwork(cfg.ActiveNetParams.Name),
+	)
+
 	// Create the lnd directory and all other sub-directories if they don't
 	// already exist. This makes sure that directory trees are also created
 	// for files that point to outside the lnddir.
 	dirs := []string{
 		lndDir, cfg.DataDir, cfg.networkDir,
-		cfg.LetsEncryptDir, cfg.Watchtower.TowerDir,
+		cfg.LetsEncryptDir, towerDir, cfg.graphDatabaseDir(),
 		filepath.Dir(cfg.TLSCertPath), filepath.Dir(cfg.TLSKeyPath),
 		filepath.Dir(cfg.AdminMacPath), filepath.Dir(cfg.ReadMacPath),
 		filepath.Dir(cfg.InvoiceMacPath),
@@ -1600,6 +1636,47 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.DB.Bolt.NoFreelistSync = !cfg.SyncFreelist
 	}
 
+	// Parse any extra sqlite pragma options that may have been provided
+	// to determine if they override any of the defaults that we will
+	// otherwise add.
+	var (
+		defaultSynchronous = true
+		defaultAutoVacuum  = true
+		defaultFullfsync   = true
+	)
+	for _, option := range cfg.DB.Sqlite.PragmaOptions {
+		switch {
+		case strings.HasPrefix(option, "synchronous="):
+			defaultSynchronous = false
+
+		case strings.HasPrefix(option, "auto_vacuum="):
+			defaultAutoVacuum = false
+
+		case strings.HasPrefix(option, "fullfsync="):
+			defaultFullfsync = false
+
+		default:
+		}
+	}
+
+	if defaultSynchronous {
+		cfg.DB.Sqlite.PragmaOptions = append(
+			cfg.DB.Sqlite.PragmaOptions, "synchronous=full",
+		)
+	}
+
+	if defaultAutoVacuum {
+		cfg.DB.Sqlite.PragmaOptions = append(
+			cfg.DB.Sqlite.PragmaOptions, "auto_vacuum=incremental",
+		)
+	}
+
+	if defaultFullfsync {
+		cfg.DB.Sqlite.PragmaOptions = append(
+			cfg.DB.Sqlite.PragmaOptions, "fullfsync=true",
+		)
+	}
+
 	// Ensure that the user hasn't chosen a remote-max-htlc value greater
 	// than the protocol maximum.
 	maxRemoteHtlcs := uint16(input.MaxHTLCNumber / 2)
@@ -1641,6 +1718,17 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 			lncfg.DefaultIncomingBroadcastDelta)
 	}
 
+	// If the experimental protocol options specify any protocol messages
+	// that we want to handle as custom messages, set them now.
+	//nolint:lll
+	customMsg := cfg.ProtocolOptions.ExperimentalProtocol.CustomMessageOverrides()
+
+	// We can safely set our custom override values during startup because
+	// startup is blocked on config parsing.
+	if err := lnwire.SetCustomOverrides(customMsg); err != nil {
+		return nil, mkErr("custom-message: %v", err)
+	}
+
 	// Validate the subconfigs for workers, caches, and the tower client.
 	err = lncfg.Validate(
 		cfg.Workers,
@@ -1651,6 +1739,8 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.HealthChecks,
 		cfg.RPCMiddleware,
 		cfg.RemoteSigner,
+		cfg.Sweeper,
+		cfg.Htlcswitch,
 	)
 	if err != nil {
 		return nil, err

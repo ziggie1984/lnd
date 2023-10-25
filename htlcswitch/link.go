@@ -2,6 +2,7 @@ package htlcswitch
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"fmt"
 	prand "math/rand"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/htlcswitch/hodl"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
@@ -291,6 +293,10 @@ type ChannelLinkConfig struct {
 	// when channels become inactive.
 	NotifyInactiveChannel func(wire.OutPoint)
 
+	// NotifyInactiveLinkEvent allows the switch to tell the
+	// ChannelNotifier when a channel link become inactive.
+	NotifyInactiveLinkEvent func(wire.OutPoint)
+
 	// HtlcNotifier is an instance of a htlcNotifier which we will pipe htlc
 	// events through.
 	HtlcNotifier htlcNotifier
@@ -394,7 +400,7 @@ type channelLink struct {
 
 	// hodlMap stores related htlc data for a circuit key. It allows
 	// resolving those htlcs when we receive a message on hodlQueue.
-	hodlMap map[channeldb.CircuitKey]hodlHtlc
+	hodlMap map[models.CircuitKey]hodlHtlc
 
 	// log is a link-specific logging instance.
 	log btclog.Logger
@@ -421,7 +427,7 @@ func NewChannelLink(cfg ChannelLinkConfig,
 		channel:         channel,
 		shortChanID:     channel.ShortChanID(),
 		shutdownRequest: make(chan *shutdownReq),
-		hodlMap:         make(map[channeldb.CircuitKey]hodlHtlc),
+		hodlMap:         make(map[models.CircuitKey]hodlHtlc),
 		hodlQueue:       queue.NewConcurrentQueue(10),
 		log:             build.NewPrefixLog(logPrefix, log),
 		quit:            make(chan struct{}),
@@ -977,8 +983,11 @@ func (l *channelLink) htlcManager() {
 	l.log.Infof("HTLC manager started, bandwidth=%v", l.Bandwidth())
 
 	// Notify any clients that the link is now in the switch via an
-	// ActiveLinkEvent.
+	// ActiveLinkEvent. We'll also defer an inactive link notification for
+	// when the link exits to ensure that every active notification is
+	// matched by an inactive one.
 	l.cfg.NotifyActiveLink(*l.ChannelPoint())
+	defer l.cfg.NotifyInactiveLinkEvent(*l.ChannelPoint())
 
 	// TODO(roasbeef): need to call wipe chan whenever D/C?
 
@@ -1850,6 +1859,35 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 		}
 
 	case *lnwire.UpdateFailHTLC:
+		// Verify that the failure reason is at least 256 bytes plus
+		// overhead.
+		const minimumFailReasonLength = lnwire.FailureMessageLength +
+			2 + 2 + 32
+
+		if len(msg.Reason) < minimumFailReasonLength {
+			// We've received a reason with a non-compliant length.
+			// Older nodes happily relay back these failures that
+			// may originate from a node further downstream.
+			// Therefore we can't just fail the channel.
+			//
+			// We want to be compliant ourselves, so we also can't
+			// pass back the reason unmodified. And we must make
+			// sure that we don't hit the magic length check of 260
+			// bytes in processRemoteSettleFails either.
+			//
+			// Because the reason is unreadable for the payer
+			// anyway, we just replace it by a compliant-length
+			// series of random bytes.
+			msg.Reason = make([]byte, minimumFailReasonLength)
+			_, err := crand.Read(msg.Reason[:])
+			if err != nil {
+				l.log.Errorf("Random generation error: %v", err)
+
+				return
+			}
+		}
+
+		// Add fail to the update log.
 		idx := msg.ID
 		err := l.channel.ReceiveFailHTLC(idx, msg.Reason[:])
 		if err != nil {
@@ -1920,12 +1958,28 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 		// As we've just accepted a new state, we'll now
 		// immediately send the remote peer a revocation for our prior
 		// state.
-		nextRevocation, currentHtlcs, err := l.channel.RevokeCurrentCommitment()
+		nextRevocation, currentHtlcs, finalHTLCs, err :=
+			l.channel.RevokeCurrentCommitment()
 		if err != nil {
 			l.log.Errorf("unable to revoke commitment: %v", err)
 			return
 		}
 		l.cfg.Peer.SendMessage(false, nextRevocation)
+
+		// Notify the incoming htlcs of which the resolutions were
+		// locked in.
+		for id, settled := range finalHTLCs {
+			l.cfg.HtlcNotifier.NotifyFinalHtlcEvent(
+				models.CircuitKey{
+					ChanID: l.shortChanID,
+					HtlcID: id,
+				},
+				channeldb.FinalHtlcInfo{
+					Settled:  settled,
+					Offchain: true,
+				},
+			)
+		}
 
 		// Since we just revoked our commitment, we may have a new set
 		// of HTLC's on our commitment, so we'll send them using our
@@ -2063,6 +2117,13 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 
 		// Update the mailbox's feerate as well.
 		l.mailBox.SetFeeRate(fee)
+
+	// In the case where we receive a warning message from our peer, just
+	// log it and move on. We choose not to disconnect from our peer,
+	// although we "MAY" do so according to the specification.
+	case *lnwire.Warning:
+		l.log.Warnf("received warning message from peer: %v",
+			msg.Warning())
 
 	case *lnwire.Error:
 		// Error received from remote, MUST fail channel, but should
@@ -2682,6 +2743,15 @@ func (l *channelLink) handleSwitchPacket(pkt *htlcPacket) error {
 //
 // NOTE: Part of the ChannelLink interface.
 func (l *channelLink) HandleChannelUpdate(message lnwire.Message) {
+	select {
+	case <-l.quit:
+		// Return early if the link is already in the process of
+		// quitting. It doesn't make sense to hand the message to the
+		// mailbox here.
+		return
+	default:
+	}
+
 	l.mailBox.AddMessage(message)
 }
 
@@ -3207,7 +3277,7 @@ func (l *channelLink) processExitHop(pd *lnwallet.PaymentDescriptor,
 	// receive back a resolution event.
 	invoiceHash := lntypes.Hash(pd.RHash)
 
-	circuitKey := channeldb.CircuitKey{
+	circuitKey := models.CircuitKey{
 		ChanID: l.ShortChanID(),
 		HtlcID: pd.HtlcIndex,
 	}
@@ -3271,7 +3341,7 @@ func (l *channelLink) settleHTLC(preimage lntypes.Preimage,
 	// Once we have successfully settled the htlc, notify a settle event.
 	l.cfg.HtlcNotifier.NotifySettleEvent(
 		HtlcKey{
-			IncomingCircuit: channeldb.CircuitKey{
+			IncomingCircuit: models.CircuitKey{
 				ChanID: l.ShortChanID(),
 				HtlcID: pd.HtlcIndex,
 			},
@@ -3341,7 +3411,7 @@ func (l *channelLink) sendHTLCError(pd *lnwallet.PaymentDescriptor,
 
 	l.cfg.HtlcNotifier.NotifyLinkFailEvent(
 		HtlcKey{
-			IncomingCircuit: channeldb.CircuitKey{
+			IncomingCircuit: models.CircuitKey{
 				ChanID: l.ShortChanID(),
 				HtlcID: pd.HtlcIndex,
 			},

@@ -1,4 +1,4 @@
-FROM golang:1.17.1-alpine as builder
+FROM golang:1.20.3-alpine as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
@@ -18,7 +18,7 @@ RUN make \
 
 
 # Build loop binary
-RUN git clone --depth 1 --branch v0.20.2-beta https://github.com/lightninglabs/loop.git /go/src/github.com/lightninglabs/loop
+RUN git clone --depth 1 --branch v0.22.0-beta https://github.com/lightninglabs/loop.git /go/src/github.com/lightninglabs/loop
 WORKDIR /go/src/github.com/lightninglabs/loop/cmd
 
 
@@ -27,7 +27,7 @@ RUN go install ./...
 
 
 # Start a new, final image.
-FROM alpine:3.14.2 as final
+FROM alpine:3.17.3 as final
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.

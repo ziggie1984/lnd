@@ -34,7 +34,7 @@ const (
 type sessionQueueConfig struct {
 	// ClientSession provides access to the negotiated session parameters
 	// and updating its persistent storage.
-	ClientSession *wtdb.ClientSession
+	ClientSession *ClientSession
 
 	// ChainHash identifies the chain for which the session's justice
 	// transactions are targeted.
@@ -81,7 +81,7 @@ type sessionQueueConfig struct {
 // backups to the watchtower specified in the config's ClientSession. Calling
 // Quit will attempt to perform a clean shutdown by receiving an ACK from the
 // tower for all pending backups before exiting. The clean shutdown can be
-// aborted by using ForceQuit, which will attempt to shutdown the queue
+// aborted by using ForceQuit, which will attempt to shut down the queue
 // immediately.
 type sessionQueue struct {
 	started sync.Once
@@ -97,7 +97,7 @@ type sessionQueue struct {
 	queueCond    *sync.Cond
 
 	localInit *wtwire.Init
-	towerAddr *lnwire.NetAddress
+	tower     *Tower
 
 	seqNum uint16
 
@@ -108,17 +108,14 @@ type sessionQueue struct {
 	shutdown  chan struct{}
 }
 
-// newSessionQueue intiializes a fresh sessionQueue.
-func newSessionQueue(cfg *sessionQueueConfig) *sessionQueue {
+// newSessionQueue initializes a fresh sessionQueue.
+func newSessionQueue(cfg *sessionQueueConfig,
+	updates []wtdb.CommittedUpdate) *sessionQueue {
+
 	localInit := wtwire.NewInitMessage(
 		lnwire.NewRawFeatureVector(wtwire.AltruistSessionsRequired),
 		cfg.ChainHash,
 	)
-
-	towerAddr := &lnwire.NetAddress{
-		IdentityKey: cfg.ClientSession.Tower.IdentityKey,
-		Address:     cfg.ClientSession.Tower.Addresses[0],
-	}
 
 	sq := &sessionQueue{
 		cfg:          cfg,
@@ -126,7 +123,7 @@ func newSessionQueue(cfg *sessionQueueConfig) *sessionQueue {
 		commitQueue:  list.New(),
 		pendingQueue: list.New(),
 		localInit:    localInit,
-		towerAddr:    towerAddr,
+		tower:        cfg.ClientSession.Tower,
 		seqNum:       cfg.ClientSession.SeqNum,
 		retryBackoff: cfg.MinBackoff,
 		quit:         make(chan struct{}),
@@ -137,7 +134,7 @@ func newSessionQueue(cfg *sessionQueueConfig) *sessionQueue {
 
 	// The database should return them in sorted order, and session queue's
 	// sequence number will be equal to that of the last committed update.
-	for _, update := range sq.cfg.ClientSession.CommittedUpdates {
+	for _, update := range updates {
 		sq.commitQueue.PushBack(update)
 	}
 
@@ -273,7 +270,7 @@ func (q *sessionQueue) sessionManager() {
 		}
 		q.queueCond.L.Unlock()
 
-		// Exit immediately if a force quit has been requested.  If the
+		// Exit immediately if a force quit has been requested.  If
 		// either of the queues still has state updates to send to the
 		// tower, we may never exit in the above case if we are unable
 		// to reach the tower for some reason.
@@ -291,18 +288,48 @@ func (q *sessionQueue) sessionManager() {
 
 // drainBackups attempts to send all pending updates in the queue to the tower.
 func (q *sessionQueue) drainBackups() {
-	// First, check that we are able to dial this session's tower.
-	conn, err := q.cfg.Dial(q.cfg.ClientSession.SessionKeyECDH, q.towerAddr)
-	if err != nil {
-		q.log.Errorf("SessionQueue(%s) unable to dial tower at %v: %v",
-			q.ID(), q.towerAddr, err)
+	var (
+		conn      wtserver.Peer
+		err       error
+		towerAddr = q.tower.Addresses.Peek()
+	)
 
-		q.increaseBackoff()
-		select {
-		case <-time.After(q.retryBackoff):
-		case <-q.forceQuit:
+	for {
+		q.log.Infof("SessionQueue(%s) attempting to dial tower at %v",
+			q.ID(), towerAddr)
+
+		// First, check that we are able to dial this session's tower.
+		conn, err = q.cfg.Dial(
+			q.cfg.ClientSession.SessionKeyECDH, &lnwire.NetAddress{
+				IdentityKey: q.tower.IdentityKey,
+				Address:     towerAddr,
+			},
+		)
+		if err != nil {
+			// If there are more addrs available, immediately try
+			// those.
+			nextAddr, iteratorErr := q.tower.Addresses.Next()
+			if iteratorErr == nil {
+				towerAddr = nextAddr
+				continue
+			}
+
+			// Otherwise, if we have exhausted the address list,
+			// back off and try again later.
+			q.tower.Addresses.Reset()
+
+			q.log.Errorf("SessionQueue(%s) unable to dial tower "+
+				"at any available Addresses: %v", q.ID(), err)
+
+			q.increaseBackoff()
+			select {
+			case <-time.After(q.retryBackoff):
+			case <-q.forceQuit:
+			}
+			return
 		}
-		return
+
+		break
 	}
 	defer conn.Close()
 
@@ -312,7 +339,7 @@ func (q *sessionQueue) drainBackups() {
 	// Init.
 	for sendInit := true; ; sendInit = false {
 		// Generate the next state update to upload to the tower. This
-		// method will first proceed in dequeueing committed updates
+		// method will first proceed in dequeuing committed updates
 		// before attempting to dequeue any pending updates.
 		stateUpdate, isPending, backupID, err := q.nextStateUpdate()
 		if err != nil {
@@ -322,9 +349,7 @@ func (q *sessionQueue) drainBackups() {
 		}
 
 		// Now, send the state update to the tower and wait for a reply.
-		err = q.sendStateUpdate(
-			conn, stateUpdate, q.localInit, sendInit, isPending,
-		)
+		err = q.sendStateUpdate(conn, stateUpdate, sendInit, isPending)
 		if err != nil {
 			q.log.Errorf("SessionQueue(%s) unable to send state "+
 				"update: %v", q.ID(), err)
@@ -478,11 +503,15 @@ func (q *sessionQueue) nextStateUpdate() (*wtwire.StateUpdate, bool,
 // the ACK before returning. If sendInit is true, this method will first send
 // the localInit message and verify that the tower supports our required feature
 // bits. And error is returned if any part of the send fails. The boolean return
-// variable indicates whether or not we should back off before attempting to
-// send the next state update.
+// variable indicates whether we should back off before attempting to send the
+// next state update.
 func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
-	stateUpdate *wtwire.StateUpdate, localInit *wtwire.Init,
-	sendInit, isPending bool) error {
+	stateUpdate *wtwire.StateUpdate, sendInit, isPending bool) error {
+
+	towerAddr := &lnwire.NetAddress{
+		IdentityKey: conn.RemotePub(),
+		Address:     conn.RemoteAddr(),
+	}
 
 	// If this is the first message being sent to the tower, we must send an
 	// Init message to establish that server supports the features we
@@ -503,7 +532,7 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 		remoteInit, ok := remoteMsg.(*wtwire.Init)
 		if !ok {
 			return fmt.Errorf("watchtower %s responded with %T "+
-				"to Init", q.towerAddr, remoteMsg)
+				"to Init", towerAddr, remoteMsg)
 		}
 
 		// Validate Init.
@@ -530,7 +559,7 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 	stateUpdateReply, ok := remoteMsg.(*wtwire.StateUpdateReply)
 	if !ok {
 		return fmt.Errorf("watchtower %s responded with %T to "+
-			"StateUpdate", q.towerAddr, remoteMsg)
+			"StateUpdate", towerAddr, remoteMsg)
 	}
 
 	// Process the reply from the tower.
@@ -545,8 +574,8 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 		err := fmt.Errorf("received error code %v in "+
 			"StateUpdateReply for seqnum=%d",
 			stateUpdateReply.Code, stateUpdate.SeqNum)
-		q.log.Warnf("SessionQueue(%s) unable to upload state update to "+
-			"tower=%s: %v", q.ID(), q.towerAddr, err)
+		q.log.Warnf("SessionQueue(%s) unable to upload state update "+
+			"to tower=%s: %v", q.ID(), towerAddr, err)
 		return err
 	}
 
@@ -557,7 +586,8 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 		// TODO(conner): borked watchtower
 		err = fmt.Errorf("unable to ack seqnum=%d: %v",
 			stateUpdate.SeqNum, err)
-		q.log.Errorf("SessionQueue(%v) failed to ack update: %v", q.ID(), err)
+		q.log.Errorf("SessionQueue(%v) failed to ack update: %v",
+			q.ID(), err)
 		return err
 
 	case err == wtdb.ErrLastAppliedReversion:
@@ -596,10 +626,10 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 	return nil
 }
 
-// reserveStatus returns a reserveStatus indicating whether or not the
-// sessionQueue can accept another task. reserveAvailable is returned when a
-// task can be accepted, and reserveExhausted is returned if the all slots in
-// the session have been allocated.
+// reserveStatus returns a reserveStatus indicating whether the sessionQueue can
+// accept another task. reserveAvailable is returned when a task can be
+// accepted, and reserveExhausted is returned if the all slots in the session
+// have been allocated.
 //
 // NOTE: This method MUST be called with queueCond's exclusive lock held.
 func (q *sessionQueue) reserveStatus() reserveStatus {
@@ -659,6 +689,7 @@ func (s *sessionQueueSet) ApplyAndWait(getApply func(*sessionQueue) func()) {
 		wg.Add(1)
 		go func(sq *sessionQueue) {
 			defer wg.Done()
+
 			getApply(sq)()
 		}(sessionq)
 	}

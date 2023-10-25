@@ -193,42 +193,6 @@ func getBlockHeader(ctx *cli.Context) error {
 	return nil
 }
 
-var getBlockCommand = cli.Command{
-	Name:        "getblock",
-	Usage:       "Get a block.",
-	Category:    "Neutrino",
-	Description: "Returns a block with a particular block hash.",
-	ArgsUsage:   "hash",
-	Action:      actionDecorator(getBlock),
-}
-
-func getBlock(ctx *cli.Context) error {
-	ctxc := getContext()
-	args := ctx.Args()
-
-	// Display the command's help message if we do not have the expected
-	// number of arguments/flags.
-	if !args.Present() {
-		return cli.ShowCommandHelp(ctx, "getblock")
-	}
-
-	client, cleanUp := getNeutrinoKitClient(ctx)
-	defer cleanUp()
-
-	req := &neutrinorpc.GetBlockRequest{
-		Hash: args.First(),
-	}
-
-	resp, err := client.GetBlock(ctxc, req)
-	if err != nil {
-		return err
-	}
-
-	printRespJSON(resp)
-
-	return nil
-}
-
 var getCFilterCommand = cli.Command{
 	Name:        "getcfilter",
 	Usage:       "Get a compact filter.",
@@ -318,7 +282,6 @@ func neutrinoCommands() []cli.Command {
 				addPeerCommand,
 				disconnectPeerCommand,
 				isBannedCommand,
-				getBlockCommand,
 				getBlockHeaderCommand,
 				getCFilterCommand,
 				getBlockHashCommand,

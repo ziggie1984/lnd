@@ -135,6 +135,13 @@
             "required": false,
             "type": "string",
             "format": "byte"
+          },
+          {
+            "name": "peer_alias_lookup",
+            "description": "Informs the server if the peer alias lookup per channel should be\nenabled. It is turned off by default in order to avoid degradation of\nperformance for existing clients.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
           }
         ],
         "tags": [
@@ -918,6 +925,7 @@
     "/v1/custommessage/subscribe": {
       "get": {
         "summary": "lncli: `subscribecustom`\nSubscribeCustomMessages subscribes to a stream of incoming custom peer\nmessages.",
+        "description": "To include messages with type outside of the custom range (\u003e= 32768) lnd\nneeds to be compiled with  the `dev` build tag, and the message type to\noverride should be specified in lnd's experimental protocol configuration.",
         "operationId": "Lightning_SubscribeCustomMessages",
         "responses": {
           "200": {
@@ -1593,6 +1601,45 @@
         ]
       }
     },
+    "/v1/htlc-resolution/{chan_id}/{htlc_index}": {
+      "get": {
+        "summary": "LookupHtlcResolution retrieves a final htlc resolution from the database.\nIf the htlc has no final resolution yet, a NotFound grpc status code is\nreturned.",
+        "operationId": "Lightning_LookupHtlcResolution",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/lnrpcLookupHtlcResolutionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "chan_id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "uint64"
+          },
+          {
+            "name": "htlc_index",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "uint64"
+          }
+        ],
+        "tags": [
+          "Lightning"
+        ]
+      }
+    },
     "/v1/invoice/{r_hash_str}": {
       "get": {
         "summary": "lncli: `lookupinvoice`\nLookupInvoice attempts to look up an invoice according to its payment hash.\nThe passed payment hash *must* be exactly 32 bytes, if not, an error is\nreturned.",
@@ -1681,6 +1728,22 @@
             "in": "query",
             "required": false,
             "type": "boolean"
+          },
+          {
+            "name": "creation_date_start",
+            "description": "If set, returns all invoices with a creation date greater than or equal\nto it. Measured in seconds since the unix epoch.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "uint64"
+          },
+          {
+            "name": "creation_date_end",
+            "description": "If set, returns all invoices with a creation date less than or equal to\nit. Measured in seconds since the unix epoch.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "uint64"
           }
         ],
         "tags": [
@@ -2089,6 +2152,22 @@
             "in": "query",
             "required": false,
             "type": "boolean"
+          },
+          {
+            "name": "creation_date_start",
+            "description": "If set, returns all invoices with a creation date greater than or equal\nto it. Measured in seconds since the unix epoch.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "uint64"
+          },
+          {
+            "name": "creation_date_end",
+            "description": "If set, returns all invoices with a creation date less than or equal to\nit. Measured in seconds since the unix epoch.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "uint64"
           }
         ],
         "tags": [
@@ -2760,7 +2839,8 @@
         "RECOVERED",
         "LOST"
       ],
-      "default": "LIMBO"
+      "default": "LIMBO",
+      "description": "There are three resolution states for the anchor:\nlimbo, lost and recovered. Derive the current state\nfrom the limbo and recovered balances.\n\n - LIMBO: The recovered_balance is zero and limbo_balance is non-zero.\n - RECOVERED: The recovered_balance is non-zero.\n - LOST: A state that is neither LIMBO nor RECOVERED."
     },
     "HTLCAttemptHTLCStatus": {
       "type": "string",
@@ -3484,6 +3564,10 @@
           "type": "string",
           "format": "uint64",
           "description": "This is the confirmed / on-chain zero-conf SCID."
+        },
+        "peer_alias": {
+          "type": "string",
+          "description": "The configured alias name of our peer."
         }
       }
     },
@@ -3844,6 +3928,14 @@
         },
         "node2_policy": {
           "$ref": "#/definitions/lnrpcRoutingPolicy"
+        },
+        "custom_records": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "format": "byte"
+          },
+          "description": "Custom channel announcement tlv records."
         }
       },
       "description": "A fully authenticated channel along with all its unique attributes.\nOnce an authenticated channel announcement has been processed on the network,\nthen an instance of ChannelEdgeInfo encapsulating the channels attributes is\nstored. The other portions relevant to routing policy of a channel are stored\nwithin a ChannelEdgePolicy for each direction of the channel."
@@ -4453,6 +4545,14 @@
           "type": "string",
           "format": "uint64",
           "description": "The number of nanoseconds elapsed since January 1, 1970 UTC when this\ncircuit was completed."
+        },
+        "peer_alias_in": {
+          "type": "string",
+          "description": "The peer alias of the incoming channel."
+        },
+        "peer_alias_out": {
+          "type": "string",
+          "description": "The peer alias of the outgoing channel."
         }
       }
     },
@@ -4478,6 +4578,10 @@
           "type": "integer",
           "format": "int64",
           "description": "The max number of events to return in the response to this query."
+        },
+        "peer_alias_lookup": {
+          "type": "boolean",
+          "description": "Informs the server if the peer alias should be looked up for each\nforwarding event."
         }
       }
     },
@@ -4677,6 +4781,10 @@
         "require_htlc_interceptor": {
           "type": "boolean",
           "description": "Indicates whether the HTLC interceptor API is in always-on mode."
+        },
+        "store_final_htlc_resolutions": {
+          "type": "boolean",
+          "description": "Indicates whether final htlc resolutions are stored on disk."
         }
       }
     },
@@ -4944,18 +5052,17 @@
         },
         "settled": {
           "type": "boolean",
-          "description": "The field is deprecated. Use the state field instead (compare to SETTLED).",
-          "title": "Whether this invoice has been fulfilled"
+          "description": "Whether this invoice has been fulfilled.\n\nThe field is deprecated. Use the state field instead (compare to SETTLED)."
         },
         "creation_date": {
           "type": "string",
           "format": "int64",
-          "description": "When this invoice was created.\nNote: Output only, don't specify for creating an invoice."
+          "description": "When this invoice was created.\nMeasured in seconds since the unix epoch.\nNote: Output only, don't specify for creating an invoice."
         },
         "settle_date": {
           "type": "string",
           "format": "int64",
-          "description": "When this invoice was settled.\nNote: Output only, don't specify for creating an invoice."
+          "description": "When this invoice was settled.\nMeasured in seconds since the unix epoch.\nNote: Output only, don't specify for creating an invoice."
         },
         "payment_request": {
           "type": "string",
@@ -4969,7 +5076,7 @@
         "expiry": {
           "type": "string",
           "format": "int64",
-          "description": "Payment request expiry time in seconds. Default is 3600 (1 hour)."
+          "description": "Payment request expiry time in seconds. Default is 86400 (24 hours)."
         },
         "fallback_addr": {
           "type": "string",
@@ -4989,7 +5096,7 @@
         },
         "private": {
           "type": "boolean",
-          "description": "Whether this invoice should include routing hints for private channels."
+          "description": "Whether this invoice should include routing hints for private channels.\nNote: When enabled, if value and value_msat are zero, a large number of\nhints with these channels can be included, which might not be desirable."
         },
         "add_index": {
           "type": "string",
@@ -5197,6 +5304,14 @@
           "additionalProperties": {
             "$ref": "#/definitions/lnrpcFeature"
           }
+        },
+        "custom_records": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "format": "byte"
+          },
+          "description": "Custom node announcement tlv records."
         }
       },
       "description": "An individual vertex/node within the channel graph. A node is\nconnected to other nodes by one or more channel edges emanating from it. As the\ngraph is directed, a node will also have an incoming edge attached to it for\neach outgoing edge."
@@ -5319,6 +5434,19 @@
             "$ref": "#/definitions/lnrpcUtxo"
           },
           "title": "A list of utxos"
+        }
+      }
+    },
+    "lnrpcLookupHtlcResolutionResponse": {
+      "type": "object",
+      "properties": {
+        "settled": {
+          "type": "boolean",
+          "description": "Settled is true is the htlc was settled. If false, the htlc was failed."
+        },
+        "offchain": {
+          "type": "boolean",
+          "description": "Offchain indicates whether the htlc was resolved off-chain or on-chain."
         }
       }
     },
@@ -5660,6 +5788,29 @@
         "scid_alias": {
           "type": "boolean",
           "description": "If this is true, then an option-scid-alias channel-type open will be\nattempted."
+        },
+        "base_fee": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The base fee charged regardless of the number of milli-satoshis sent."
+        },
+        "fee_rate": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The fee rate in ppm (parts per million) that will be charged in\nproportion of the value of each forwarded HTLC."
+        },
+        "use_base_fee": {
+          "type": "boolean",
+          "description": "If use_base_fee is true the open channel announcement will update the\nchannel base fee with the value specified in base_fee. In the case of\na base_fee of 0 use_base_fee is needed downstream to distinguish whether\nto use the default base fee value specified in the config or 0."
+        },
+        "use_fee_rate": {
+          "type": "boolean",
+          "description": "If use_fee_rate is true the open channel announcement will update the\nchannel fee rate with the value specified in fee_rate. In the case of\na fee_rate of 0 use_fee_rate is needed downstream to distinguish whether\nto use the default fee rate value specified in the config or 0."
+        },
+        "remote_chan_reserve_sat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The number of satoshis we require the remote peer to reserve. This value,\nif specified, must be above the dust limit and below 20% of the channel\ncapacity."
         }
       }
     },
@@ -5746,7 +5897,8 @@
         "SCRIPT_TYPE_MULTISIG",
         "SCRIPT_TYPE_NULLDATA",
         "SCRIPT_TYPE_NON_STANDARD",
-        "SCRIPT_TYPE_WITNESS_UNKNOWN"
+        "SCRIPT_TYPE_WITNESS_UNKNOWN",
+        "SCRIPT_TYPE_WITNESS_V1_TAPROOT"
       ],
       "default": "SCRIPT_TYPE_PUBKEY_HASH"
     },
@@ -6406,6 +6558,14 @@
         "last_update": {
           "type": "integer",
           "format": "int64"
+        },
+        "custom_records": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "format": "byte"
+          },
+          "description": "Custom channel update tlv records."
         }
       }
     },
@@ -6475,7 +6635,7 @@
         "type": {
           "type": "integer",
           "format": "int64",
-          "description": "Message type. This value needs to be in the custom range (\u003e= 32768)."
+          "description": "Message type. This value needs to be in the custom range (\u003e= 32768).\nTo send a type \u003c custom range, lnd needs to be compiled with the `dev`\nbuild tag, and the message type to override should be specified in lnd's\nexperimental protocol configuration."
         },
         "data": {
           "type": "string",

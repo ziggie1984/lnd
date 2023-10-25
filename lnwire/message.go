@@ -22,7 +22,8 @@ type MessageType uint16
 // The currently defined message types within this current version of the
 // Lightning protocol.
 const (
-	MsgInit                    MessageType = 16
+	MsgWarning                 MessageType = 1
+	MsgInit                                = 16
 	MsgError                               = 17
 	MsgPing                                = 18
 	MsgPong                                = 19
@@ -75,6 +76,8 @@ func ErrorPayloadTooLarge(size int) error {
 // String return the string representation of message type.
 func (t MessageType) String() string {
 	switch t {
+	case MsgWarning:
+		return "Warning"
 	case MsgInit:
 		return "Init"
 	case MsgOpenChannel:
@@ -175,6 +178,8 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 	var msg Message
 
 	switch msgType {
+	case MsgWarning:
+		msg = &Warning{}
 	case MsgInit:
 		msg = &Init{}
 	case MsgOpenChannel:
@@ -232,9 +237,16 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 	case MsgGossipTimestampRange:
 		msg = &GossipTimestampRange{}
 	default:
-		if msgType < CustomTypeStart {
+		// If the message is not within our custom range and has not
+		// specifically been overridden, return an unknown message.
+		//
+		// Note that we do not allow custom message overrides to replace
+		// known message types, only protocol messages that are not yet
+		// known to lnd.
+		if msgType < CustomTypeStart && !IsCustomOverride(msgType) {
 			return nil, &UnknownMessage{msgType}
 		}
+
 		msg = &Custom{
 			Type: msgType,
 		}

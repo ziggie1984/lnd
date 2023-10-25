@@ -16,6 +16,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -135,6 +137,26 @@ var (
 	// sent was a revocation and false when it was a commitment signature.
 	// This is nil in the case of new channels with no updates exchanged.
 	lastWasRevokeKey = []byte("last-was-revoke")
+
+	// finalHtlcsBucket contains the htlcs that have been resolved
+	// definitively. Within this bucket, there is a sub-bucket for each
+	// channel. In each channel bucket, the htlc indices are stored along
+	// with final outcome.
+	//
+	// final-htlcs -> chanID -> htlcIndex -> outcome
+	//
+	// 'outcome' is a byte value that encodes:
+	//
+	//       | true      false
+	// ------+------------------
+	// bit 0 | settled   failed
+	// bit 1 | offchain  onchain
+	//
+	// This bucket is positioned at the root level, because its contents
+	// will be kept independent of the channel lifecycle. This is to avoid
+	// the situation where a channel force-closes autonomously and the user
+	// not being able to query for htlc outcomes anymore.
+	finalHtlcsBucket = []byte("final-htlcs")
 )
 
 var (
@@ -155,11 +177,6 @@ var (
 	// each time we write a new state in order to be properly fault
 	// tolerant.
 	ErrNoPendingCommit = fmt.Errorf("no pending commits found")
-
-	// ErrInvalidCircuitKeyLen signals that a circuit key could not be
-	// decoded because the byte slice is of an invalid length.
-	ErrInvalidCircuitKeyLen = fmt.Errorf(
-		"length of serialized circuit key must be 16 bytes")
 
 	// ErrNoCommitPoint is returned when no data loss commit point is found
 	// in the database.
@@ -618,6 +635,20 @@ func (c ChannelStatus) String() string {
 	return statusStr
 }
 
+// FinalHtlcByte defines a byte type that encodes information about the final
+// htlc resolution.
+type FinalHtlcByte byte
+
+const (
+	// FinalHtlcSettledBit is the bit that encodes whether the htlc was
+	// settled or failed.
+	FinalHtlcSettledBit FinalHtlcByte = 1 << 0
+
+	// FinalHtlcOffchainBit is the bit that encodes whether the htlc was
+	// resolved offchain or onchain.
+	FinalHtlcOffchainBit FinalHtlcByte = 1 << 1
+)
+
 // OpenChannel encapsulates the persistent and dynamic state of an open channel
 // with a remote node. An open channel supports several options for on-disk
 // serialization depending on the exact context. Full (upon channel creation)
@@ -1043,6 +1074,26 @@ func fetchChanBucketRw(tx kvdb.RwTx, nodeKey *btcec.PublicKey,
 	return chanBucket, nil
 }
 
+func fetchFinalHtlcsBucketRw(tx kvdb.RwTx,
+	chanID lnwire.ShortChannelID) (kvdb.RwBucket, error) {
+
+	finalHtlcsBucket, err := tx.CreateTopLevelBucket(finalHtlcsBucket)
+	if err != nil {
+		return nil, err
+	}
+
+	var chanIDBytes [8]byte
+	byteOrder.PutUint64(chanIDBytes[:], chanID.ToUint64())
+	chanBucket, err := finalHtlcsBucket.CreateBucketIfNotExists(
+		chanIDBytes[:],
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return chanBucket, nil
+}
+
 // fullSync syncs the contents of an OpenChannel while re-using an existing
 // database transaction.
 func (c *OpenChannel) fullSync(tx kvdb.RwTx) error {
@@ -1315,11 +1366,11 @@ func (c *OpenChannel) SecondCommitmentPoint() (*btcec.PublicKey, error) {
 // commitment chains in the case of a last or only partially processed message.
 // When the remote party receives this message one of three things may happen:
 //
-//   1. We're fully synced and no messages need to be sent.
-//   2. We didn't get the last CommitSig message they sent, so they'll re-send
-//      it.
-//   3. We didn't get the last RevokeAndAck message they sent, so they'll
-//      re-send it.
+//  1. We're fully synced and no messages need to be sent.
+//  2. We didn't get the last CommitSig message they sent, so they'll re-send
+//     it.
+//  3. We didn't get the last RevokeAndAck message they sent, so they'll
+//     re-send it.
 //
 // If this is a restored channel, having status ChanStatusRestored, then we'll
 // modify our typical chan sync message to ensure they force close even if
@@ -1739,8 +1790,12 @@ func syncNewChannel(tx kvdb.RwTx, c *OpenChannel, addrs []net.Addr) error {
 // persisted to be able to produce a valid commit signature if a restart would
 // occur. This method its to be called when we revoke our prior commitment
 // state.
+//
+// A map is returned of all the htlc resolutions that were locked in this
+// commitment. Keys correspond to htlc indices and values indicate whether the
+// htlc was settled or failed.
 func (c *OpenChannel) UpdateCommitment(newCommitment *ChannelCommitment,
-	unsignedAckedUpdates []LogUpdate) error {
+	unsignedAckedUpdates []LogUpdate) (map[uint64]bool, error) {
 
 	c.Lock()
 	defer c.Unlock()
@@ -1749,8 +1804,10 @@ func (c *OpenChannel) UpdateCommitment(newCommitment *ChannelCommitment,
 	// state as all, as it's impossible to do so in a protocol compliant
 	// manner.
 	if c.hasChanStatus(ChanStatusRestored) {
-		return ErrNoRestoredChannelMutation
+		return nil, ErrNoRestoredChannelMutation
 	}
+
+	var finalHtlcs = make(map[uint64]bool)
 
 	err := kvdb.Update(c.Db.backend, func(tx kvdb.RwTx) error {
 		chanBucket, err := fetchChanBucketRw(
@@ -1822,17 +1879,41 @@ func (c *OpenChannel) UpdateCommitment(newCommitment *ChannelCommitment,
 			return err
 		}
 
-		var validUpdates []LogUpdate
+		// Get the bucket where settled htlcs are recorded if the user
+		// opted in to storing this information.
+		var finalHtlcsBucket kvdb.RwBucket
+		if c.Db.parent.storeFinalHtlcResolutions {
+			bucket, err := fetchFinalHtlcsBucketRw(
+				tx, c.ShortChannelID,
+			)
+			if err != nil {
+				return err
+			}
+
+			finalHtlcsBucket = bucket
+		}
+
+		var unsignedUpdates []LogUpdate
 		for _, upd := range updates {
-			// Filter for updates that are not on our local
-			// commitment.
+			// Gather updates that are not on our local commitment.
 			if upd.LogIndex >= newCommitment.LocalLogIndex {
-				validUpdates = append(validUpdates, upd)
+				unsignedUpdates = append(unsignedUpdates, upd)
+
+				continue
+			}
+
+			// The update was locked in. If the update was a
+			// resolution, then store it in the database.
+			err := processFinalHtlc(
+				finalHtlcsBucket, upd, finalHtlcs,
+			)
+			if err != nil {
+				return err
 			}
 		}
 
 		var b3 bytes.Buffer
-		err = serializeLogUpdates(&b3, validUpdates)
+		err = serializeLogUpdates(&b3, unsignedUpdates)
 		if err != nil {
 			return fmt.Errorf("unable to serialize log updates: %v", err)
 		}
@@ -1843,12 +1924,60 @@ func (c *OpenChannel) UpdateCommitment(newCommitment *ChannelCommitment,
 		}
 
 		return nil
-	}, func() {})
+	}, func() {
+		finalHtlcs = make(map[uint64]bool)
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	c.LocalCommitment = *newCommitment
+
+	return finalHtlcs, nil
+}
+
+// processFinalHtlc stores a final htlc outcome in the database if signaled via
+// the supplied log update. An in-memory htlcs map is updated too.
+func processFinalHtlc(finalHtlcsBucket walletdb.ReadWriteBucket, upd LogUpdate,
+	finalHtlcs map[uint64]bool) error {
+
+	var (
+		settled bool
+		id      uint64
+	)
+
+	switch msg := upd.UpdateMsg.(type) {
+	case *lnwire.UpdateFulfillHTLC:
+		settled = true
+		id = msg.ID
+
+	case *lnwire.UpdateFailHTLC:
+		settled = false
+		id = msg.ID
+
+	case *lnwire.UpdateFailMalformedHTLC:
+		settled = false
+		id = msg.ID
+
+	default:
+		return nil
+	}
+
+	// Store the final resolution in the database if a bucket is provided.
+	if finalHtlcsBucket != nil {
+		err := putFinalHtlc(
+			finalHtlcsBucket, id,
+			FinalHtlcInfo{
+				Settled:  settled,
+				Offchain: true,
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	finalHtlcs[id] = settled
 
 	return nil
 }
@@ -2032,74 +2161,6 @@ func deserializeLogUpdate(r io.Reader) (*LogUpdate, error) {
 	return l, nil
 }
 
-// CircuitKey is used by a channel to uniquely identify the HTLCs it receives
-// from the switch, and is used to purge our in-memory state of HTLCs that have
-// already been processed by a link. Two list of CircuitKeys are included in
-// each CommitDiff to allow a link to determine which in-memory htlcs directed
-// the opening and closing of circuits in the switch's circuit map.
-type CircuitKey struct {
-	// ChanID is the short chanid indicating the HTLC's origin.
-	//
-	// NOTE: It is fine for this value to be blank, as this indicates a
-	// locally-sourced payment.
-	ChanID lnwire.ShortChannelID
-
-	// HtlcID is the unique htlc index predominately assigned by links,
-	// though can also be assigned by switch in the case of locally-sourced
-	// payments.
-	HtlcID uint64
-}
-
-// SetBytes deserializes the given bytes into this CircuitKey.
-func (k *CircuitKey) SetBytes(bs []byte) error {
-	if len(bs) != 16 {
-		return ErrInvalidCircuitKeyLen
-	}
-
-	k.ChanID = lnwire.NewShortChanIDFromInt(
-		binary.BigEndian.Uint64(bs[:8]))
-	k.HtlcID = binary.BigEndian.Uint64(bs[8:])
-
-	return nil
-}
-
-// Bytes returns the serialized bytes for this circuit key.
-func (k CircuitKey) Bytes() []byte {
-	bs := make([]byte, 16)
-	binary.BigEndian.PutUint64(bs[:8], k.ChanID.ToUint64())
-	binary.BigEndian.PutUint64(bs[8:], k.HtlcID)
-	return bs
-}
-
-// Encode writes a CircuitKey to the provided io.Writer.
-func (k *CircuitKey) Encode(w io.Writer) error {
-	var scratch [16]byte
-	binary.BigEndian.PutUint64(scratch[:8], k.ChanID.ToUint64())
-	binary.BigEndian.PutUint64(scratch[8:], k.HtlcID)
-
-	_, err := w.Write(scratch[:])
-	return err
-}
-
-// Decode reads a CircuitKey from the provided io.Reader.
-func (k *CircuitKey) Decode(r io.Reader) error {
-	var scratch [16]byte
-
-	if _, err := io.ReadFull(r, scratch[:]); err != nil {
-		return err
-	}
-	k.ChanID = lnwire.NewShortChanIDFromInt(
-		binary.BigEndian.Uint64(scratch[:8]))
-	k.HtlcID = binary.BigEndian.Uint64(scratch[8:])
-
-	return nil
-}
-
-// String returns a string representation of the CircuitKey.
-func (k CircuitKey) String() string {
-	return fmt.Sprintf("(Chan ID=%s, HTLC ID=%d)", k.ChanID, k.HtlcID)
-}
-
 // CommitDiff represents the delta needed to apply the state transition between
 // two subsequent commitment states. Given state N and state N+1, one is able
 // to apply the set of messages contained within the CommitDiff to N to arrive
@@ -2128,13 +2189,13 @@ type CommitDiff struct {
 	// Add packets included in this commitment txn. After a restart, this
 	// set of htlcs is acked from the link's incoming mailbox to ensure
 	// there isn't an attempt to re-add them to this commitment txn.
-	OpenedCircuitKeys []CircuitKey
+	OpenedCircuitKeys []models.CircuitKey
 
 	// ClosedCircuitKeys records the unique identifiers for any settle/fail
 	// packets that were resolved by this commitment txn. After a restart,
 	// this is used to ensure those circuits are removed from the circuit
 	// map, and the downstream packets in the link's mailbox are removed.
-	ClosedCircuitKeys []CircuitKey
+	ClosedCircuitKeys []models.CircuitKey
 
 	// AddAcks specifies the locations (commit height, pkg index) of any
 	// Adds that were failed/settled in this commit diff. This will ack
@@ -2263,7 +2324,7 @@ func deserializeCommitDiff(r io.Reader) (*CommitDiff, error) {
 		return nil, err
 	}
 
-	d.OpenedCircuitKeys = make([]CircuitKey, numOpenRefs)
+	d.OpenedCircuitKeys = make([]models.CircuitKey, numOpenRefs)
 	for i := 0; i < int(numOpenRefs); i++ {
 		err := ReadElements(r,
 			&d.OpenedCircuitKeys[i].ChanID,
@@ -2278,7 +2339,7 @@ func deserializeCommitDiff(r io.Reader) (*CommitDiff, error) {
 		return nil, err
 	}
 
-	d.ClosedCircuitKeys = make([]CircuitKey, numClosedRefs)
+	d.ClosedCircuitKeys = make([]models.CircuitKey, numClosedRefs)
 	for i := 0; i < int(numClosedRefs); i++ {
 		err := ReadElements(r,
 			&d.ClosedCircuitKeys[i].ChanID,
@@ -2596,8 +2657,8 @@ func (c *OpenChannel) AdvanceCommitChainTail(fwdPkg *FwdPkg,
 		// With the commitment pointer swapped, we can now add the
 		// revoked (prior) state to the revocation log.
 		err = putRevocationLog(
-			logBucket, &c.RemoteCommitment,
-			ourOutputIndex, theirOutputIndex,
+			logBucket, &c.RemoteCommitment, ourOutputIndex,
+			theirOutputIndex, c.Db.parent.noRevLogAmtData,
 		)
 		if err != nil {
 			return err
@@ -2679,6 +2740,36 @@ func (c *OpenChannel) AdvanceCommitChainTail(fwdPkg *FwdPkg,
 	c.RemoteCommitment = *newRemoteCommit
 
 	return nil
+}
+
+// FinalHtlcInfo contains information about the final outcome of an htlc.
+type FinalHtlcInfo struct {
+	// Settled is true is the htlc was settled. If false, the htlc was
+	// failed.
+	Settled bool
+
+	// Offchain indicates whether the htlc was resolved off-chain or
+	// on-chain.
+	Offchain bool
+}
+
+// putFinalHtlc writes the final htlc outcome to the database. Additionally it
+// records whether the htlc was resolved off-chain or on-chain.
+func putFinalHtlc(finalHtlcsBucket kvdb.RwBucket, id uint64,
+	info FinalHtlcInfo) error {
+
+	var key [8]byte
+	byteOrder.PutUint64(key[:], id)
+
+	var finalHtlcByte FinalHtlcByte
+	if info.Settled {
+		finalHtlcByte |= FinalHtlcSettledBit
+	}
+	if info.Offchain {
+		finalHtlcByte |= FinalHtlcOffchainBit
+	}
+
+	return finalHtlcsBucket.Put(key[:], []byte{byte(finalHtlcByte)})
 }
 
 // NextLocalHtlcIndex returns the next unallocated local htlc index. To ensure

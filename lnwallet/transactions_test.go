@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"os"
 	"sort"
 	"testing"
 	"time"
@@ -60,8 +59,8 @@ type testContext struct {
 
 // newTestContext populates a new testContext struct with the constant
 // parameters defined in the BOLT 03 spec.
-func newTestContext(t *testing.T) (tc *testContext) {
-	tc = new(testContext)
+func newTestContext(t *testing.T) *testContext {
+	tc := new(testContext)
 
 	priv := func(v string) *btcec.PrivateKey {
 		k, err := privkeyFromHex(v)
@@ -269,13 +268,12 @@ func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 
 	// Set up a test channel on which the test commitment transaction is
 	// going to be produced.
-	remoteChannel, localChannel, cleanUp := createTestChannelsForVectors(
+	remoteChannel, localChannel := createTestChannelsForVectors(
 		tc,
 		chanType, test.FeePerKw,
 		remoteBalance.ToSatoshis(),
 		localBalance.ToSatoshis(),
 	)
-	defer cleanUp()
 
 	// Add htlcs (if any) to the update logs of both sides and save a hash
 	// map that allows us to identify the htlcs in the scripts later on and
@@ -293,7 +291,7 @@ func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 	err = remoteChannel.ReceiveNewCommitment(localSig, localHtlcSigs)
 	require.NoError(t, err)
 
-	revMsg, _, err := remoteChannel.RevokeCurrentCommitment()
+	revMsg, _, _, err := remoteChannel.RevokeCurrentCommitment()
 	require.NoError(t, err)
 
 	_, _, _, _, err = localChannel.ReceiveRevocation(revMsg)
@@ -311,7 +309,7 @@ func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 	err = localChannel.ReceiveNewCommitment(remoteSig, remoteHtlcSigs)
 	require.NoError(t, err)
 
-	_, _, err = localChannel.RevokeCurrentCommitment()
+	_, _, _, err = localChannel.RevokeCurrentCommitment()
 	require.NoError(t, err)
 
 	// Now the local node force closes the channel so that we can inspect
@@ -711,10 +709,10 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 // the commitment transaction.
 //
 // The following spending cases are covered by this test:
-//   * Alice's spend from the delayed output on her commitment transaction.
-//   * Bob's spend from Alice's delayed output when she broadcasts a revoked
+//   - Alice's spend from the delayed output on her commitment transaction.
+//   - Bob's spend from Alice's delayed output when she broadcasts a revoked
 //     commitment transaction.
-//   * Bob's spend from his unencumbered output within Alice's commitment
+//   - Bob's spend from his unencumbered output within Alice's commitment
 //     transaction.
 func TestCommitmentSpendValidation(t *testing.T) {
 	t.Parallel()
@@ -747,7 +745,7 @@ func (p *mockProducer) Encode(w io.Writer) error {
 // test channel that is used to verify the test vectors.
 func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelType,
 	feeRate btcutil.Amount, remoteBalance, localBalance btcutil.Amount) (
-	*LightningChannel, *LightningChannel, func()) {
+	*LightningChannel, *LightningChannel) {
 
 	t := tc.t
 
@@ -846,16 +844,10 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	)
 
 	// Create temporary databases.
-	remotePath, err := ioutil.TempDir("", "remotedb")
+	dbRemote, err := channeldb.Open(t.TempDir())
 	require.NoError(t, err)
 
-	dbRemote, err := channeldb.Open(remotePath)
-	require.NoError(t, err)
-
-	localPath, err := ioutil.TempDir("", "localdb")
-	require.NoError(t, err)
-
-	dbLocal, err := channeldb.Open(localPath)
+	dbLocal, err := channeldb.Open(t.TempDir())
 	require.NoError(t, err)
 
 	// Create the initial commitment transactions for the channel.
@@ -1005,16 +997,13 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 
 	// Return a clean up function that stops goroutines and removes the test
 	// databases.
-	cleanUpFunc := func() {
+	t.Cleanup(func() {
 		dbLocal.Close()
 		dbRemote.Close()
 
-		os.RemoveAll(localPath)
-		os.RemoveAll(remotePath)
-
 		require.NoError(t, remotePool.Stop())
 		require.NoError(t, localPool.Stop())
-	}
+	})
 
-	return channelRemote, channelLocal, cleanUpFunc
+	return channelRemote, channelLocal
 }

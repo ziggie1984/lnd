@@ -58,7 +58,7 @@ ifneq ($(workers),)
 LINT_WORKERS = --concurrency=$(workers)
 endif
 
-DOCKER_TOOLS = docker run -v $$(pwd):/build lnd-tools
+DOCKER_TOOLS = docker run --rm -v $$(pwd):/build lnd-tools
 
 GREEN := "\\033[0;32m"
 NC := "\\033[0m"
@@ -187,6 +187,10 @@ unit: $(BTCD_BIN)
 	@$(call print, "Running unit tests.")
 	$(UNIT)
 
+unit-module:
+	@$(call print, "Running submodule unit tests.")
+	scripts/unit_test_modules.sh
+
 unit-debug: $(BTCD_BIN)
 	@$(call print, "Running debug unit tests.")
 	$(UNIT_DEBUG)
@@ -198,6 +202,10 @@ unit-cover: $(GOACC_BIN)
 unit-race:
 	@$(call print, "Running unit race tests.")
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
+
+unit-bench: $(BTCD_BIN)
+	@$(call print, "Running benchmark tests.")
+	$(UNIT_BENCH)
 
 # =============
 # FLAKE HUNTING
@@ -241,12 +249,27 @@ lint: docker-tools
 	@$(call print, "Linting source.")
 	$(DOCKER_TOOLS) golangci-lint run -v $(LINT_WORKERS)
 
+tidy-module:
+	echo "Running 'go mod tidy' for all modules"
+	scripts/tidy_modules.sh
+
+tidy-module-check: tidy-module
+	if test -n "$$(git status --porcelain)"; then echo "modules not updated, please run `make tidy-module` again!"; git status; exit 1; fi
+
 list:
 	@$(call print, "Listing commands.")
 	@$(MAKE) -qp | \
 		awk -F':' '/^[a-zA-Z0-9][^$$#\/\t=]*:([^=]|$$)/ {split($$1,A,/ /);for(i in A)print A[i]}' | \
 		grep -v Makefile | \
 		sort
+
+sqlc:
+	@$(call print, "Generating sql models and queries in Go")
+	./scripts/gen_sqlc_docker.sh
+
+sqlc-check: sqlc
+	@$(call print, "Verifying sql code generation.")
+	if test -n "$$(git status --porcelain '*.go')"; then echo "SQL models not properly generated!"; git status --porcelain '*.go'; exit 1; fi
 
 rpc:
 	@$(call print, "Compiling protos.")
@@ -266,8 +289,8 @@ rpc-js-compile:
 	GOOS=js GOARCH=wasm $(GOBUILD) -tags="$(WASM_RELEASE_TAGS)" $(PKG)/lnrpc/...
 
 sample-conf-check:
-	@$(call print, "Making sure every flag has an example in the sample-lnd.conf file")
-	for flag in $$(GO_FLAGS_COMPLETION=1 go run -tags="$(RELEASE_TAGS)" $(PKG)/cmd/lnd -- | grep -v help | cut -c3-); do if ! grep -q $$flag sample-lnd.conf; then echo "Command line flag --$$flag not added to sample-lnd.conf"; exit 1; fi; done
+	@$(call print, "Checking that default values in the sample-lnd.conf file are set correctly")
+	scripts/check-sample-lnd-conf.sh "$(RELEASE_TAGS)"
 
 mobile-rpc:
 	@$(call print, "Creating mobile RPC from protos.")

@@ -83,7 +83,7 @@ func testChannelFundMax(ht *lntest.HarnessTest) {
 			feeRate:              20,
 			expectedErrStr: "output amount(-0.00000435 BTC) " +
 				"after subtracting fees(0.00002435 BTC) " +
-				"below dust limit(0.0000033 BTC)",
+				"below dust limit(0.00000330 BTC)",
 		},
 		{
 			name: "wallet amount < min chan size " +
@@ -94,7 +94,7 @@ func testChannelFundMax(ht *lntest.HarnessTest) {
 			feeRate:            1,
 			chanOpenShouldFail: true,
 			expectedErrStr: "available funds(0.00017877 BTC) " +
-				"below the minimum amount(0.0002 BTC)",
+				"below the minimum amount(0.00020000 BTC)",
 		},
 		{
 			name: "wallet amount > min chan " +
@@ -173,8 +173,7 @@ func testChannelFundMax(ht *lntest.HarnessTest) {
 		success := ht.Run(
 			testCase.name, func(tt *testing.T) {
 				runFundMaxTestCase(
-					ht, tt, alice, bob, testCase,
-					reserveAmount,
+					ht, alice, bob, testCase, reserveAmount,
 				)
 			},
 		)
@@ -188,9 +187,8 @@ func testChannelFundMax(ht *lntest.HarnessTest) {
 }
 
 // runTestCase runs a single test case asserting that test conditions are met.
-func runFundMaxTestCase(ht *lntest.HarnessTest, t *testing.T, alice,
-	bob *node.HarnessNode, testCase *chanFundMaxTestCase,
-	reserveAmount btcutil.Amount) {
+func runFundMaxTestCase(ht *lntest.HarnessTest, alice, bob *node.HarnessNode,
+	testCase *chanFundMaxTestCase, reserveAmount btcutil.Amount) {
 
 	ht.FundCoins(testCase.initialWalletBalance, alice)
 

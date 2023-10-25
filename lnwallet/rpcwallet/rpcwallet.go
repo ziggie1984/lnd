@@ -454,11 +454,20 @@ func (r *RPCKeyRing) SignMessage(keyLoc keychain.KeyLocator,
 			"signer instance: %v", err)
 	}
 
-	wireSig, err := lnwire.NewSigFromRawSignature(resp.Signature)
+	wireSig, err := lnwire.NewSigFromECDSARawSignature(resp.Signature)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing raw signature: %v", err)
+		return nil, fmt.Errorf("unable to create sig: %w", err)
 	}
-	return wireSig.ToSignature()
+	sig, err := wireSig.ToSignature()
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse sig: %w", err)
+	}
+	ecdsaSig, ok := sig.(*ecdsa.Signature)
+	if !ok {
+		return nil, fmt.Errorf("unexpected signature type: %T", sig)
+	}
+
+	return ecdsaSig, nil
 }
 
 // SignMessageCompact signs the given message, single or double SHA256 hashing
@@ -647,9 +656,8 @@ func (r *RPCKeyRing) ComputeInputScript(tx *wire.MsgTx,
 // submitted as well to reduce the number of method calls necessary later on.
 func (r *RPCKeyRing) MuSig2CreateSession(bipVersion input.MuSig2Version,
 	keyLoc keychain.KeyLocator, pubKeys []*btcec.PublicKey,
-	tweaks *input.MuSig2Tweaks,
-	otherNonces [][musig2.PubNonceSize]byte) (*input.MuSig2SessionInfo,
-	error) {
+	tweaks *input.MuSig2Tweaks, otherNonces [][musig2.PubNonceSize]byte,
+	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
 
 	apiVersion, err := signrpc.MarshalMuSig2Version(bipVersion)
 	if err != nil {
@@ -696,6 +704,10 @@ func (r *RPCKeyRing) MuSig2CreateSession(bipVersion input.MuSig2Version,
 			KeySpendOnly: tweaks.TaprootBIP0086Tweak,
 			ScriptRoot:   tweaks.TaprootTweak,
 		}
+	}
+
+	if localNonces != nil {
+		req.PregeneratedLocalNonce = localNonces.SecNonce[:]
 	}
 
 	ctxt, cancel := context.WithTimeout(context.Background(), r.rpcTimeout)

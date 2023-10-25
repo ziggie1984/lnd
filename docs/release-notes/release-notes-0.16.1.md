@@ -101,11 +101,6 @@ available](https://github.com/lightningnetwork/lnd/pull/7529).
   sweeper transactions (have a conflict mined or in the
   mempool)](https://github.com/lightningnetwork/lnd/pull/7599).
 
-## Documentation
-
-* [Update Postgres.md](https://github.com/lightningnetwork/lnd/pull/7442)
-  to clarify how the database is currently used as a Key-Value store, but
-  in the future will have new schema introduced.
 
 # Contributors (Alphabetical Order)
 

@@ -18,7 +18,7 @@ RUN make \
 
 
 # Build loop binary
-RUN git clone --depth 1 --branch v0.23.0-beta https://github.com/lightninglabs/loop.git /go/src/github.com/lightninglabs/loop
+RUN git clone --depth 1 --branch v0.24.1-beta https://github.com/lightninglabs/loop.git /go/src/github.com/lightninglabs/loop
 WORKDIR /go/src/github.com/lightninglabs/loop/cmd
 
 

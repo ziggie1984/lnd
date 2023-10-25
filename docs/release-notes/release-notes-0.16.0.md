@@ -502,7 +502,7 @@ in the lnwire package](https://github.com/lightningnetwork/lnd/pull/7303)
   [`tools`](https://github.com/lightningnetwork/lnd/pull/7254) and golangci
   issue where [it cannot fetch
   commits](https://github.com/lightningnetwork/lnd/pull/7374).
-
+  
 ### Integration test
 
 * The `lntest` has been
@@ -523,6 +523,7 @@ refactor the itest for code health and maintenance.
 
 # Contributors (Alphabetical Order)
 
+* Adam Anderson
 * Alejandro Pedraza
 * Alyssa Hertig
 * Andras Banki-Horvath

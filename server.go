@@ -1056,7 +1056,7 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		FeeEstimator:   cc.FeeEstimator,
 		GenSweepScript: newSweepPkScriptGen(cc.Wallet),
 		Signer:         cc.Wallet.Cfg.Signer,
-		Wallet:         cc.Wallet,
+		Wallet:         newSweeperWallet(cc.Wallet),
 		NewBatchTimer: func() <-chan time.Time {
 			return time.NewTimer(cfg.Sweeper.BatchWindowDuration).C
 		},
@@ -1148,6 +1148,7 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		},
 		PreimageDB:   s.witnessBeacon,
 		Notifier:     cc.ChainNotifier,
+		Mempool:      cc.MempoolNotifier,
 		Signer:       cc.Wallet.Cfg.Signer,
 		FeeEstimator: cc.FeeEstimator,
 		ChainIO:      cc.ChainIO,
@@ -1439,8 +1440,9 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		RegisteredChains:              cfg.registeredChains,
 		MaxAnchorsCommitFeeRate: chainfee.SatPerKVByte(
 			s.cfg.MaxCommitFeeRateAnchors * 1000).FeePerKWeight(),
-		DeleteAliasEdge: deleteAliasEdge,
-		AliasManager:    s.aliasMgr,
+		DeleteAliasEdge:          deleteAliasEdge,
+		AliasManager:             s.aliasMgr,
+		UpdateForwardingPolicies: s.htlcSwitch.UpdateForwardingPolicies,
 	})
 	if err != nil {
 		return nil, err
@@ -1497,6 +1499,15 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 			policy.SweepFeeRate = sweepRateSatPerVByte.FeePerKWeight()
 		}
 
+		if cfg.WtClient.MaxUpdates != 0 {
+			policy.MaxUpdates = cfg.WtClient.MaxUpdates
+		}
+
+		sessionCloseRange := uint32(wtclient.DefaultSessionCloseRange)
+		if cfg.WtClient.SessionCloseRange != 0 {
+			sessionCloseRange = cfg.WtClient.SessionCloseRange
+		}
+
 		if err := policy.Validate(); err != nil {
 			return nil, err
 		}
@@ -1512,7 +1523,18 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 			)
 		}
 
+		fetchClosedChannel := s.chanStateDB.FetchClosedChannelForID
+
 		s.towerClient, err = wtclient.New(&wtclient.Config{
+			FetchClosedChannel: fetchClosedChannel,
+			SessionCloseRange:  sessionCloseRange,
+			ChainNotifier:      s.cc.ChainNotifier,
+			SubscribeChannelEvents: func() (subscribe.Subscription,
+				error) {
+
+				return s.channelNotifier.
+					SubscribeChannelEvents()
+			},
 			Signer:         cc.Wallet.Cfg.Signer,
 			NewAddress:     newSweepPkScriptGen(cc.Wallet),
 			SecretKeyRing:  s.cc.KeyRing,
@@ -1536,6 +1558,15 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 			blob.Type(blob.FlagAnchorChannel)
 
 		s.anchorTowerClient, err = wtclient.New(&wtclient.Config{
+			FetchClosedChannel: fetchClosedChannel,
+			SessionCloseRange:  sessionCloseRange,
+			ChainNotifier:      s.cc.ChainNotifier,
+			SubscribeChannelEvents: func() (subscribe.Subscription,
+				error) {
+
+				return s.channelNotifier.
+					SubscribeChannelEvents()
+			},
 			Signer:         cc.Wallet.Cfg.Signer,
 			NewAddress:     newSweepPkScriptGen(cc.Wallet),
 			SecretKeyRing:  s.cc.KeyRing,

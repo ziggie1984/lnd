@@ -98,6 +98,10 @@ const (
 	// HTLCs on our channels.
 	minTimeLockDelta = routing.MinCLTVDelta
 
+	// MaxTimeLockDelta is the maximum CLTV delta that can be applied to
+	// forwarded HTLCs.
+	MaxTimeLockDelta = routing.MaxCLTVDelta
+
 	// defaultAcceptorTimeout is the time after which an RPCAcceptor will time
 	// out and return false if it hasn't yet received a response.
 	defaultAcceptorTimeout = 15 * time.Second
@@ -1227,6 +1231,15 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		if cfg.Bitcoin.SimNet {
 			numNets++
 			cfg.ActiveNetParams = chainreg.BitcoinSimNetParams
+
+			// For simnet, the btcsuite chain params uses a
+			// cointype of 115. However, we override this in
+			// chainreg/chainparams.go, but the raw ChainParam
+			// field is used elsewhere. To ensure everything is
+			// consistent, we'll also override the cointype within
+			// the raw params.
+			targetCoinType := chainreg.BitcoinSigNetParams.CoinType
+			cfg.ActiveNetParams.Params.HDCoinType = targetCoinType
 		}
 		if cfg.Bitcoin.SigNet {
 			numNets++

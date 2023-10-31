@@ -89,9 +89,13 @@
   added so users can specify the amount of time the http server will wait for a 
   request to complete before closing the connection. The default value is 5 
   seconds.
+  
 * Update [watchtowers to be Taproot
   ready](https://github.com/lightningnetwork/lnd/pull/7733)
 
+* [Add new sweeper config
+  setting](https://github.com/lightningnetwork/lnd/pull/7535) to limit FeeRate
+  for non time sensitive sweeps of unilateral channel closures.
 
 * [`routerrpc.usestatusinitiated` is
   introduced](https://github.com/lightningnetwork/lnd/pull/8177) to signal that

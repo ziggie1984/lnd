@@ -53,6 +53,12 @@
   [http-header-timeout](https://github.com/lightningnetwork/lnd/pull/7715), is added so users can specify the amount of time the http server will wait for a request to complete before closing the connection. The default value is 5 seconds.
 
 ## RPC Additions
+* [Add sat_per_kweight option for more fine granular control of transaction 
+  fees](https://github.com/lightningnetwork/lnd/pull/7454). For the commands
+  SendCoins, SendMany, OpenChannel, BatchOpenChannel, CloseChannel this option
+  is added. Also the walletrpc calls FundPsbt, BumpFee and PendingSweeps 
+  support the new fee rate option.
+  
 ## lncli Additions
 
 # Improvements

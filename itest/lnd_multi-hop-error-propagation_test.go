@@ -243,7 +243,8 @@ func testHtlcErrorPropagation(ht *lntest.HarnessTest) {
 	// There's a max payment amount, so we'll have to do this
 	// incrementally.
 	chanReserve := int64(chanAmt / 100)
-	amtToSend := int64(chanAmt) - chanReserve - 20000
+	feeBuffer := lntest.CalcStaticFeeBuffer(cType, 0)
+	amtToSend := int64(chanAmt) - chanReserve - int64(feeBuffer) - 10000
 	amtSent := int64(0)
 	for amtSent != amtToSend {
 		// We'll send in chunks of the max payment amount. If we're

@@ -3818,6 +3818,136 @@ func (lc *LightningChannel) getUnsignedAckedUpdates() []channeldb.LogUpdate {
 	return logUpdates
 }
 
+// CalcFeeBuffer calculates a fee buffer in accordance with the recommended
+// amount specified in BOLT 02. It accounts for two times the current fee rate
+// plus an additional htlc at this higher fee rate which allows our peer to add
+// an htlc even if our channel is drained locally.
+// See: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
+func CalcFeeBuffer(feePerKw chainfee.SatPerKWeight,
+	commitWeight int64) lnwire.MilliSatoshi {
+
+	// Account for a 100% in fee rate increase.
+	bufferFeePerKw := 2 * feePerKw
+
+	feeBuffer := lnwire.NewMSatFromSatoshis(
+		// Account for an additional htlc at the higher fee level.
+		bufferFeePerKw.FeeForWeight(commitWeight + input.HTLCWeight),
+	)
+
+	return feeBuffer
+}
+
+// BufferType is used to determine what kind of additional buffer should be left
+// when evaluating the usable balance of a channel.
+type BufferType uint8
+
+const (
+	// NoBuffer means no additional buffer is accounted for. This is
+	// important when verifying an already locked-in commitment state.
+	NoBuffer BufferType = iota
+
+	// FeeBuffer accounts for several edge cases. One of them is where
+	// a locally drained channel might become unusable due to the non-opener
+	// of the channel not being able to add a non-dust htlc to the channel
+	// state because we as a channel opener cannot pay the additional fees
+	// an htlc would require on the commitment tx.
+	// See: https://github.com/lightningnetwork/lightning-rfc/issues/728
+	//
+	// Moreover it mitigates the situation where htlcs are added
+	// simultaneously to the commitment transaction. This cannot be avoided
+	// until the feature __option_simplified_update__ is available in the
+	// protocol and deployed widely in the network.
+	// More information about the issue and the simplified commitment flow
+	// can be found here:
+	// https://github.com/lightningnetwork/lnd/issues/7657
+	// https://github.com/lightning/bolts/pull/867
+	//
+	// The last advantage is that we can react to fee spikes (up or down)
+	// by accounting for at least twice the size of the current fee rate
+	// (BOLT02). It also accounts for decreases in the fee rate because
+	// former dust htlcs might now become normal outputs so the overall
+	// fee might increase although the fee rate decreases (this is only true
+	// for non-anchor channels because htlcs have to account for their
+	// fee of the second-level covenant transactions).
+	FeeBuffer
+
+	// AdditionalHtlc just accounts for an additional htlc which is helpful
+	// when deciding about a fee update of the commitment transaction.
+	// Leaving always room for an additional htlc makes sure that even
+	// though we are the opener of a channel a new fee update will always
+	// allow an htlc from our peer to be added to the commitment tx.
+	AdditionalHtlc
+
+	// TODO(ziggie): Add a potential AllowDipBelowReserve type as described
+	// in here: https://github.com/lightningnetwork/lnd/issues/8249 ?
+)
+
+// String returns a human readable name for the buffer type.
+func (b BufferType) String() string {
+	switch b {
+	case NoBuffer:
+		return "nobuffer"
+	case FeeBuffer:
+		return "feebuffer"
+	case AdditionalHtlc:
+		return "additionalhtlc"
+	default:
+		return "unknown"
+	}
+}
+
+// applyCommitFee applies the commitFee including a buffer to the balance amount
+// and verifies that it does not become negative. This function returns the new
+// balance and the exact buffer amount (excluding the commitment fee).
+func (lc *LightningChannel) applyCommitFee(
+	balance lnwire.MilliSatoshi, commitWeight int64,
+	feePerKw chainfee.SatPerKWeight,
+	buffer BufferType) (lnwire.MilliSatoshi, lnwire.MilliSatoshi, error) {
+
+	commitFee := feePerKw.FeeForWeight(commitWeight)
+	commitFeeMsat := lnwire.NewMSatFromSatoshis(commitFee)
+
+	var bufferAmt lnwire.MilliSatoshi
+	switch buffer {
+	// The fee buffer is enforced on the balance which is of predefined size
+	// add keeps room for an up to 2x increase in fees of the commitment tx
+	// and an additional htlc at this fee level reserved for the peer.
+	case FeeBuffer:
+		// The feeBuffer already includes the commitFee.
+		bufferAmt = CalcFeeBuffer(feePerKw, commitWeight)
+		if bufferAmt < balance {
+			newBalance := balance - bufferAmt
+			return newBalance, bufferAmt - commitFeeMsat, nil
+		}
+
+	// The AdditionalHtlc buffer type does NOT keep a fee buffer but solely
+	// keeps space for an additional htlc on the commitment tx which our
+	// peer can add.
+	case AdditionalHtlc:
+		additionalHtlcFee := lnwire.NewMSatFromSatoshis(
+			feePerKw.FeeForWeight(input.HTLCWeight),
+		)
+
+		bufferAmt = commitFeeMsat + additionalHtlcFee
+		newBalance := balance - bufferAmt
+		if bufferAmt < balance {
+			return newBalance, additionalHtlcFee, nil
+		}
+
+	// The default case does not account for any buffer on the local balance
+	// but just subtracts the commit fee.
+	default:
+		if commitFeeMsat < balance {
+			newBalance := balance - commitFeeMsat
+			return newBalance, 0, nil
+		}
+	}
+
+	// We still return the amount and bufferAmt here to log them at a later
+	// stage.
+	return balance, bufferAmt, ErrBelowChanReserve
+}
+
 // validateCommitmentSanity is used to validate the current state of the
 // commitment transaction in terms of the ChannelConstraints that we and our
 // remote peer agreed upon during the funding workflow. The
@@ -3825,7 +3955,7 @@ func (lc *LightningChannel) getUnsignedAckedUpdates() []channeldb.LogUpdate {
 // PaymentDescriptor if we are validating in the state when adding a new HTLC,
 // or nil otherwise.
 func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
-	ourLogCounter uint64, remoteChain bool,
+	ourLogCounter uint64, remoteChain bool, buffer BufferType,
 	predictOurAdd, predictTheirAdd *PaymentDescriptor) error {
 
 	// Fetch all updates not committed.
@@ -3854,31 +3984,8 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	if err != nil {
 		return err
 	}
+
 	feePerKw := filteredView.feePerKw
-
-	// Calculate the commitment fee, and subtract it from the initiator's
-	// balance.
-	commitFee := feePerKw.FeeForWeight(commitWeight)
-	commitFeeMsat := lnwire.NewMSatFromSatoshis(commitFee)
-	if lc.channelState.IsInitiator {
-		ourBalance -= commitFeeMsat
-	} else {
-		theirBalance -= commitFeeMsat
-	}
-
-	// As a quick sanity check, we'll ensure that if we interpret the
-	// balances as signed integers, they haven't dipped down below zero. If
-	// they have, then this indicates that a party doesn't have sufficient
-	// balance to satisfy the final evaluated HTLC's.
-	switch {
-	case int64(ourBalance) < 0:
-		return fmt.Errorf("%w: negative local balance",
-			ErrBelowChanReserve)
-
-	case int64(theirBalance) < 0:
-		return fmt.Errorf("%w: negative remote balance",
-			ErrBelowChanReserve)
-	}
 
 	// Ensure that the fee being applied is enough to be relayed across the
 	// network in a reasonable time frame.
@@ -3887,6 +3994,44 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 			feePerKw, chainfee.FeePerKwFloor)
 	}
 
+	// The channel opener has to account for the commitment fee. This
+	// includes also a buffer type. Depending on whether we are the opener
+	// of the channel we either want to enforce a buffer on the local
+	// amount.
+	var bufferAmt lnwire.MilliSatoshi
+	if lc.channelState.IsInitiator {
+		ourBalance, bufferAmt, err = lc.applyCommitFee(
+			ourBalance, commitWeight, feePerKw, buffer)
+		if err != nil {
+			commitFee := feePerKw.FeeForWeight(commitWeight)
+			lc.log.Errorf("We cannot pay for the CommitmentFee of "+
+				"the ChannelState: ourBalance=%b is negative "+
+				"after applying the fee: ourBalance=%v, "+
+				"commitFee=%v, feeBuffer=%v (type=%v) "+
+				"local_chan_initiator", int64(ourBalance),
+				commitFee, bufferAmt, buffer)
+
+			return err
+		}
+	} else {
+		theirBalance, bufferAmt, err = lc.applyCommitFee(
+			theirBalance, commitWeight, feePerKw, NoBuffer)
+		if err != nil {
+			commitFee := feePerKw.FeeForWeight(commitWeight)
+			lc.log.Errorf("They cannot pay for the CommitmentFee "+
+				"of the ChannelState: theirBalance=%b is "+
+				"negative after applying the fee: "+
+				"theiBalance=%v, commitFee=%v, feeBuffer=%v "+
+				"(type=%v) remote_chan_initiator",
+				int64(theirBalance), commitFee, bufferAmt,
+				buffer)
+
+			return err
+		}
+	}
+
+	// The commitment fee was accounted for successfully now make sure we
+	// still do have enough left to account for the channel reserve.
 	// If the added HTLCs will decrease the balance, make sure they won't
 	// dip the local and remote balances below the channel reserves.
 	ourReserve := lnwire.NewMSatFromSatoshis(
@@ -3896,16 +4041,32 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 		lc.channelState.RemoteChanCfg.ChanReserve,
 	)
 
+	// Calculate the commitment fee to log the information if needed.
+	commitFee := feePerKw.FeeForWeight(commitWeight)
+	commitFeeMsat := lnwire.NewMSatFromSatoshis(commitFee)
+
 	switch {
+	// TODO(ziggie): Allow the peer dip us below the channel reserve when
+	// our local balance would increase during this commitment dance or
+	// allow us to dip the peer below its reserve then their balance would
+	// increase during this commitment dance. This is needed for splicing
+	// when e.g. a new channel (bigger capacity) has a higher required
+	// reserve and the peer would need to add an additional htlc to push the
+	// missing amount to our side and viceversa.
+	// See: https://github.com/lightningnetwork/lnd/issues/8249
 	case ourBalance < ourInitialBalance && ourBalance < ourReserve:
 		lc.log.Debugf("Funds below chan reserve: ourBalance=%v, "+
-			"ourReserve=%v", ourBalance, ourReserve)
+			"ourReserve=%v, commitFee=%v, feeBuffer=%v "+
+			"chan_initiator=%v", ourBalance, ourReserve,
+			commitFeeMsat, bufferAmt, lc.channelState.IsInitiator)
+
 		return fmt.Errorf("%w: our balance below chan reserve",
 			ErrBelowChanReserve)
 
 	case theirBalance < theirInitialBalance && theirBalance < theirReserve:
 		lc.log.Debugf("Funds below chan reserve: theirBalance=%v, "+
 			"theirReserve=%v", theirBalance, theirReserve)
+
 		return fmt.Errorf("%w: their balance below chan reserve",
 			ErrBelowChanReserve)
 	}
@@ -4056,8 +4217,12 @@ func (lc *LightningChannel) SignNextCommitment() (*NewCommitState, error) {
 	// ensure that we aren't violating any of the constraints the remote
 	// party set up when we initially set up the channel. If we are, then
 	// we'll abort this state transition.
+	// We do not enforce the fee buffer here because when we reach this
+	// point all updates will have to get locked-in so we enforce the
+	// minimum requirement.
 	err := lc.validateCommitmentSanity(
-		remoteACKedIndex, lc.localUpdateLog.logIndex, true, nil, nil,
+		remoteACKedIndex, lc.localUpdateLog.logIndex, true, NoBuffer,
+		nil, nil,
 	)
 	if err != nil {
 		return nil, err
@@ -4988,8 +5153,14 @@ func (lc *LightningChannel) ReceiveNewCommitment(commitSigs *CommitSigs) error {
 	// Ensure that this new local update from the remote node respects all
 	// the constraints we specified during initial channel setup. If not,
 	// then we'll abort the channel as they've violated our constraints.
+
+	// We do not enforce the fee buffer here because when we reach this
+	// point all updates will have to get locked-in (we already received
+	// the UpdateAddHTLC msg from our peer prior to receiving the
+	// commit-sig).
 	err := lc.validateCommitmentSanity(
-		lc.remoteUpdateLog.logIndex, localACKedIndex, false, nil, nil,
+		lc.remoteUpdateLog.logIndex, localACKedIndex, false, NoBuffer,
+		nil, nil,
 	)
 	if err != nil {
 		return err
@@ -5722,6 +5893,31 @@ func (lc *LightningChannel) InitNextRevocation(revKey *btcec.PublicKey) error {
 	return lc.channelState.InsertNextRevocation(revKey)
 }
 
+// addHtlcOptions is a set of functional options that allow callers to further
+// specify conditions when trying to add an htlc to a commitment.
+type addHtlcOptions struct {
+	buffer BufferType
+}
+
+// defaultaddHtlcOptions returns the set of default options when adding an htlc
+// to a commitment.
+func defaultaddHtlcOptions() *addHtlcOptions {
+	return &addHtlcOptions{}
+}
+
+// AddHtlcOptions is a functional option that allows a caller to modify the
+// behavior when adding an htlc to a channel.
+type AddHtlcOptions func(*addHtlcOptions)
+
+// WithFeeBuffer is an optional argument that allows the caller to enforce a
+// fee buffer of predefined size on our local balance iff we are the initiator
+// of the channel.
+func WithBuffer(buffer BufferType) AddHtlcOptions {
+	return func(o *addHtlcOptions) {
+		o.buffer = buffer
+	}
+}
+
 // AddHTLC adds an HTLC to the state machine's local update log. This method
 // should be called when preparing to send an outgoing HTLC.
 //
@@ -5736,13 +5932,19 @@ func (lc *LightningChannel) InitNextRevocation(revKey *btcec.PublicKey) error {
 //
 // NOTE: It is okay for sourceRef to be nil when unit testing the wallet.
 func (lc *LightningChannel) AddHTLC(htlc *lnwire.UpdateAddHTLC,
-	openKey *models.CircuitKey) (uint64, error) {
+	openKey *models.CircuitKey,
+	optFuncs ...AddHtlcOptions) (uint64, error) {
+
+	opts := defaultaddHtlcOptions()
+	for _, optFunc := range optFuncs {
+		optFunc(opts)
+	}
 
 	lc.Lock()
 	defer lc.Unlock()
 
 	pd := lc.htlcAddDescriptor(htlc, openKey)
-	if err := lc.validateAddHtlc(pd); err != nil {
+	if err := lc.validateAddHtlc(pd, opts.buffer); err != nil {
 		return 0, err
 	}
 
@@ -5852,7 +6054,9 @@ func (lc *LightningChannel) MayAddOutgoingHtlc(amt lnwire.MilliSatoshi) error {
 		&models.CircuitKey{},
 	)
 
-	if err := lc.validateAddHtlc(pd); err != nil {
+	// Enforce the fee buffer because we are evaluating whether we can add
+	// another htlc to the channel state.
+	if err := lc.validateAddHtlc(pd, FeeBuffer); err != nil {
 		lc.log.Debugf("May add outgoing htlc rejected: %v", err)
 		return err
 	}
@@ -5879,7 +6083,8 @@ func (lc *LightningChannel) htlcAddDescriptor(htlc *lnwire.UpdateAddHTLC,
 
 // validateAddHtlc validates the addition of an outgoing htlc to our local and
 // remote commitments.
-func (lc *LightningChannel) validateAddHtlc(pd *PaymentDescriptor) error {
+func (lc *LightningChannel) validateAddHtlc(pd *PaymentDescriptor,
+	buffer BufferType) error {
 	// Make sure adding this HTLC won't violate any of the constraints we
 	// must keep on the commitment transactions.
 	remoteACKedIndex := lc.localCommitChain.tail().theirMessageIndex
@@ -5887,7 +6092,8 @@ func (lc *LightningChannel) validateAddHtlc(pd *PaymentDescriptor) error {
 	// First we'll check whether this HTLC can be added to the remote
 	// commitment transaction without violation any of the constraints.
 	err := lc.validateCommitmentSanity(
-		remoteACKedIndex, lc.localUpdateLog.logIndex, true, pd, nil,
+		remoteACKedIndex, lc.localUpdateLog.logIndex, true,
+		buffer, pd, nil,
 	)
 	if err != nil {
 		return err
@@ -5900,7 +6106,7 @@ func (lc *LightningChannel) validateAddHtlc(pd *PaymentDescriptor) error {
 	// possible for us to add the HTLC.
 	err = lc.validateCommitmentSanity(
 		lc.remoteUpdateLog.logIndex, lc.localUpdateLog.logIndex,
-		false, pd, nil,
+		false, buffer, pd, nil,
 	)
 	if err != nil {
 		return err
@@ -5935,8 +6141,13 @@ func (lc *LightningChannel) ReceiveHTLC(htlc *lnwire.UpdateAddHTLC) (uint64, err
 
 	// Clamp down on the number of HTLC's we can receive by checking the
 	// commitment sanity.
+	// We are not enforcing the fee buffer here because our peer is not
+	// aware of it and neither should they be. This is one of the reasons
+	// the fee buffer was introduced so we use it and therefore do not
+	// enforce the additional buffer.
 	err := lc.validateCommitmentSanity(
-		lc.remoteUpdateLog.logIndex, localACKedIndex, false, nil, pd,
+		lc.remoteUpdateLog.logIndex, localACKedIndex, false, NoBuffer,
+		nil, pd,
 	)
 	if err != nil {
 		return 0, err
@@ -7987,15 +8198,15 @@ func NewAnchorResolution(chanState *channeldb.OpenChannel,
 // the channel. By available balance, we mean that if at this very instance a
 // new commitment were to be created which evals all the log entries, what
 // would our available balance for adding an additional HTLC be. It takes into
-// account the fee that must be paid for adding this HTLC (if we're the
-// initiator), and that we cannot spend from the channel reserve. This method
-// is useful when deciding if a given channel can accept an HTLC in the
-// multi-hop forwarding scenario.
+// account the fee that must be paid for adding this HTLC, that we cannot spend
+// from the channel reserve and moreover the fee buffer when we are the
+// initiator of the channel. This method is useful when deciding if a given
+// channel can accept an HTLC in the multi-hop forwarding scenario.
 func (lc *LightningChannel) AvailableBalance() lnwire.MilliSatoshi {
 	lc.RLock()
 	defer lc.RUnlock()
 
-	bal, _ := lc.availableBalance()
+	bal, _ := lc.availableBalance(FeeBuffer)
 	return bal
 }
 
@@ -8003,7 +8214,9 @@ func (lc *LightningChannel) AvailableBalance() lnwire.MilliSatoshi {
 // This method is provided so methods that already hold the lock can access
 // this method. Additionally, the total weight of the next to be created
 // commitment is returned for accounting purposes.
-func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
+func (lc *LightningChannel) availableBalance(
+	buffer BufferType) (lnwire.MilliSatoshi, int64) {
+
 	// We'll grab the current set of log updates that the remote has
 	// ACKed.
 	remoteACKedIndex := lc.localCommitChain.tip().theirMessageIndex
@@ -8018,12 +8231,12 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 	// add updates concurrently, causing our balance to go down if we're
 	// the initiator, but this is a problem on the protocol level.
 	ourLocalCommitBalance, commitWeight := lc.availableCommitmentBalance(
-		htlcView, false,
+		htlcView, false, buffer,
 	)
 
 	// Do the same calculation from the remote commitment point of view.
 	ourRemoteCommitBalance, _ := lc.availableCommitmentBalance(
-		htlcView, true,
+		htlcView, true, buffer,
 	)
 
 	// Return which ever balance is lowest.
@@ -8042,7 +8255,7 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 // eating into our balance. It will make sure we won't violate the channel
 // reserve constraints for this amount.
 func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
-	remoteChain bool) (lnwire.MilliSatoshi, int64) {
+	remoteChain bool, buffer BufferType) (lnwire.MilliSatoshi, int64) {
 
 	// Compute the current balances for this commitment. This will take
 	// into account HTLCs to determine the commit weight, which the
@@ -8070,26 +8283,45 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
 	// HTLC to the commitment, as only the balance remaining after this fee
 	// has been paid is actually available for sending.
 	feePerKw := filteredView.feePerKw
-	htlcCommitFee := lnwire.NewMSatFromSatoshis(
-		feePerKw.FeeForWeight(commitWeight + input.HTLCWeight),
+	additionalHtlcFee := lnwire.NewMSatFromSatoshis(
+		feePerKw.FeeForWeight(input.HTLCWeight),
 	)
+	commitFee := lnwire.NewMSatFromSatoshis(
+		feePerKw.FeeForWeight(commitWeight))
 
-	// If we are the channel initiator, we must to subtract this commitment
-	// fee from our available balance in order to ensure we can afford both
-	// the value of the HTLC and the additional commitment fee from adding
-	// the HTLC.
 	if lc.channelState.IsInitiator {
-		// There is an edge case where our non-zero balance is lower
-		// than the htlcCommitFee, where we could still be sending dust
-		// HTLCs, but we return 0 in this case. This is to avoid
-		// lowering our balance even further, as this takes us into a
-		// bad state where neither we nor our channel counterparty can
-		// add HTLCs.
-		if ourBalance < htlcCommitFee {
+		// When the buffer is of type `FeeBuffer` type we know we are
+		// going to send or forward an htlc over this channel therefore
+		// we account for an additional htlc output on the commitment
+		// tx.
+		futureCommitWeight := commitWeight
+		if buffer == FeeBuffer {
+			futureCommitWeight += input.HTLCWeight
+		}
+
+		// Make sure we do not overwrite `ourBalance` that's why we
+		// declare bufferAmt beforehand.
+		var bufferAmt lnwire.MilliSatoshi
+		ourBalance, bufferAmt, err = lc.applyCommitFee(
+			ourBalance, futureCommitWeight, feePerKw, buffer,
+		)
+		// TODO(ziggie): Should we add complexity here and return the
+		// max(dustlimit,ourbalance) here, because the feebuffer can be
+		// quite significant?
+		if err != nil {
+			lc.log.Warnf("Set available amount to 0 because we "+
+				"could not pay for the CommitmentFee of the "+
+				"new ChannelState: ourBalance=%b is negative "+
+				"after applying the fee: ourBalance=%v, "+
+				"commitFee(incl. additional htlc)=%v, "+
+				"feeBuffer=%v (type=%v) local_chan_initiator",
+				int64(ourBalance), futureCommitWeight,
+				bufferAmt, buffer)
+
 			return 0, commitWeight
 		}
 
-		return ourBalance - htlcCommitFee, commitWeight
+		return ourBalance, commitWeight
 	}
 
 	// If we're not the initiator, we must check whether the remote has
@@ -8130,18 +8362,21 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
 	// The HTLC output will be manifested on the commitment if it
 	// is non-dust after paying the HTLC fee.
 	nonDustHtlcAmt := dustlimit + htlcFee
+	// CommitFee when the peer is the initiator of the channel (without
+	// the fee buffer).
+	commitFeeWithHtlc := commitFee + additionalHtlcFee
 
 	// If they cannot pay the fee if we add another non-dust HTLC, we'll
 	// report our available balance just below the non-dust amount, to
 	// avoid attempting HTLCs larger than this size.
-	if theirBalance < htlcCommitFee && ourBalance >= nonDustHtlcAmt {
+	if theirBalance < commitFeeWithHtlc && ourBalance >= nonDustHtlcAmt {
 		// see https://github.com/lightning/bolts/issues/728
 		ourReportedBalance := nonDustHtlcAmt - 1
 		lc.log.Infof("Reducing local balance (from %v to %v): "+
 			"remote side does not have enough funds (%v < %v) to "+
 			"pay for non-dust HTLC in case of unilateral close.",
 			ourBalance, ourReportedBalance, theirBalance,
-			htlcCommitFee)
+			commitFeeWithHtlc)
 		ourBalance = ourReportedBalance
 	}
 
@@ -8164,7 +8399,9 @@ func (lc *LightningChannel) validateFeeRate(feePerKw chainfee.SatPerKWeight) err
 	// We'll ensure that we can accommodate this new fee change, yet still
 	// be above our reserve balance. Otherwise, we'll reject the fee
 	// update.
-	availableBalance, txWeight := lc.availableBalance()
+	// We do not enforce the fee buffer here because it was exactly
+	// introduced to use this buffer for potential fee rate increases.
+	availableBalance, txWeight := lc.availableBalance(AdditionalHtlc)
 
 	oldFee := lnwire.NewMSatFromSatoshis(
 		lc.localCommitChain.tip().feePerKw.FeeForWeight(txWeight),
@@ -8441,8 +8678,9 @@ func (lc *LightningChannel) MaxFeeRate(maxAllocation float64) chainfee.SatPerKWe
 
 	// The maximum fee depends on the available balance that can be
 	// committed towards fees. It takes into account our local reserve
-	// balance.
-	availableBalance, weight := lc.availableBalance()
+	// balance. We do not account for a fee buffer here because that is
+	// exactly why it was introduced to react for sharp fee changes.
+	availableBalance, weight := lc.availableBalance(AdditionalHtlc)
 
 	oldFee := lc.localCommitChain.tip().feePerKw.FeeForWeight(weight)
 

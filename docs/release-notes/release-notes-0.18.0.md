@@ -52,6 +52,12 @@
   these unconfirmed transactions are already removed. In addition a new 
   walletrpc endpoint `RemoveTransaction` is introduced which let one easily
   remove unconfirmed transaction manually.
+  
+* [Fixed](https://github.com/lightningnetwork/lnd/pull/7805) a case where `lnd`
+  might propose a low fee rate for the channel (when initiator) due to the
+  mempool not having enough data yet or the channel might be drained locally
+  which with the default fee allocation in place will eventually lead to the
+  downsizing to the fee floor (1 sat/vbyte) in the worst case.
 
 # New Features
 ## Functional Enhancements

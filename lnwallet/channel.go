@@ -3985,6 +3985,15 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 		return err
 	}
 
+	// We need to first check whether we went negative. We might underflow
+	// in computeView because lnwire.MilliSathoshi is an unsigned type.
+	if int64(ourBalance) < 0 {
+		return fmt.Errorf("%w: our balance", ErrBelowChanReserve)
+	}
+	if int64(theirBalance) < 0 {
+		return fmt.Errorf("%w: their balance", ErrBelowChanReserve)
+	}
+
 	feePerKw := filteredView.feePerKw
 
 	// Ensure that the fee being applied is enough to be relayed across the
@@ -8266,6 +8275,17 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
 	if err != nil {
 		lc.log.Errorf("Unable to fetch available balance: %v", err)
 		return 0, 0
+	}
+
+	// We need to first check ourBalance and theirBalance to be negative
+	// because MilliSathoshi is a unsigned type and can underflow in
+	// `computeView`. This should never happen for views which do not
+	// include new updates (remote or local).
+	if int64(ourBalance) < 0 {
+		return 0, commitWeight
+	}
+	if int64(theirBalance) < 0 {
+		return 0, commitWeight
 	}
 
 	// We can never spend from the channel reserve, so we'll subtract it

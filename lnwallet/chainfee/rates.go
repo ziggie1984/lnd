@@ -79,3 +79,21 @@ func (s SatPerKWeight) FeePerVByte() SatPerVByte {
 func (s SatPerKWeight) String() string {
 	return fmt.Sprintf("%v sat/kw", int64(s))
 }
+
+// MinSatPerKWeight returns the smaller value of two fee rates.
+func MinSatPerKWeight(a, b SatPerKWeight) SatPerKWeight {
+	if a < b {
+		return a
+	}
+
+	return b
+}
+
+// MaxSatPerKWeight returns the greater value of two fee rates.
+func MaxSatPerKWeight(a, b SatPerKWeight) SatPerKWeight {
+	if a > b {
+		return a
+	}
+
+	return b
+}

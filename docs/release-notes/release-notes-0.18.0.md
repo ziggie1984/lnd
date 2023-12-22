@@ -55,6 +55,12 @@
   
 * [Fixed](https://github.com/lightningnetwork/lnd/pull/8096) a case where `lnd`
   might dip below its channel reserve when htlcs are added concurrently.
+  
+* [Fixed](https://github.com/lightningnetwork/lnd/pull/7805) a case where `lnd`
+  might propose a low fee rate for the channel (when initiator) due to the
+  mempool not having enough data yet or the channel might be drained locally
+  which with the default fee allocation in place will eventually lead to the
+  downsizing to the fee floor (1 sat/vbyte) in the worst case.
 
 # New Features
 ## Functional Enhancements

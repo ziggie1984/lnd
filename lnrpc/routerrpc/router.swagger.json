@@ -1789,6 +1789,11 @@
           "type": "number",
           "format": "double",
           "description": "The time preference for this payment. Set to -1 to optimize for fees\nonly, to 1 to optimize for reliability only or a value inbetween for a mix."
+        },
+        "total_amt_msat": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total number of millisatoshis to send (important for independant MPP\npayments)."
         }
       }
     },

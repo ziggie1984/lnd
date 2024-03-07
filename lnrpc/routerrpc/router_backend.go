@@ -1016,6 +1016,11 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		}
 
 		payIntent.Amount = reqAmt
+		if rpcPayReq.TotalAmtMsat != 0 {
+			payIntent.TotalAmtMsat = lnwire.MilliSatoshi(
+				rpcPayReq.TotalAmtMsat,
+			)
+		}
 
 		// Parse destination feature bits.
 		features, err := UnmarshalFeatures(rpcPayReq.DestFeatures)

@@ -2227,6 +2227,10 @@ type LightningPayment struct {
 	// milli-satoshis.
 	Amount lnwire.MilliSatoshi
 
+	// TotalAmtMsat important for MPP payments which always need to signal
+	// the invoice amount.
+	TotalAmtMsat lnwire.MilliSatoshi
+
 	// FeeLimit is the maximum fee in millisatoshis that the payment should
 	// accept when sending it through the network. The payment will fail
 	// if there isn't a route with lower fees than this limit.

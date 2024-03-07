@@ -224,6 +224,11 @@ var sendPaymentCommand = cli.Command{
 			Name:  "amt, a",
 			Usage: "number of satoshis to send",
 		},
+		cli.Int64Flag{
+			Name:  "total_amt_msat",
+			Usage: "total amount of the MPP payment in msat",
+		},
+
 		cli.StringFlag{
 			Name:  "payment_hash, r",
 			Usage: "the hash to use within the payment's HTLC",
@@ -347,9 +352,10 @@ func sendPayment(ctx *cli.Context) error {
 	}
 
 	var (
-		destNode []byte
-		amount   int64
-		err      error
+		destNode     []byte
+		amount       int64
+		totalAmtMsat int64
+		err          error
 	)
 
 	switch {
@@ -380,9 +386,21 @@ func sendPayment(ctx *cli.Context) error {
 		}
 	}
 
+	if ctx.IsSet("total_amt_msat") {
+		totalAmtMsat = ctx.Int64("total_amt_msat")
+	} else if args.Present() {
+		totalAmtMsat, err = strconv.ParseInt(args.First(), 10, 64)
+		args = args.Tail()
+		if err != nil {
+			return fmt.Errorf("unable to decode total payment "+
+				"amount: %v", err)
+		}
+	}
+
 	req := &routerrpc.SendPaymentRequest{
 		Dest:              destNode,
 		Amt:               amount,
+		TotalAmtMsat:      totalAmtMsat,
 		DestCustomRecords: make(map[uint64][]byte),
 		Amp:               ctx.Bool(ampFlag.Name),
 	}

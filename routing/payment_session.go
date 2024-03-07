@@ -386,7 +386,7 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 			sourceVertex, path, height,
 			finalHopParams{
 				amt:         maxAmt,
-				totalAmt:    p.payment.Amount,
+				totalAmt:    p.payment.TotalAmtMsat,
 				cltvDelta:   finalCltvDelta,
 				records:     p.payment.DestCustomRecords,
 				paymentAddr: p.payment.PaymentAddr,

@@ -46,6 +46,7 @@ import (
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/discovery"
 	"github.com/lightningnetwork/lnd/feature"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
@@ -7208,21 +7209,27 @@ func (r *rpcServer) UpdateChannelPolicy(ctx context.Context,
 		}
 	}
 
-	baseFeeMsat := lnwire.MilliSatoshi(req.BaseFeeMsat)
-	feeSchema := routing.FeeSchema{
-		BaseFee: baseFeeMsat,
-		FeeRate: feeRateFixed,
-		InboundFee: models.InboundFee{
+	// In case inbound fees are not specified no inbound fees will be
+	// applied but the previous value will be kept.
+	inboundFee := fn.None[models.InboundFee]()
+	if req.InboundFeeSpecified {
+		inboundFee = fn.Some(models.InboundFee{
 			Base: req.InboundBaseFeeMsat,
 			Rate: req.InboundFeeRatePpm,
-		},
+		})
+	}
+
+	baseFeeMsat := lnwire.MilliSatoshi(req.BaseFeeMsat)
+	feeSchema := routing.FeeSchema{
+		BaseFee:    baseFeeMsat,
+		FeeRate:    feeRateFixed,
+		InboundFee: inboundFee,
 	}
 
 	maxHtlc := lnwire.MilliSatoshi(req.MaxHtlcMsat)
-	var minHtlc *lnwire.MilliSatoshi
+	minHtlc := fn.None[lnwire.MilliSatoshi]()
 	if req.MinHtlcMsatSpecified {
-		min := lnwire.MilliSatoshi(req.MinHtlcMsat)
-		minHtlc = &min
+		minHtlc = fn.Some(lnwire.MilliSatoshi(req.MinHtlcMsat))
 	}
 
 	chanPolicy := routing.ChannelPolicy{

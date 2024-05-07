@@ -99,6 +99,16 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 			return nil
 		}
 
+		// extract the inbound fees from the edge we just updated.
+		var inboundFee lnwire.Fee
+		_, err = edge.ExtraOpaqueData.ExtractRecords(&inboundFee)
+		// We only handle chan policies of ourselves which works with
+		// or without specified inbound fees. So having a decoding error
+		// reveils another problem.
+		if err != nil {
+			return err
+		}
+
 		// Add updated edge to list of edges to send to gossiper.
 		edgesToUpdate = append(edgesToUpdate, discovery.EdgeWithInfo{
 			Info: info,
@@ -112,7 +122,9 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 			TimeLockDelta: uint32(edge.TimeLockDelta),
 			MinHTLCOut:    edge.MinHTLC,
 			MaxHTLC:       edge.MaxHTLC,
-			InboundFee:    newSchema.InboundFee,
+			InboundFee: models.NewInboundFeeFromWire(
+				inboundFee,
+			),
 		}
 
 		return nil
@@ -182,9 +194,14 @@ func (r *Manager) updateEdge(tx kvdb.RTx, chanPoint wire.OutPoint,
 		newSchema.FeeRate,
 	)
 
-	inboundFee := newSchema.InboundFee.ToWire()
-	if err := edge.ExtraOpaqueData.PackRecords(&inboundFee); err != nil {
-		return err
+	if !newSchema.InboundFee.IsNone() {
+		inboundFee := newSchema.InboundFee.UnsafeFromSome()
+		inboundWireFee := inboundFee.ToWire()
+
+		err := edge.ExtraOpaqueData.PackRecords(&inboundWireFee)
+		if err != nil {
+			return err
+		}
 	}
 
 	edge.TimeLockDelta = uint16(newSchema.TimeLockDelta)
@@ -215,9 +232,7 @@ func (r *Manager) updateEdge(tx kvdb.RTx, chanPoint wire.OutPoint,
 	}
 
 	// If a new min htlc is specified, update the edge.
-	if newSchema.MinHTLC != nil {
-		edge.MinHTLC = *newSchema.MinHTLC
-	}
+	edge.MinHTLC = newSchema.MinHTLC.UnwrapOr(edge.MinHTLC)
 
 	// If the MaxHtlc flag wasn't already set, we can set it now.
 	edge.MessageFlags |= lnwire.ChanUpdateRequiredMaxHtlc

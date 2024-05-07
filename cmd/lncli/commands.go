@@ -2395,6 +2395,12 @@ func updateChannelPolicy(ctx *cli.Context) error {
 		InboundFeeRatePpm:  int32(inboundFeeRatePpm),
 	}
 
+	// Only apply the inbound fees if they are specified.
+	if ctx.IsSet("inbound_base_fee_msat") ||
+		ctx.IsSet("inbound_fee_rate_ppm") {
+		req.InboundFeeSpecified = true
+	}
+
 	if ctx.IsSet("min_htlc_msat") {
 		req.MinHtlcMsat = ctx.Uint64("min_htlc_msat")
 		req.MinHtlcMsatSpecified = true

@@ -1,4 +1,4 @@
-FROM golang:1.20.3-bullseye as builder
+FROM golang:1.22.3-bullseye as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.

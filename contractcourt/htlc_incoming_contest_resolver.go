@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/models"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -89,7 +90,9 @@ func (h *htlcIncomingContestResolver) processFinalHtlcFail() error {
 //     as we have no remaining actions left at our disposal.
 //
 // NOTE: Part of the ContractResolver interface.
-func (h *htlcIncomingContestResolver) Resolve() (ContractResolver, error) {
+func (h *htlcIncomingContestResolver) Resolve(
+	_ bool) (ContractResolver, error) {
+
 	// If we're already full resolved, then we don't have anything further
 	// to do.
 	if h.resolved {
@@ -516,19 +519,31 @@ func (h *htlcIncomingContestResolver) Supplement(htlc channeldb.HTLC) {
 	h.htlc = htlc
 }
 
+// SupplementDeadline does nothing for an incoming htlc resolver.
+//
+// NOTE: Part of the htlcContractResolver interface.
+func (h *htlcIncomingContestResolver) SupplementDeadline(_ fn.Option[int32]) {
+}
+
 // decodePayload (re)decodes the hop payload of a received htlc.
 func (h *htlcIncomingContestResolver) decodePayload() (*hop.Payload,
 	[]byte, error) {
 
+	blindingInfo := hop.ReconstructBlindingInfo{
+		IncomingAmt:    h.htlc.Amt,
+		IncomingExpiry: h.htlc.RefundTimeout,
+		BlindingKey:    h.htlc.BlindingPoint,
+	}
+
 	onionReader := bytes.NewReader(h.htlc.OnionBlob[:])
 	iterator, err := h.OnionProcessor.ReconstructHopIterator(
-		onionReader, h.htlc.RHash[:],
+		onionReader, h.htlc.RHash[:], blindingInfo,
 	)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	payload, err := iterator.HopPayload()
+	payload, _, err := iterator.HopPayload()
 	if err != nil {
 		return nil, nil, err
 	}

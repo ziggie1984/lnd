@@ -418,7 +418,7 @@ func NewMessageInterceptionRequest(ctx context.Context,
 	case proto.Message:
 		req.ProtoSerialized, err = proto.Marshal(t)
 		if err != nil {
-			return nil, fmt.Errorf("cannot marshal proto msg: %v",
+			return nil, fmt.Errorf("cannot marshal proto msg: %w",
 				err)
 		}
 		req.ProtoTypeName = string(proto.MessageName(t))
@@ -586,11 +586,11 @@ func replaceProtoMsg(target interface{}, replacement interface{}) error {
 
 	replacementBytes, err := proto.Marshal(replacementMsg)
 	if err != nil {
-		return fmt.Errorf("error marshaling replacement: %v", err)
+		return fmt.Errorf("error marshaling replacement: %w", err)
 	}
 	err = proto.Unmarshal(replacementBytes, targetMsg)
 	if err != nil {
-		return fmt.Errorf("error unmarshaling replacement: %v", err)
+		return fmt.Errorf("error unmarshaling replacement: %w", err)
 	}
 
 	return nil

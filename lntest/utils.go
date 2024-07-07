@@ -13,6 +13,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntest/wait"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -212,8 +213,9 @@ func CalcStaticFee(c lnrpc.CommitmentType, numHTLCs int) btcutil.Amount {
 		anchors = anchorSize
 	}
 
-	return feePerKw.FeeForWeight(int64(commitWeight+htlcWeight*numHTLCs)) +
-		anchors
+	totalWeight := commitWeight + htlcWeight*numHTLCs
+
+	return feePerKw.FeeForWeight(lntypes.WeightUnit(totalWeight)) + anchors
 }
 
 // CalculateMaxHtlc re-implements the RequiredRemoteChannelReserve of the
@@ -225,4 +227,52 @@ func CalculateMaxHtlc(chanCap btcutil.Amount) uint64 {
 	max := lnwire.NewMSatFromSatoshis(chanCap) - reserve
 
 	return uint64(max)
+}
+
+// CalcStaticFeeBuffer calculates appropriate fee buffer which must be taken
+// into account when sending htlcs.
+func CalcStaticFeeBuffer(c lnrpc.CommitmentType, numHTLCs int) btcutil.Amount {
+	//nolint:lll
+	const (
+		htlcWeight         = input.HTLCWeight
+		defaultSatPerVByte = lnwallet.DefaultAnchorsCommitMaxFeeRateSatPerVByte
+		scale              = 1000
+	)
+
+	var (
+		commitWeight = input.CommitWeight
+		feePerKw     = chainfee.SatPerKWeight(DefaultFeeRateSatPerKw)
+	)
+
+	switch {
+	// The taproot commitment type has the extra anchor outputs, but also a
+	// smaller witness field (will just be a normal key spend), so we need
+	// to account for that here as well.
+	case CommitTypeHasTaproot(c):
+		feePerKw = chainfee.SatPerKVByte(
+			defaultSatPerVByte * scale,
+		).FeePerKWeight()
+
+		commitWeight = input.TaprootCommitWeight
+
+	// The anchor commitment type is slightly heavier, and we must also add
+	// the value of the two anchors to the resulting fee the initiator
+	// pays. In addition the fee rate is capped at 10 sat/vbyte for anchor
+	// channels.
+	case CommitTypeHasAnchors(c):
+		feePerKw = chainfee.SatPerKVByte(
+			defaultSatPerVByte * scale,
+		).FeePerKWeight()
+		commitWeight = input.AnchorCommitWeight
+	}
+
+	// Account for the HTLC which will be required when sending an htlc.
+	numHTLCs++
+
+	totalWeight := commitWeight + numHTLCs*htlcWeight
+	feeBuffer := lnwallet.CalcFeeBuffer(
+		feePerKw, lntypes.WeightUnit(totalWeight),
+	)
+
+	return feeBuffer.ToSatoshis()
 }

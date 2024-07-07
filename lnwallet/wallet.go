@@ -20,6 +20,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/wallet"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
@@ -62,6 +63,14 @@ var (
 	ErrReservedValueInvalidated = errors.New("reserved wallet balance " +
 		"invalidated: transaction would leave insufficient funds for " +
 		"fee bumping anchor channel closings (see debug log for details)")
+
+	// ErrEmptyPendingChanID is returned when an empty value is used for
+	// the pending channel ID.
+	ErrEmptyPendingChanID = errors.New("pending channel ID is empty")
+
+	// ErrDuplicatePendingChanID is returned when an existing pending
+	// channel ID is registered again.
+	ErrDuplicatePendingChanID = errors.New("duplicate pending channel ID")
 )
 
 // PsbtFundingRequired is a type that implements the error interface and
@@ -174,6 +183,15 @@ type InitFundingReserveMsg struct {
 	// specified, then the default chanfunding.WalletAssembler will be
 	// used.
 	ChanFunder chanfunding.Assembler
+
+	// AllowUtxoForFunding enables the channel funding workflow to restrict
+	// the selection of utxos when selecting the inputs for the channel
+	// opening. This does ONLY apply for the internal wallet backed channel
+	// opening case.
+	//
+	// NOTE: This is very useful when opening channels with unconfirmed
+	// inputs to make sure stable non-replaceable inputs are used.
+	AllowUtxoForFunding func(Utxo) bool
 
 	// ZeroConf is a boolean that is true if a zero-conf channel was
 	// negotiated.
@@ -579,7 +597,7 @@ func (l *LightningWallet) ResetReservations() {
 	l.reservationIDs = make(map[[32]byte]uint64)
 
 	for outpoint := range l.lockedOutPoints {
-		l.UnlockOutpoint(outpoint)
+		_ = l.ReleaseOutput(chanfunding.LndInternalLockID, outpoint)
 	}
 	l.lockedOutPoints = make(map[wire.OutPoint]struct{})
 }
@@ -670,9 +688,15 @@ func (l *LightningWallet) RegisterFundingIntent(expectedID [32]byte,
 	l.intentMtx.Lock()
 	defer l.intentMtx.Unlock()
 
+	// Sanity check the pending channel ID is not empty.
+	var zeroID [32]byte
+	if expectedID == zeroID {
+		return ErrEmptyPendingChanID
+	}
+
 	if _, ok := l.fundingIntents[expectedID]; ok {
-		return fmt.Errorf("pendingChanID(%x) already has intent "+
-			"registered", expectedID[:])
+		return fmt.Errorf("%w: already has intent registered: %v",
+			ErrDuplicatePendingChanID, expectedID[:])
 	}
 
 	l.fundingIntents[expectedID] = shimIntent
@@ -706,7 +730,7 @@ func (l *LightningWallet) PsbtFundingVerify(pendingChanID [32]byte,
 
 	err := psbtIntent.Verify(packet, skipFinalize)
 	if err != nil {
-		return fmt.Errorf("error verifying PSBT: %v", err)
+		return fmt.Errorf("error verifying PSBT: %w", err)
 	}
 
 	// Get the channel reservation for that corresponds to this pending
@@ -727,7 +751,7 @@ func (l *LightningWallet) PsbtFundingVerify(pendingChanID [32]byte,
 			"reservation ID %v", pid)
 	}
 
-	// Now the the PSBT has been populated and verified, we can again check
+	// Now the PSBT has been populated and verified, we can again check
 	// whether the value reserved for anchor fee bumping is respected.
 	isPublic := pendingReservation.partialState.ChannelFlags&lnwire.FFAnnounceChannel != 0
 	hasAnchors := pendingReservation.partialState.ChanType.HasAnchors()
@@ -758,13 +782,13 @@ func (l *LightningWallet) PsbtFundingFinalize(pid [32]byte, packet *psbt.Packet,
 	case packet != nil && rawTx == nil:
 		err := psbtIntent.Finalize(packet)
 		if err != nil {
-			return fmt.Errorf("error finalizing PSBT: %v", err)
+			return fmt.Errorf("error finalizing PSBT: %w", err)
 		}
 
 	case rawTx != nil && packet == nil:
 		err := psbtIntent.FinalizeRawTX(rawTx)
 		if err != nil {
-			return fmt.Errorf("error finalizing raw TX: %v", err)
+			return fmt.Errorf("error finalizing raw TX: %w", err)
 		}
 
 	default:
@@ -834,11 +858,16 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 		// P2WPKH dust limit and to avoid threading through two
 		// different dust limits.
 		cfg := chanfunding.WalletConfig{
-			CoinSource:       &CoinSource{l},
+			CoinSource: NewCoinSource(
+				l, req.AllowUtxoForFunding,
+			),
 			CoinSelectLocker: l,
-			CoinLocker:       l,
+			CoinLeaser:       l,
 			Signer:           l.Cfg.Signer,
-			DustLimit:        DustLimitForSize(input.P2WSHSize),
+			DustLimit: DustLimitForSize(
+				input.P2WSHSize,
+			),
+			CoinSelectionStrategy: l.Cfg.CoinSelectionStrategy,
 		}
 		req.ChanFunder = chanfunding.NewWalletAssembler(cfg)
 	} else {
@@ -1131,7 +1160,7 @@ func (l *LightningWallet) CurrentNumAnchorChans() (int, error) {
 // CheckReservedValue checks whether publishing a transaction with the given
 // inputs and outputs would violate the value we reserve in the wallet for
 // bumping the fee of anchor channels. The numAnchorChans argument should be
-// set the the number of open anchor channels controlled by the wallet after
+// set the number of open anchor channels controlled by the wallet after
 // the transaction has been published.
 //
 // If the reserved value is violated, the returned error will be
@@ -1349,7 +1378,8 @@ func (l *LightningWallet) initOurContribution(reservation *ChannelReservation,
 	)
 
 	reservation.partialState.RevocationProducer = producer
-	reservation.ourContribution.ChannelConstraints = l.Cfg.DefaultConstraints
+	reservation.ourContribution.ChannelConstraints.DustLimit =
+		DustLimitUnknownWitness()
 
 	// If taproot channels are active, then we'll generate our verification
 	// nonce here. We'll use this nonce to verify the signature for our
@@ -1406,7 +1436,10 @@ func (l *LightningWallet) handleFundingCancelRequest(req *fundingReserveCancelMs
 	// requests.
 	for _, unusedInput := range pendingReservation.ourContribution.Inputs {
 		delete(l.lockedOutPoints, unusedInput.PreviousOutPoint)
-		l.UnlockOutpoint(unusedInput.PreviousOutPoint)
+		_ = l.ReleaseOutput(
+			chanfunding.LndInternalLockID,
+			unusedInput.PreviousOutPoint,
+		)
 	}
 
 	// TODO(roasbeef): is it even worth it to keep track of unused keys?
@@ -1535,7 +1568,8 @@ func (l *LightningWallet) handleContributionMsg(req *addContributionMsg) {
 	case *chanfunding.ShimIntent:
 		chanPoint, err = fundingIntent.ChanPoint()
 		if err != nil {
-			req.err <- fmt.Errorf("unable to obtain chan point: %v", err)
+			req.err <- fmt.Errorf("unable to obtain chan point: %w",
+				err)
 			return
 		}
 
@@ -1977,7 +2011,8 @@ func (l *LightningWallet) verifyFundingInputs(fundingTx *wire.MsgTx,
 				txin.SignatureScript, txin.Witness,
 			)
 			if err != nil {
-				return fmt.Errorf("cannot create script: %v", err)
+				return fmt.Errorf("cannot create script: %w",
+					err)
 			}
 			output, err := l.Cfg.ChainIO.GetUtxo(
 				&txin.PreviousOutPoint,
@@ -2501,18 +2536,22 @@ func (l *LightningWallet) CancelRebroadcast(txid chainhash.Hash) {
 // CoinSource is a wrapper around the wallet that implements the
 // chanfunding.CoinSource interface.
 type CoinSource struct {
-	wallet *LightningWallet
+	wallet    *LightningWallet
+	allowUtxo func(Utxo) bool
 }
 
 // NewCoinSource creates a new instance of the CoinSource wrapper struct.
-func NewCoinSource(w *LightningWallet) *CoinSource {
-	return &CoinSource{wallet: w}
+func NewCoinSource(w *LightningWallet, allowUtxo func(Utxo) bool) *CoinSource {
+	return &CoinSource{
+		wallet:    w,
+		allowUtxo: allowUtxo,
+	}
 }
 
 // ListCoins returns all UTXOs from the source that have between
 // minConfs and maxConfs number of confirmations.
 func (c *CoinSource) ListCoins(minConfs int32,
-	maxConfs int32) ([]chanfunding.Coin, error) {
+	maxConfs int32) ([]wallet.Coin, error) {
 
 	utxos, err := c.wallet.ListUnspentWitnessFromDefaultAccount(
 		minConfs, maxConfs,
@@ -2521,9 +2560,20 @@ func (c *CoinSource) ListCoins(minConfs int32,
 		return nil, err
 	}
 
-	var coins []chanfunding.Coin
+	var coins []wallet.Coin
+
 	for _, utxo := range utxos {
-		coins = append(coins, chanfunding.Coin{
+		// If there is a filter function supplied all utxos not adhering
+		// to these conditions will be discared.
+		if c.allowUtxo != nil && !c.allowUtxo(*utxo) {
+			walletLog.Infof("Cannot use unconfirmed "+
+				"utxo=%v because it is unstable and could be "+
+				"replaced", utxo.OutPoint)
+
+			continue
+		}
+
+		coins = append(coins, wallet.Coin{
 			TxOut: wire.TxOut{
 				Value:    int64(utxo.Value),
 				PkScript: utxo.PkScript,
@@ -2538,13 +2588,13 @@ func (c *CoinSource) ListCoins(minConfs int32,
 // CoinFromOutPoint attempts to locate details pertaining to a coin based on
 // its outpoint. If the coin isn't under the control of the backing CoinSource,
 // then an error should be returned.
-func (c *CoinSource) CoinFromOutPoint(op wire.OutPoint) (*chanfunding.Coin, error) {
+func (c *CoinSource) CoinFromOutPoint(op wire.OutPoint) (*wallet.Coin, error) {
 	inputInfo, err := c.wallet.FetchInputInfo(&op)
 	if err != nil {
 		return nil, err
 	}
 
-	return &chanfunding.Coin{
+	return &wallet.Coin{
 		TxOut: wire.TxOut{
 			Value:    int64(inputInfo.Value),
 			PkScript: inputInfo.PkScript,

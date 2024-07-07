@@ -16,9 +16,9 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/watchtower"
+	"github.com/lightningnetwork/lnd/watchtower/blob"
 	"github.com/lightningnetwork/lnd/watchtower/wtclient"
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
-	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
@@ -41,6 +41,14 @@ var (
 			Action: "write",
 		}},
 		"/wtclientrpc.WatchtowerClient/RemoveTower": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
+		"/wtclientrpc.WatchtowerClient/DeactivateTower": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
+		"/wtclientrpc.WatchtowerClient/TerminateSession": {{
 			Entity: "offchain",
 			Action: "write",
 		}},
@@ -200,7 +208,8 @@ func (c *WatchtowerClient) AddTower(ctx context.Context,
 		c.cfg.Resolver,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("invalid address %v: %v", req.Address, err)
+		return nil, fmt.Errorf("invalid address %v: %w", req.Address,
+			err)
 	}
 
 	towerAddr := &lnwire.NetAddress{
@@ -208,11 +217,7 @@ func (c *WatchtowerClient) AddTower(ctx context.Context,
 		Address:     addr,
 	}
 
-	// TODO(conner): make atomic via multiplexed client
-	if err := c.cfg.Client.AddTower(towerAddr); err != nil {
-		return nil, err
-	}
-	if err := c.cfg.AnchorClient.AddTower(towerAddr); err != nil {
+	if err := c.cfg.ClientMgr.AddTower(towerAddr); err != nil {
 		return nil, err
 	}
 
@@ -247,17 +252,65 @@ func (c *WatchtowerClient) RemoveTower(ctx context.Context,
 		}
 	}
 
-	// TODO(conner): make atomic via multiplexed client
-	err = c.cfg.Client.RemoveTower(pubKey, addr)
-	if err != nil {
-		return nil, err
-	}
-	err = c.cfg.AnchorClient.RemoveTower(pubKey, addr)
+	err = c.cfg.ClientMgr.RemoveTower(pubKey, addr)
 	if err != nil {
 		return nil, err
 	}
 
 	return &RemoveTowerResponse{}, nil
+}
+
+// DeactivateTower sets the given tower's status to inactive so that it is not
+// considered for session negotiation. Its sessions will also not be used while
+// the tower is inactive.
+func (c *WatchtowerClient) DeactivateTower(_ context.Context,
+	req *DeactivateTowerRequest) (*DeactivateTowerResponse, error) {
+
+	if err := c.isActive(); err != nil {
+		return nil, err
+	}
+
+	pubKey, err := btcec.ParsePubKey(req.Pubkey)
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.cfg.ClientMgr.DeactivateTower(pubKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DeactivateTowerResponse{
+		Status: fmt.Sprintf("Successful deactivation of tower: %x",
+			req.Pubkey),
+	}, nil
+}
+
+// TerminateSession terminates the given session and marks it as terminal so
+// that it is never used again.
+func (c *WatchtowerClient) TerminateSession(_ context.Context,
+	req *TerminateSessionRequest) (*TerminateSessionResponse, error) {
+
+	if err := c.isActive(); err != nil {
+		return nil, err
+	}
+
+	pubKey, err := btcec.ParsePubKey(req.SessionId)
+	if err != nil {
+		return nil, err
+	}
+
+	sessionID := wtdb.NewSessionIDFromPubKey(pubKey)
+
+	err = c.cfg.ClientMgr.TerminateSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TerminateSessionResponse{
+		Status: fmt.Sprintf("Successful termination of session: %s",
+			sessionID),
+	}, nil
 }
 
 // ListTowers returns the list of watchtowers registered with the client.
@@ -272,23 +325,7 @@ func (c *WatchtowerClient) ListTowers(ctx context.Context,
 		req.IncludeSessions, req.ExcludeExhaustedSessions,
 	)
 
-	anchorTowers, err := c.cfg.AnchorClient.RegisteredTowers(opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Collect all the anchor client towers.
-	rpcTowers := make(map[wtdb.TowerID]*Tower)
-	for _, tower := range anchorTowers {
-		rpcTower := marshallTower(
-			tower, PolicyType_ANCHOR, req.IncludeSessions,
-			ackCounts, committedUpdateCounts,
-		)
-
-		rpcTowers[tower.ID] = rpcTower
-	}
-
-	legacyTowers, err := c.cfg.Client.RegisteredTowers(opts...)
+	towersPerBlobType, err := c.cfg.ClientMgr.RegisteredTowers(opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -296,20 +333,32 @@ func (c *WatchtowerClient) ListTowers(ctx context.Context,
 	// Collect all the legacy client towers. If it has any of the same
 	// towers that the anchors client has, then just add the session info
 	// for the legacy client to the existing tower.
-	for _, tower := range legacyTowers {
-		rpcTower := marshallTower(
-			tower, PolicyType_LEGACY, req.IncludeSessions,
-			ackCounts, committedUpdateCounts,
-		)
-
-		t, ok := rpcTowers[tower.ID]
-		if !ok {
-			rpcTowers[tower.ID] = rpcTower
-			continue
+	rpcTowers := make(map[wtdb.TowerID]*Tower)
+	for blobType, towers := range towersPerBlobType {
+		policyType, err := blobTypeToPolicyType(blobType)
+		if err != nil {
+			return nil, err
 		}
 
-		t.SessionInfo = append(t.SessionInfo, rpcTower.SessionInfo...)
-		t.Sessions = append(t.Sessions, rpcTower.Sessions...)
+		for _, tower := range towers {
+			rpcTower := marshallTower(
+				tower, policyType, req.IncludeSessions,
+				ackCounts, committedUpdateCounts,
+			)
+
+			t, ok := rpcTowers[tower.ID]
+			if !ok {
+				rpcTowers[tower.ID] = rpcTower
+				continue
+			}
+
+			t.SessionInfo = append(
+				t.SessionInfo, rpcTower.SessionInfo...,
+			)
+			t.Sessions = append(
+				t.Sessions, rpcTower.Sessions...,
+			)
+		}
 	}
 
 	towers := make([]*Tower, 0, len(rpcTowers))
@@ -337,40 +386,42 @@ func (c *WatchtowerClient) GetTowerInfo(ctx context.Context,
 		req.IncludeSessions, req.ExcludeExhaustedSessions,
 	)
 
-	// Get the tower and its sessions from anchors client.
-	tower, err := c.cfg.AnchorClient.LookupTower(pubKey, opts...)
-	if err != nil {
-		return nil, err
-	}
-	rpcTower := marshallTower(
-		tower, PolicyType_ANCHOR, req.IncludeSessions, ackCounts,
-		committedUpdateCounts,
-	)
-
-	// Get the tower and its sessions from legacy client.
-	tower, err = c.cfg.Client.LookupTower(pubKey, opts...)
+	towersPerBlobType, err := c.cfg.ClientMgr.LookupTower(pubKey, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	rpcLegacyTower := marshallTower(
-		tower, PolicyType_LEGACY, req.IncludeSessions, ackCounts,
-		committedUpdateCounts,
-	)
+	var resTower *Tower
+	for blobType, tower := range towersPerBlobType {
+		policyType, err := blobTypeToPolicyType(blobType)
+		if err != nil {
+			return nil, err
+		}
 
-	if !bytes.Equal(rpcTower.Pubkey, rpcLegacyTower.Pubkey) {
-		return nil, fmt.Errorf("legacy and anchor clients returned " +
-			"inconsistent results for the given tower")
+		rpcTower := marshallTower(
+			tower, policyType, req.IncludeSessions,
+			ackCounts, committedUpdateCounts,
+		)
+
+		if resTower == nil {
+			resTower = rpcTower
+			continue
+		}
+
+		if !bytes.Equal(rpcTower.Pubkey, resTower.Pubkey) {
+			return nil, fmt.Errorf("tower clients returned " +
+				"inconsistent results for the given tower")
+		}
+
+		resTower.SessionInfo = append(
+			resTower.SessionInfo, rpcTower.SessionInfo...,
+		)
+		resTower.Sessions = append(
+			resTower.Sessions, rpcTower.Sessions...,
+		)
 	}
 
-	rpcTower.SessionInfo = append(
-		rpcTower.SessionInfo, rpcLegacyTower.SessionInfo...,
-	)
-	rpcTower.Sessions = append(
-		rpcTower.Sessions, rpcLegacyTower.Sessions...,
-	)
-
-	return rpcTower, nil
+	return resTower, nil
 }
 
 // constructFunctionalOptions is a helper function that constructs a list of
@@ -422,30 +473,14 @@ func constructFunctionalOptions(includeSessions,
 }
 
 // Stats returns the in-memory statistics of the client since startup.
-func (c *WatchtowerClient) Stats(ctx context.Context,
-	req *StatsRequest) (*StatsResponse, error) {
+func (c *WatchtowerClient) Stats(_ context.Context,
+	_ *StatsRequest) (*StatsResponse, error) {
 
 	if err := c.isActive(); err != nil {
 		return nil, err
 	}
 
-	clientStats := []wtclient.ClientStats{
-		c.cfg.Client.Stats(),
-		c.cfg.AnchorClient.Stats(),
-	}
-
-	var stats wtclient.ClientStats
-	for i := range clientStats {
-		// Grab a reference to the slice index rather than copying bc
-		// ClientStats contains a lock which cannot be copied by value.
-		stat := &clientStats[i]
-
-		stats.NumTasksAccepted += stat.NumTasksAccepted
-		stats.NumTasksIneligible += stat.NumTasksIneligible
-		stats.NumTasksPending += stat.NumTasksPending
-		stats.NumSessionsAcquired += stat.NumSessionsAcquired
-		stats.NumSessionsExhausted += stat.NumSessionsExhausted
-	}
+	stats := c.cfg.ClientMgr.Stats()
 
 	return &StatsResponse{
 		NumBackups:           uint32(stats.NumTasksAccepted),
@@ -464,27 +499,22 @@ func (c *WatchtowerClient) Policy(ctx context.Context,
 		return nil, err
 	}
 
-	var policy wtpolicy.Policy
-	switch req.PolicyType {
-	case PolicyType_LEGACY:
-		policy = c.cfg.Client.Policy()
-	case PolicyType_ANCHOR:
-		policy = c.cfg.AnchorClient.Policy()
-	default:
-		return nil, fmt.Errorf("unknown policy type: %v",
-			req.PolicyType)
+	blobType, err := policyTypeToBlobType(req.PolicyType)
+	if err != nil {
+		return nil, err
+	}
+
+	policy, err := c.cfg.ClientMgr.Policy(blobType)
+	if err != nil {
+		return nil, err
 	}
 
 	return &PolicyResponse{
-		MaxUpdates: uint32(policy.MaxUpdates),
-		SweepSatPerVbyte: uint32(
-			policy.SweepFeeRate.FeePerKVByte() / 1000,
-		),
+		MaxUpdates:       uint32(policy.MaxUpdates),
+		SweepSatPerVbyte: uint32(policy.SweepFeeRate.FeePerVByte()),
 
 		// Deprecated field.
-		SweepSatPerByte: uint32(
-			policy.SweepFeeRate.FeePerKVByte() / 1000,
-		),
+		SweepSatPerByte: uint32(policy.SweepFeeRate.FeePerVByte()),
 	}, nil
 }
 
@@ -519,8 +549,9 @@ func marshallTower(tower *wtclient.RegisteredTower, policyType PolicyType,
 
 		rpcSessions = make([]*TowerSession, 0, len(tower.Sessions))
 		for _, session := range sessions {
-			satPerVByte := session.Policy.SweepFeeRate.FeePerKVByte() / 1000
+			satPerVByte := session.Policy.SweepFeeRate.FeePerVByte()
 			rpcSessions = append(rpcSessions, &TowerSession{
+				Id:                session.ID[:],
 				NumBackups:        uint32(ackCounts[session.ID]),
 				NumPendingBackups: uint32(pendingCounts[session.ID]),
 				MaxBackups:        uint32(session.Policy.MaxUpdates),
@@ -550,4 +581,36 @@ func marshallTower(tower *wtclient.RegisteredTower, policyType PolicyType,
 	}
 
 	return rpcTower
+}
+
+func blobTypeToPolicyType(t blob.Type) (PolicyType, error) {
+	switch t {
+	case blob.TypeAltruistTaprootCommit:
+		return PolicyType_TAPROOT, nil
+
+	case blob.TypeAltruistAnchorCommit:
+		return PolicyType_ANCHOR, nil
+
+	case blob.TypeAltruistCommit:
+		return PolicyType_LEGACY, nil
+
+	default:
+		return 0, fmt.Errorf("unknown blob type: %s", t)
+	}
+}
+
+func policyTypeToBlobType(t PolicyType) (blob.Type, error) {
+	switch t {
+	case PolicyType_TAPROOT:
+		return blob.TypeAltruistTaprootCommit, nil
+
+	case PolicyType_ANCHOR:
+		return blob.TypeAltruistAnchorCommit, nil
+
+	case PolicyType_LEGACY:
+		return blob.TypeAltruistCommit, nil
+
+	default:
+		return 0, fmt.Errorf("unknown policy type: %s", t)
+	}
 }

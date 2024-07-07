@@ -14,6 +14,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntest"
 	"github.com/lightningnetwork/lnd/lntest/node"
 	"github.com/lightningnetwork/lnd/lntest/rpc"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/stretchr/testify/require"
 )
 
@@ -821,4 +822,66 @@ func testSimpleTaprootChannelActivation(ht *lntest.HarnessTest) {
 
 	// Our test is done and Alice closes her channel to Bob.
 	ht.CloseChannel(alice, chanPoint)
+}
+
+// testOpenChannelLockedBalance tests that when a funding reservation is
+// made for opening a channel, the balance of the required outputs shows
+// up as locked balance in the WalletBalance response.
+func testOpenChannelLockedBalance(ht *lntest.HarnessTest) {
+	var (
+		bob = ht.Bob
+		req *lnrpc.ChannelAcceptRequest
+		err error
+	)
+
+	// Create a new node so we can assert exactly how much fund has been
+	// locked later.
+	alice := ht.NewNode("alice", nil)
+	ht.FundCoins(btcutil.SatoshiPerBitcoin, alice)
+
+	// Connect the nodes.
+	ht.EnsureConnected(alice, bob)
+
+	// We first make sure Alice has no locked wallet balance.
+	balance := alice.RPC.WalletBalance()
+	require.EqualValues(ht, 0, balance.LockedBalance)
+
+	// Next, we register a ChannelAcceptor on Bob. This way, we can get
+	// Alice's wallet balance after coin selection is done and outpoints
+	// are locked.
+	stream, cancel := bob.RPC.ChannelAcceptor()
+	defer cancel()
+
+	// Then, we request creation of a channel from Alice to Bob. We don't
+	// use OpenChannelSync since we want to receive Bob's message in the
+	// same goroutine.
+	openChannelReq := &lnrpc.OpenChannelRequest{
+		NodePubkey:         bob.PubKey[:],
+		LocalFundingAmount: int64(funding.MaxBtcFundingAmount),
+		TargetConf:         6,
+	}
+	_ = alice.RPC.OpenChannel(openChannelReq)
+
+	// After that, we receive the request on Bob's side, get the wallet
+	// balance from Alice, and ensure the locked balance is non-zero.
+	err = wait.NoError(func() error {
+		req, err = stream.Recv()
+		return err
+	}, defaultTimeout)
+	require.NoError(ht, err)
+
+	ht.AssertWalletLockedBalance(alice, btcutil.SatoshiPerBitcoin)
+
+	// Next, we let Bob deny the request.
+	resp := &lnrpc.ChannelAcceptResponse{
+		Accept:        false,
+		PendingChanId: req.PendingChanId,
+	}
+	err = wait.NoError(func() error {
+		return stream.Send(resp)
+	}, defaultTimeout)
+	require.NoError(ht, err)
+
+	// Finally, we check to make sure the balance is unlocked again.
+	ht.AssertWalletLockedBalance(alice, 0)
 }

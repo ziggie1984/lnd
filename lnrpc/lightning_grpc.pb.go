@@ -102,6 +102,11 @@ type LightningClient interface {
 	// it's identity pubkey, alias, the chains it is connected to, and information
 	// concerning the number of open+pending channels.
 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+	// lncli: 'getdebuginfo'
+	// GetDebugInfo returns debug information concerning the state of the daemon
+	// and its subsystems. This includes the full configuration and the latest log
+	// entries from the log file.
+	GetDebugInfo(ctx context.Context, in *GetDebugInfoRequest, opts ...grpc.CallOption) (*GetDebugInfoResponse, error)
 	// * lncli: `getrecoveryinfo`
 	// GetRecoveryInfo returns information concerning the recovery mode including
 	// whether it's in a recovery mode, whether the recovery is finished, and the
@@ -228,7 +233,7 @@ type LightningClient interface {
 	// optionally specify the add_index and/or the settle_index. If the add_index
 	// is specified, then we'll first start by sending add invoice events for all
 	// invoices with an add_index greater than the specified value. If the
-	// settle_index is specified, the next, we'll send out all settle events for
+	// settle_index is specified, then next, we'll send out all settle events for
 	// invoices with a settle_index greater than the specified value. One or both
 	// of these fields can be set. If no fields are set, then we'll only send out
 	// the latest add/settle events.
@@ -241,9 +246,11 @@ type LightningClient interface {
 	// lncli: `listpayments`
 	// ListPayments returns a list of all outgoing payments.
 	ListPayments(ctx context.Context, in *ListPaymentsRequest, opts ...grpc.CallOption) (*ListPaymentsResponse, error)
+	// lncli: `deletepayments`
 	// DeletePayment deletes an outgoing payment from DB. Note that it will not
 	// attempt to delete an In-Flight payment, since that would be unsafe.
 	DeletePayment(ctx context.Context, in *DeletePaymentRequest, opts ...grpc.CallOption) (*DeletePaymentResponse, error)
+	// lncli: `deletepayments --all`
 	// DeleteAllPayments deletes all outgoing payments from DB. Note that it will
 	// not attempt to delete In-Flight payments, since that would be unsafe.
 	DeleteAllPayments(ctx context.Context, in *DeleteAllPaymentsRequest, opts ...grpc.CallOption) (*DeleteAllPaymentsResponse, error)
@@ -337,6 +344,7 @@ type LightningClient interface {
 	// as well, which contains a single encrypted blob containing the backups of
 	// each channel.
 	ExportAllChannelBackups(ctx context.Context, in *ChanBackupExportRequest, opts ...grpc.CallOption) (*ChanBackupSnapshot, error)
+	// lncli: `verifychanbackup`
 	// VerifyChanBackup allows a caller to verify the integrity of a channel backup
 	// snapshot. This method will accept either a packed Single or a packed Multi.
 	// Specifying both will result in an error.
@@ -602,6 +610,15 @@ func (x *lightningSubscribePeerEventsClient) Recv() (*PeerEvent, error) {
 func (c *lightningClient) GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error) {
 	out := new(GetInfoResponse)
 	err := c.cc.Invoke(ctx, "/lnrpc.Lightning/GetInfo", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *lightningClient) GetDebugInfo(ctx context.Context, in *GetDebugInfoRequest, opts ...grpc.CallOption) (*GetDebugInfoResponse, error) {
+	out := new(GetDebugInfoResponse)
+	err := c.cc.Invoke(ctx, "/lnrpc.Lightning/GetDebugInfo", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1406,6 +1423,11 @@ type LightningServer interface {
 	// it's identity pubkey, alias, the chains it is connected to, and information
 	// concerning the number of open+pending channels.
 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+	// lncli: 'getdebuginfo'
+	// GetDebugInfo returns debug information concerning the state of the daemon
+	// and its subsystems. This includes the full configuration and the latest log
+	// entries from the log file.
+	GetDebugInfo(context.Context, *GetDebugInfoRequest) (*GetDebugInfoResponse, error)
 	// * lncli: `getrecoveryinfo`
 	// GetRecoveryInfo returns information concerning the recovery mode including
 	// whether it's in a recovery mode, whether the recovery is finished, and the
@@ -1532,7 +1554,7 @@ type LightningServer interface {
 	// optionally specify the add_index and/or the settle_index. If the add_index
 	// is specified, then we'll first start by sending add invoice events for all
 	// invoices with an add_index greater than the specified value. If the
-	// settle_index is specified, the next, we'll send out all settle events for
+	// settle_index is specified, then next, we'll send out all settle events for
 	// invoices with a settle_index greater than the specified value. One or both
 	// of these fields can be set. If no fields are set, then we'll only send out
 	// the latest add/settle events.
@@ -1545,9 +1567,11 @@ type LightningServer interface {
 	// lncli: `listpayments`
 	// ListPayments returns a list of all outgoing payments.
 	ListPayments(context.Context, *ListPaymentsRequest) (*ListPaymentsResponse, error)
+	// lncli: `deletepayments`
 	// DeletePayment deletes an outgoing payment from DB. Note that it will not
 	// attempt to delete an In-Flight payment, since that would be unsafe.
 	DeletePayment(context.Context, *DeletePaymentRequest) (*DeletePaymentResponse, error)
+	// lncli: `deletepayments --all`
 	// DeleteAllPayments deletes all outgoing payments from DB. Note that it will
 	// not attempt to delete In-Flight payments, since that would be unsafe.
 	DeleteAllPayments(context.Context, *DeleteAllPaymentsRequest) (*DeleteAllPaymentsResponse, error)
@@ -1641,6 +1665,7 @@ type LightningServer interface {
 	// as well, which contains a single encrypted blob containing the backups of
 	// each channel.
 	ExportAllChannelBackups(context.Context, *ChanBackupExportRequest) (*ChanBackupSnapshot, error)
+	// lncli: `verifychanbackup`
 	// VerifyChanBackup allows a caller to verify the integrity of a channel backup
 	// snapshot. This method will accept either a packed Single or a packed Multi.
 	// Specifying both will result in an error.
@@ -1766,6 +1791,9 @@ func (UnimplementedLightningServer) SubscribePeerEvents(*PeerEventSubscription, 
 }
 func (UnimplementedLightningServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetInfo not implemented")
+}
+func (UnimplementedLightningServer) GetDebugInfo(context.Context, *GetDebugInfoRequest) (*GetDebugInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetDebugInfo not implemented")
 }
 func (UnimplementedLightningServer) GetRecoveryInfo(context.Context, *GetRecoveryInfoRequest) (*GetRecoveryInfoResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRecoveryInfo not implemented")
@@ -2223,6 +2251,24 @@ func _Lightning_GetInfo_Handler(srv interface{}, ctx context.Context, dec func(i
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LightningServer).GetInfo(ctx, req.(*GetInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Lightning_GetDebugInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDebugInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LightningServer).GetDebugInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/lnrpc.Lightning/GetDebugInfo",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LightningServer).GetDebugInfo(ctx, req.(*GetDebugInfoRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3260,6 +3306,10 @@ var Lightning_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInfo",
 			Handler:    _Lightning_GetInfo_Handler,
+		},
+		{
+			MethodName: "GetDebugInfo",
+			Handler:    _Lightning_GetDebugInfo_Handler,
 		},
 		{
 			MethodName: "GetRecoveryInfo",

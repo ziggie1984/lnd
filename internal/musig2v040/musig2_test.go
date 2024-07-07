@@ -10,7 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"sync"
 	"testing"
 
@@ -256,7 +256,7 @@ func TestMuSig2KeyAggTestVectors(t *testing.T) {
 
 		var formattedJson bytes.Buffer
 		json.Indent(&formattedJson, jsonBytes, "", "\t")
-		err = ioutil.WriteFile(
+		err = os.WriteFile(
 			keyAggTestVectorName, formattedJson.Bytes(), 0644,
 		)
 		if err != nil {
@@ -268,7 +268,7 @@ func TestMuSig2KeyAggTestVectors(t *testing.T) {
 func mustParseHex(str string) []byte {
 	b, err := hex.DecodeString(str)
 	if err != nil {
-		panic(fmt.Errorf("unable to parse hex: %v", err))
+		panic(fmt.Errorf("unable to parse hex: %w", err))
 	}
 
 	return b
@@ -656,7 +656,7 @@ func TestMuSig2SigningTestVectors(t *testing.T) {
 
 		var formattedJson bytes.Buffer
 		json.Indent(&formattedJson, jsonBytes, "", "\t")
-		err = ioutil.WriteFile(
+		err = os.WriteFile(
 			signTestVectorName, formattedJson.Bytes(), 0644,
 		)
 		if err != nil {
@@ -1281,7 +1281,7 @@ func TestMuSigEarlyNonce(t *testing.T) {
 
 	msg := sha256.Sum256([]byte("let's get taprooty, LN style"))
 
-	// If we try to sign before we have the combined nonce, we shoudl get
+	// If we try to sign before we have the combined nonce, we should get
 	// an error.
 	_, err = session1.Sign(msg)
 	if !errors.Is(err, ErrCombinedNonceUnavailable) {
@@ -1540,7 +1540,7 @@ func TestMusig2AggregateNoncesTestVectors(t *testing.T) {
 
 		var formattedJson bytes.Buffer
 		json.Indent(&formattedJson, jsonBytes, "", "\t")
-		err = ioutil.WriteFile(
+		err = os.WriteFile(
 			nonceAggTestVectorName, formattedJson.Bytes(), 0644,
 		)
 		if err != nil {
@@ -1868,10 +1868,10 @@ func getInfinityBytes() []byte {
 func mustParseHex32(str string) [32]byte {
 	b, err := hex.DecodeString(str)
 	if err != nil {
-		panic(fmt.Errorf("unable to parse hex: %v", err))
+		panic(fmt.Errorf("unable to parse hex: %w", err))
 	}
 	if len(b) != 32 {
-		panic(fmt.Errorf("not a 32 byte slice: %v", err))
+		panic(fmt.Errorf("not a 32 byte slice: %w", err))
 	}
 
 	return to32ByteSlice(b)
@@ -1880,10 +1880,10 @@ func mustParseHex32(str string) [32]byte {
 func mustParsePubNonce(str string) [PubNonceSize]byte {
 	b, err := hex.DecodeString(str)
 	if err != nil {
-		panic(fmt.Errorf("unable to parse hex: %v", err))
+		panic(fmt.Errorf("unable to parse hex: %w", err))
 	}
 	if len(b) != PubNonceSize {
-		panic(fmt.Errorf("not a public nonce: %v", err))
+		panic(fmt.Errorf("not a public nonce: %w", err))
 	}
 	return toPubNonceSlice(b)
 }
@@ -1891,7 +1891,7 @@ func mustParsePubNonce(str string) [PubNonceSize]byte {
 func canParsePubNonce(str string) [PubNonceSize]byte {
 	b, err := hex.DecodeString(str)
 	if err != nil {
-		panic(fmt.Errorf("unable to parse hex: %v", err))
+		panic(fmt.Errorf("unable to parse hex: %w", err))
 	}
 	return toPubNonceSlice(b)
 }

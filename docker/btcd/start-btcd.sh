@@ -10,14 +10,14 @@ error() {
     exit 0
 }
 
-# return is used within bash function in order to return the value.
+# return is used within the bash function in order to return the value.
 return() {
     echo "$1"
 }
 
 # set_default function gives the ability to move the setting of default
 # env variable from docker file to the script thereby giving the ability to the
-# user override it durin container start.
+# user to override it during container start.
 set_default() {
     # docker initialized env variables with blank string and we can't just
     # use -z flag as usually.
@@ -41,7 +41,7 @@ set_default() {
 # Set default variables if needed.
 RPCUSER=$(set_default "$RPCUSER" "devuser")
 RPCPASS=$(set_default "$RPCPASS" "devpass")
-DEBUG=$(set_default "$DEBUG" "info")
+DEBUG=$(set_default "$BTCD_DEBUG" "info")
 NETWORK=$(set_default "$NETWORK" "simnet")
 
 PARAMS=""
@@ -66,7 +66,7 @@ if [[ -n "$MINING_ADDRESS" ]]; then
     PARAMS="$PARAMS --miningaddr=$MINING_ADDRESS"
 fi
 
-# Add user parameters to command.
+# Add user parameters to the command.
 PARAMS="$PARAMS $@"
 
 # Print command and start bitcoin node.

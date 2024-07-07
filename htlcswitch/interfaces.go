@@ -1,11 +1,12 @@
 package htlcswitch
 
 import (
+	"context"
+
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/invoices"
-	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -17,7 +18,7 @@ import (
 type InvoiceDatabase interface {
 	// LookupInvoice attempts to look up an invoice according to its 32
 	// byte payment hash.
-	LookupInvoice(lntypes.Hash) (invoices.Invoice, error)
+	LookupInvoice(context.Context, lntypes.Hash) (invoices.Invoice, error)
 
 	// NotifyExitHopHtlc attempts to mark an invoice as settled. If the
 	// invoice is a debug invoice, then this method is a noop as debug
@@ -33,10 +34,10 @@ type InvoiceDatabase interface {
 
 	// CancelInvoice attempts to cancel the invoice corresponding to the
 	// passed payment hash.
-	CancelInvoice(payHash lntypes.Hash) error
+	CancelInvoice(ctx context.Context, payHash lntypes.Hash) error
 
 	// SettleHodlInvoice settles a hold invoice.
-	SettleHodlInvoice(preimage lntypes.Preimage) error
+	SettleHodlInvoice(ctx context.Context, preimage lntypes.Preimage) error
 
 	// HodlUnsubscribeAll unsubscribes from all htlc resolutions.
 	HodlUnsubscribeAll(subscriber chan<- interface{})
@@ -132,11 +133,56 @@ type ChannelUpdateHandler interface {
 	// parameter.
 	MayAddOutgoingHtlc(lnwire.MilliSatoshi) error
 
-	// ShutdownIfChannelClean shuts the link down if the channel state is
-	// clean. This can be used with dynamic commitment negotiation or coop
-	// close negotiation which require a clean channel state.
-	ShutdownIfChannelClean() error
+	// EnableAdds sets the ChannelUpdateHandler state to allow
+	// UpdateAddHtlc's in the specified direction. It returns true if the
+	// state was changed and false if the desired state was already set
+	// before the method was called.
+	EnableAdds(direction LinkDirection) bool
+
+	// DisableAdds sets the ChannelUpdateHandler state to allow
+	// UpdateAddHtlc's in the specified direction. It returns true if the
+	// state was changed and false if the desired state was already set
+	// before the method was called.
+	DisableAdds(direction LinkDirection) bool
+
+	// IsFlushing returns true when UpdateAddHtlc's are disabled in the
+	// direction of the argument.
+	IsFlushing(direction LinkDirection) bool
+
+	// OnFlushedOnce adds a hook that will be called the next time the
+	// channel state reaches zero htlcs. This hook will only ever be called
+	// once. If the channel state already has zero htlcs, then this will be
+	// called immediately.
+	OnFlushedOnce(func())
+
+	// OnCommitOnce adds a hook that will be called the next time a
+	// CommitSig message is sent in the argument's LinkDirection. This hook
+	// will only ever be called once. If no CommitSig is owed in the
+	// argument's LinkDirection, then we will call this hook immediately.
+	OnCommitOnce(LinkDirection, func())
 }
+
+// CommitHookID is a value that is used to uniquely identify hooks in the
+// ChannelUpdateHandler's commitment update lifecycle. You should never need to
+// construct one of these by hand, nor should you try.
+type CommitHookID uint64
+
+// FlushHookID is a value that is used to uniquely identify hooks in the
+// ChannelUpdateHandler's flush lifecycle. You should never need to construct
+// one of these by hand, nor should you try.
+type FlushHookID uint64
+
+// LinkDirection is used to query and change any link state on a per-direction
+// basis.
+type LinkDirection bool
+
+const (
+	// Incoming is the direction from the remote peer to our node.
+	Incoming LinkDirection = false
+
+	// Outgoing is the direction from our node to the remote peer.
+	Outgoing LinkDirection = true
+)
 
 // ChannelLink is an interface which represents the subsystem for managing the
 // incoming htlc requests, applying the changes to the channel, and also
@@ -175,7 +221,7 @@ type ChannelLink interface {
 	IsUnadvertised() bool
 
 	// ChannelPoint returns the channel outpoint for the channel link.
-	ChannelPoint() *wire.OutPoint
+	ChannelPoint() wire.OutPoint
 
 	// ShortChanID returns the short channel ID for the channel link. The
 	// short channel ID encodes the exact location in the main chain that
@@ -201,6 +247,7 @@ type ChannelLink interface {
 	CheckHtlcForward(payHash [32]byte, incomingAmt lnwire.MilliSatoshi,
 		amtToForward lnwire.MilliSatoshi,
 		incomingTimeout, outgoingTimeout uint32,
+		inboundFee models.InboundFee,
 		heightNow uint32, scid lnwire.ShortChannelID) *LinkError
 
 	// CheckHtlcTransit should return a nil error if the passed HTLC details
@@ -215,9 +262,9 @@ type ChannelLink interface {
 	// total sent/received milli-satoshis.
 	Stats() (uint64, lnwire.MilliSatoshi, lnwire.MilliSatoshi)
 
-	// Peer returns the representation of remote peer with which we have
-	// the channel link opened.
-	Peer() lnpeer.Peer
+	// Peer returns the serialized public key of remote peer with which we
+	// have the channel link opened.
+	PeerPubKey() [33]byte
 
 	// AttachMailBox delivers an active MailBox to the link. The MailBox may
 	// have buffered messages.
@@ -248,7 +295,7 @@ type TowerClient interface {
 	// parameters within the client. This should be called during link
 	// startup to ensure that the client is able to support the link during
 	// operation.
-	RegisterChannel(lnwire.ChannelID) error
+	RegisterChannel(lnwire.ChannelID, channeldb.ChannelType) error
 
 	// BackupState initiates a request to back up a particular revoked
 	// state. If the method returns nil, the backup is guaranteed to be

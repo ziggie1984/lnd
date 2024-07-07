@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/fn"
 )
 
 var (
@@ -278,6 +279,34 @@ type SpendDetail struct {
 	SpendingHeight    int32
 }
 
+// HasSpenderWitness returns true if the spending transaction has non-empty
+// witness.
+func (s *SpendDetail) HasSpenderWitness() bool {
+	tx := s.SpendingTx
+
+	// If there are no inputs, then there is no witness.
+	if len(tx.TxIn) == 0 {
+		return false
+	}
+
+	// If the spender input index is larger than the number of inputs, then
+	// we don't have a witness and this is an error case so we log it.
+	if uint32(len(tx.TxIn)) <= s.SpenderInputIndex {
+		Log.Errorf("SpenderInputIndex %d is out of range for tx %v",
+			s.SpenderInputIndex, tx.TxHash())
+
+		return false
+	}
+
+	// If the witness is empty, then there is no witness.
+	if len(tx.TxIn[s.SpenderInputIndex].Witness) == 0 {
+		return false
+	}
+
+	// If the witness is non-empty, then we have a witness.
+	return true
+}
+
 // String returns a string representation of SpendDetail.
 func (s *SpendDetail) String() string {
 	return fmt.Sprintf("%v[%d] spending %v at height=%v", s.SpenderTxHash,
@@ -455,13 +484,13 @@ func GetCommonBlockAncestorHeight(chainConn ChainConn, reorgHash,
 	for reorgHash != chainHash {
 		reorgHeader, err := chainConn.GetBlockHeader(&reorgHash)
 		if err != nil {
-			return 0, fmt.Errorf("unable to get header for hash=%v: %v",
-				reorgHash, err)
+			return 0, fmt.Errorf("unable to get header for "+
+				"hash=%v: %w", reorgHash, err)
 		}
 		chainHeader, err := chainConn.GetBlockHeader(&chainHash)
 		if err != nil {
-			return 0, fmt.Errorf("unable to get header for hash=%v: %v",
-				chainHash, err)
+			return 0, fmt.Errorf("unable to get header for "+
+				"hash=%v: %w", chainHash, err)
 		}
 		reorgHash = reorgHeader.PrevBlock
 		chainHash = chainHeader.PrevBlock
@@ -469,8 +498,8 @@ func GetCommonBlockAncestorHeight(chainConn ChainConn, reorgHash,
 
 	verboseHeader, err := chainConn.GetBlockHeaderVerbose(&chainHash)
 	if err != nil {
-		return 0, fmt.Errorf("unable to get verbose header for hash=%v: %v",
-			chainHash, err)
+		return 0, fmt.Errorf("unable to get verbose header for "+
+			"hash=%v: %w", chainHash, err)
 	}
 
 	return verboseHeader.Height, nil
@@ -513,7 +542,7 @@ func GetClientMissedBlocks(chainConn ChainConn, clientBestBlock *BlockEpoch,
 		chainConn, startingHeight+1, notifierBestHeight+1,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("unable to get missed blocks: %v", err)
+		return nil, fmt.Errorf("unable to get missed blocks: %w", err)
 	}
 
 	return missedBlocks, nil
@@ -691,7 +720,7 @@ func ConfDetailsFromTxIndex(chainConn TxIndexConn, r ConfRequest,
 		}
 
 		return nil, TxNotFoundIndex,
-			fmt.Errorf("unable to query for txid %v: %v",
+			fmt.Errorf("unable to query for txid %v: %w",
 				r.TxID, err)
 	}
 
@@ -700,13 +729,13 @@ func ConfDetailsFromTxIndex(chainConn TxIndexConn, r ConfRequest,
 	rawTx, err := hex.DecodeString(rawTxRes.Hex)
 	if err != nil {
 		return nil, TxNotFoundIndex,
-			fmt.Errorf("unable to deserialize tx %v: %v",
+			fmt.Errorf("unable to deserialize tx %v: %w",
 				r.TxID, err)
 	}
 	var tx wire.MsgTx
 	if err := tx.Deserialize(bytes.NewReader(rawTx)); err != nil {
 		return nil, TxNotFoundIndex,
-			fmt.Errorf("unable to deserialize tx %v: %v",
+			fmt.Errorf("unable to deserialize tx %v: %w",
 				r.TxID, err)
 	}
 
@@ -731,13 +760,14 @@ func ConfDetailsFromTxIndex(chainConn TxIndexConn, r ConfRequest,
 	if err != nil {
 		return nil, TxNotFoundIndex,
 			fmt.Errorf("unable to get block hash %v for "+
-				"historical dispatch: %v", rawTxRes.BlockHash, err)
+				"historical dispatch: %w", rawTxRes.BlockHash,
+				err)
 	}
 	block, err := chainConn.GetBlock(blockHash)
 	if err != nil {
 		return nil, TxNotFoundIndex,
 			fmt.Errorf("unable to get block with hash %v for "+
-				"historical dispatch: %v", blockHash, err)
+				"historical dispatch: %w", blockHash, err)
 	}
 
 	// In the modern chain (the only one we really care about for LN), the
@@ -760,7 +790,7 @@ func ConfDetailsFromTxIndex(chainConn TxIndexConn, r ConfRequest,
 		}
 
 		return &TxConfirmation{
-			Tx:          &tx,
+			Tx:          tx.Copy(),
 			BlockHash:   blockHash,
 			BlockHeight: uint32(blockHeight),
 			TxIndex:     uint32(txIndex),
@@ -820,4 +850,9 @@ type MempoolWatcher interface {
 	// CancelMempoolSpendEvent allows the caller to cancel a subscription to
 	// watch for a spend of an outpoint in the mempool.
 	CancelMempoolSpendEvent(sub *MempoolSpendEvent)
+
+	// LookupInputMempoolSpend looks up the mempool to find a spending tx
+	// which spends the given outpoint. A fn.None is returned if it's not
+	// found.
+	LookupInputMempoolSpend(op wire.OutPoint) fn.Option[wire.MsgTx]
 }

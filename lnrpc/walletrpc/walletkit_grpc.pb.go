@@ -4,6 +4,7 @@ package walletrpc
 
 import (
 	context "context"
+	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
 	signrpc "github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
@@ -24,16 +25,19 @@ type WalletKitClient interface {
 	// default, all utxos are listed. To list only the unconfirmed utxos, set
 	// the unconfirmed_only to true.
 	ListUnspent(ctx context.Context, in *ListUnspentRequest, opts ...grpc.CallOption) (*ListUnspentResponse, error)
+	// lncli: `wallet leaseoutput`
 	// LeaseOutput locks an output to the given ID, preventing it from being
 	// available for any future coin selection attempts. The absolute time of the
 	// lock's expiration is returned. The expiration of the lock can be extended by
 	// successive invocations of this RPC. Outputs can be unlocked before their
 	// expiration through `ReleaseOutput`.
 	LeaseOutput(ctx context.Context, in *LeaseOutputRequest, opts ...grpc.CallOption) (*LeaseOutputResponse, error)
+	// lncli: `wallet releaseoutput`
 	// ReleaseOutput unlocks an output, allowing it to be available for coin
 	// selection if it remains unspent. The ID should match the one used to
 	// originally lock the output.
 	ReleaseOutput(ctx context.Context, in *ReleaseOutputRequest, opts ...grpc.CallOption) (*ReleaseOutputResponse, error)
+	// lncli: `wallet listleases`
 	// ListLeases lists all currently locked utxos.
 	ListLeases(ctx context.Context, in *ListLeasesRequest, opts ...grpc.CallOption) (*ListLeasesResponse, error)
 	// DeriveNextKey attempts to derive the *next* key within the key family
@@ -45,18 +49,25 @@ type WalletKitClient interface {
 	DeriveKey(ctx context.Context, in *signrpc.KeyLocator, opts ...grpc.CallOption) (*signrpc.KeyDescriptor, error)
 	// NextAddr returns the next unused address within the wallet.
 	NextAddr(ctx context.Context, in *AddrRequest, opts ...grpc.CallOption) (*AddrResponse, error)
+	// lncli: `wallet gettx`
+	// GetTransaction returns details for a transaction found in the wallet.
+	GetTransaction(ctx context.Context, in *GetTransactionRequest, opts ...grpc.CallOption) (*lnrpc.Transaction, error)
+	// lncli: `wallet accounts list`
 	// ListAccounts retrieves all accounts belonging to the wallet by default. A
 	// name and key scope filter can be provided to filter through all of the
 	// wallet accounts and return only those matching.
 	ListAccounts(ctx context.Context, in *ListAccountsRequest, opts ...grpc.CallOption) (*ListAccountsResponse, error)
+	// lncli: `wallet requiredreserve`
 	// RequiredReserve returns the minimum amount of satoshis that should be kept
 	// in the wallet in order to fee bump anchor channels if necessary. The value
 	// scales with the number of public anchor channels but is capped at a maximum.
 	RequiredReserve(ctx context.Context, in *RequiredReserveRequest, opts ...grpc.CallOption) (*RequiredReserveResponse, error)
+	// lncli: `wallet addresses list`
 	// ListAddresses retrieves all the addresses along with their balance. An
 	// account name filter can be provided to filter through all of the
 	// wallet accounts and return the addresses of only those matching.
 	ListAddresses(ctx context.Context, in *ListAddressesRequest, opts ...grpc.CallOption) (*ListAddressesResponse, error)
+	// lncli: `wallet addresses signmessage`
 	// SignMessageWithAddr returns the compact signature (base64 encoded) created
 	// with the private key of the provided address. This requires the address
 	// to be solely based on a public key lock (no scripts). Obviously the internal
@@ -70,6 +81,7 @@ type WalletKitClient interface {
 	// For P2TR addresses this represents a special case. ECDSA is used to create
 	// a compact signature which makes the public key of the signature recoverable.
 	SignMessageWithAddr(ctx context.Context, in *SignMessageWithAddrRequest, opts ...grpc.CallOption) (*SignMessageWithAddrResponse, error)
+	// lncli: `wallet addresses verifymessage`
 	// VerifyMessageWithAddr returns the validity and the recovered public key of
 	// the provided compact signature (base64 encoded). The verification is
 	// twofold. First the validity of the signature itself is checked and then
@@ -90,6 +102,7 @@ type WalletKitClient interface {
 	// taproot key. The compact ECDSA signature format was used because there
 	// are still no known compact signature schemes for schnorr signatures.
 	VerifyMessageWithAddr(ctx context.Context, in *VerifyMessageWithAddrRequest, opts ...grpc.CallOption) (*VerifyMessageWithAddrResponse, error)
+	// lncli: `wallet accounts import`
 	// ImportAccount imports an account backed by an account extended public key.
 	// The master key fingerprint denotes the fingerprint of the root key
 	// corresponding to the account public key (also known as the key with
@@ -114,6 +127,7 @@ type WalletKitClient interface {
 	// detected by lnd if they happen after the import. Rescans to detect past
 	// events will be supported later on.
 	ImportAccount(ctx context.Context, in *ImportAccountRequest, opts ...grpc.CallOption) (*ImportAccountResponse, error)
+	// lncli: `wallet accounts import-pubkey`
 	// ImportPublicKey imports a public key as watch-only into the wallet. The
 	// public key is converted into a simple address of the given type and that
 	// address script is watched on chain. For Taproot keys, this will only watch
@@ -136,11 +150,16 @@ type WalletKitClient interface {
 	// NOTE: Taproot keys imported through this RPC currently _cannot_ be used for
 	// funding PSBTs. Only tracking the balance and UTXOs is currently supported.
 	ImportTapscript(ctx context.Context, in *ImportTapscriptRequest, opts ...grpc.CallOption) (*ImportTapscriptResponse, error)
+	// lncli: `wallet publishtx`
 	// PublishTransaction attempts to publish the passed transaction to the
 	// network. Once this returns without an error, the wallet will continually
 	// attempt to re-broadcast the transaction on start up, until it enters the
 	// chain.
 	PublishTransaction(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*PublishResponse, error)
+	// lncli: `wallet removetx`
+	// RemoveTransaction attempts to remove the provided transaction from the
+	// internal transaction store of the wallet.
+	RemoveTransaction(ctx context.Context, in *GetTransactionRequest, opts ...grpc.CallOption) (*RemoveTransactionResponse, error)
 	// SendOutputs is similar to the existing sendmany call in Bitcoind, and
 	// allows the caller to create a transaction that sends to several outputs at
 	// once. This is ideal when wanting to batch create a set of transactions.
@@ -149,6 +168,7 @@ type WalletKitClient interface {
 	// determine the fee (in sat/kw) to attach to a transaction in order to
 	// achieve the confirmation target.
 	EstimateFee(ctx context.Context, in *EstimateFeeRequest, opts ...grpc.CallOption) (*EstimateFeeResponse, error)
+	// lncli: `pendingsweeps`
 	// PendingSweeps returns lists of on-chain outputs that lnd is currently
 	// attempting to sweep within its central batching engine. Outputs with similar
 	// fee rates are batched together in order to sweep them within a single
@@ -158,51 +178,68 @@ type WalletKitClient interface {
 	// remain supported. This is an advanced API that depends on the internals of
 	// the UtxoSweeper, so things may change.
 	PendingSweeps(ctx context.Context, in *PendingSweepsRequest, opts ...grpc.CallOption) (*PendingSweepsResponse, error)
-	// BumpFee bumps the fee of an arbitrary input within a transaction. This RPC
-	// takes a different approach than bitcoind's bumpfee command. lnd has a
-	// central batching engine in which inputs with similar fee rates are batched
-	// together to save on transaction fees. Due to this, we cannot rely on
-	// bumping the fee on a specific transaction, since transactions can change at
-	// any point with the addition of new inputs. The list of inputs that
-	// currently exist within lnd's central batching engine can be retrieved
-	// through the PendingSweeps RPC.
+	// lncli: `wallet bumpfee`
+	// BumpFee is an endpoint that allows users to interact with lnd's sweeper
+	// directly. It takes an outpoint from an unconfirmed transaction and sends it
+	// to the sweeper for potential fee bumping. Depending on whether the outpoint
+	// has been registered in the sweeper (an existing input, e.g., an anchor
+	// output) or not (a new input, e.g., an unconfirmed wallet utxo), this will
+	// either be an RBF or CPFP attempt.
 	//
-	// When bumping the fee of an input that currently exists within lnd's central
-	// batching engine, a higher fee transaction will be created that replaces the
-	// lower fee transaction through the Replace-By-Fee (RBF) policy. If it
+	// When receiving an input, lnd’s sweeper needs to understand its time
+	// sensitivity to make economical fee bumps - internally a fee function is
+	// created using the deadline and budget to guide the process. When the
+	// deadline is approaching, the fee function will increase the fee rate and
+	// perform an RBF.
+	//
+	// When a force close happens, all the outputs from the force closing
+	// transaction will be registered in the sweeper. The sweeper will then handle
+	// the creation, publish, and fee bumping of the sweeping transactions.
+	// Everytime a new block comes in, unless the sweeping transaction is
+	// confirmed, an RBF is attempted. To interfere with this automatic process,
+	// users can use BumpFee to specify customized fee rate, budget, deadline, and
+	// whether the sweep should happen immediately. It's recommended to call
+	// `ListSweeps` to understand the shape of the existing sweeping transaction
+	// first - depending on the number of inputs in this transaction, the RBF
+	// requirements can be quite different.
 	//
 	// This RPC also serves useful when wanting to perform a Child-Pays-For-Parent
 	// (CPFP), where the child transaction pays for its parent's fee. This can be
 	// done by specifying an outpoint within the low fee transaction that is under
 	// the control of the wallet.
-	//
-	// The fee preference can be expressed either as a specific fee rate or a delta
-	// of blocks in which the output should be swept on-chain within. If a fee
-	// preference is not explicitly specified, then an error is returned.
-	//
-	// Note that this RPC currently doesn't perform any validation checks on the
-	// fee preference being provided. For now, the responsibility of ensuring that
-	// the new fee preference is sufficient is delegated to the user.
 	BumpFee(ctx context.Context, in *BumpFeeRequest, opts ...grpc.CallOption) (*BumpFeeResponse, error)
+	// lncli: `wallet listsweeps`
 	// ListSweeps returns a list of the sweep transactions our node has produced.
 	// Note that these sweeps may not be confirmed yet, as we record sweeps on
 	// broadcast, not confirmation.
 	ListSweeps(ctx context.Context, in *ListSweepsRequest, opts ...grpc.CallOption) (*ListSweepsResponse, error)
+	// lncli: `wallet labeltx`
 	// LabelTransaction adds a label to a transaction. If the transaction already
 	// has a label the call will fail unless the overwrite bool is set. This will
-	// overwrite the exiting transaction label. Labels must not be empty, and
+	// overwrite the existing transaction label. Labels must not be empty, and
 	// cannot exceed 500 characters.
 	LabelTransaction(ctx context.Context, in *LabelTransactionRequest, opts ...grpc.CallOption) (*LabelTransactionResponse, error)
+	// lncli: `wallet psbt fund`
 	// FundPsbt creates a fully populated PSBT that contains enough inputs to fund
-	// the outputs specified in the template. There are two ways of specifying a
-	// template: Either by passing in a PSBT with at least one output declared or
-	// by passing in a raw TxTemplate message.
+	// the outputs specified in the template. There are three ways a user can
+	// specify what we call the template (a list of inputs and outputs to use in
+	// the PSBT): Either as a PSBT packet directly with no coin selection (using
+	// the legacy "psbt" field), a PSBT with advanced coin selection support (using
+	// the new "coin_select" field) or as a raw RPC message (using the "raw"
+	// field).
+	// The legacy "psbt" and "raw" modes, the following restrictions apply:
+	// 1. If there are no inputs specified in the template, coin selection is
+	// performed automatically.
+	// 2. If the template does contain any inputs, it is assumed that full
+	// coin selection happened externally and no additional inputs are added. If
+	// the specified inputs aren't enough to fund the outputs with the given fee
+	// rate, an error is returned.
 	//
-	// If there are no inputs specified in the template, coin selection is
-	// performed automatically. If the template does contain any inputs, it is
-	// assumed that full coin selection happened externally and no additional
-	// inputs are added. If the specified inputs aren't enough to fund the outputs
-	// with the given fee rate, an error is returned.
+	// The new "coin_select" mode does not have these restrictions and allows the
+	// user to specify a PSBT with inputs and outputs and still perform coin
+	// selection on top of that.
+	// For all modes this RPC requires any inputs that are specified to be locked
+	// by the user (if they belong to this node in the first place).
 	//
 	// After either selecting or verifying the inputs, all input UTXOs are locked
 	// with an internal app ID.
@@ -224,6 +261,7 @@ type WalletKitClient interface {
 	// input/output/fee value validation, PSBT finalization). Any input that is
 	// incomplete will be skipped.
 	SignPsbt(ctx context.Context, in *SignPsbtRequest, opts ...grpc.CallOption) (*SignPsbtResponse, error)
+	// lncli: `wallet psbt finalize`
 	// FinalizePsbt expects a partial transaction with all inputs and outputs fully
 	// declared and tries to sign all inputs that belong to the wallet. Lnd must be
 	// the last signer of the transaction. That means, if there are any unsigned
@@ -309,6 +347,15 @@ func (c *walletKitClient) NextAddr(ctx context.Context, in *AddrRequest, opts ..
 	return out, nil
 }
 
+func (c *walletKitClient) GetTransaction(ctx context.Context, in *GetTransactionRequest, opts ...grpc.CallOption) (*lnrpc.Transaction, error) {
+	out := new(lnrpc.Transaction)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/GetTransaction", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletKitClient) ListAccounts(ctx context.Context, in *ListAccountsRequest, opts ...grpc.CallOption) (*ListAccountsResponse, error) {
 	out := new(ListAccountsResponse)
 	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ListAccounts", in, out, opts...)
@@ -384,6 +431,15 @@ func (c *walletKitClient) ImportTapscript(ctx context.Context, in *ImportTapscri
 func (c *walletKitClient) PublishTransaction(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*PublishResponse, error) {
 	out := new(PublishResponse)
 	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/PublishTransaction", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) RemoveTransaction(ctx context.Context, in *GetTransactionRequest, opts ...grpc.CallOption) (*RemoveTransactionResponse, error) {
+	out := new(RemoveTransactionResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/RemoveTransaction", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -480,16 +536,19 @@ type WalletKitServer interface {
 	// default, all utxos are listed. To list only the unconfirmed utxos, set
 	// the unconfirmed_only to true.
 	ListUnspent(context.Context, *ListUnspentRequest) (*ListUnspentResponse, error)
+	// lncli: `wallet leaseoutput`
 	// LeaseOutput locks an output to the given ID, preventing it from being
 	// available for any future coin selection attempts. The absolute time of the
 	// lock's expiration is returned. The expiration of the lock can be extended by
 	// successive invocations of this RPC. Outputs can be unlocked before their
 	// expiration through `ReleaseOutput`.
 	LeaseOutput(context.Context, *LeaseOutputRequest) (*LeaseOutputResponse, error)
+	// lncli: `wallet releaseoutput`
 	// ReleaseOutput unlocks an output, allowing it to be available for coin
 	// selection if it remains unspent. The ID should match the one used to
 	// originally lock the output.
 	ReleaseOutput(context.Context, *ReleaseOutputRequest) (*ReleaseOutputResponse, error)
+	// lncli: `wallet listleases`
 	// ListLeases lists all currently locked utxos.
 	ListLeases(context.Context, *ListLeasesRequest) (*ListLeasesResponse, error)
 	// DeriveNextKey attempts to derive the *next* key within the key family
@@ -501,18 +560,25 @@ type WalletKitServer interface {
 	DeriveKey(context.Context, *signrpc.KeyLocator) (*signrpc.KeyDescriptor, error)
 	// NextAddr returns the next unused address within the wallet.
 	NextAddr(context.Context, *AddrRequest) (*AddrResponse, error)
+	// lncli: `wallet gettx`
+	// GetTransaction returns details for a transaction found in the wallet.
+	GetTransaction(context.Context, *GetTransactionRequest) (*lnrpc.Transaction, error)
+	// lncli: `wallet accounts list`
 	// ListAccounts retrieves all accounts belonging to the wallet by default. A
 	// name and key scope filter can be provided to filter through all of the
 	// wallet accounts and return only those matching.
 	ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error)
+	// lncli: `wallet requiredreserve`
 	// RequiredReserve returns the minimum amount of satoshis that should be kept
 	// in the wallet in order to fee bump anchor channels if necessary. The value
 	// scales with the number of public anchor channels but is capped at a maximum.
 	RequiredReserve(context.Context, *RequiredReserveRequest) (*RequiredReserveResponse, error)
+	// lncli: `wallet addresses list`
 	// ListAddresses retrieves all the addresses along with their balance. An
 	// account name filter can be provided to filter through all of the
 	// wallet accounts and return the addresses of only those matching.
 	ListAddresses(context.Context, *ListAddressesRequest) (*ListAddressesResponse, error)
+	// lncli: `wallet addresses signmessage`
 	// SignMessageWithAddr returns the compact signature (base64 encoded) created
 	// with the private key of the provided address. This requires the address
 	// to be solely based on a public key lock (no scripts). Obviously the internal
@@ -526,6 +592,7 @@ type WalletKitServer interface {
 	// For P2TR addresses this represents a special case. ECDSA is used to create
 	// a compact signature which makes the public key of the signature recoverable.
 	SignMessageWithAddr(context.Context, *SignMessageWithAddrRequest) (*SignMessageWithAddrResponse, error)
+	// lncli: `wallet addresses verifymessage`
 	// VerifyMessageWithAddr returns the validity and the recovered public key of
 	// the provided compact signature (base64 encoded). The verification is
 	// twofold. First the validity of the signature itself is checked and then
@@ -546,6 +613,7 @@ type WalletKitServer interface {
 	// taproot key. The compact ECDSA signature format was used because there
 	// are still no known compact signature schemes for schnorr signatures.
 	VerifyMessageWithAddr(context.Context, *VerifyMessageWithAddrRequest) (*VerifyMessageWithAddrResponse, error)
+	// lncli: `wallet accounts import`
 	// ImportAccount imports an account backed by an account extended public key.
 	// The master key fingerprint denotes the fingerprint of the root key
 	// corresponding to the account public key (also known as the key with
@@ -570,6 +638,7 @@ type WalletKitServer interface {
 	// detected by lnd if they happen after the import. Rescans to detect past
 	// events will be supported later on.
 	ImportAccount(context.Context, *ImportAccountRequest) (*ImportAccountResponse, error)
+	// lncli: `wallet accounts import-pubkey`
 	// ImportPublicKey imports a public key as watch-only into the wallet. The
 	// public key is converted into a simple address of the given type and that
 	// address script is watched on chain. For Taproot keys, this will only watch
@@ -592,11 +661,16 @@ type WalletKitServer interface {
 	// NOTE: Taproot keys imported through this RPC currently _cannot_ be used for
 	// funding PSBTs. Only tracking the balance and UTXOs is currently supported.
 	ImportTapscript(context.Context, *ImportTapscriptRequest) (*ImportTapscriptResponse, error)
+	// lncli: `wallet publishtx`
 	// PublishTransaction attempts to publish the passed transaction to the
 	// network. Once this returns without an error, the wallet will continually
 	// attempt to re-broadcast the transaction on start up, until it enters the
 	// chain.
 	PublishTransaction(context.Context, *Transaction) (*PublishResponse, error)
+	// lncli: `wallet removetx`
+	// RemoveTransaction attempts to remove the provided transaction from the
+	// internal transaction store of the wallet.
+	RemoveTransaction(context.Context, *GetTransactionRequest) (*RemoveTransactionResponse, error)
 	// SendOutputs is similar to the existing sendmany call in Bitcoind, and
 	// allows the caller to create a transaction that sends to several outputs at
 	// once. This is ideal when wanting to batch create a set of transactions.
@@ -605,6 +679,7 @@ type WalletKitServer interface {
 	// determine the fee (in sat/kw) to attach to a transaction in order to
 	// achieve the confirmation target.
 	EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error)
+	// lncli: `pendingsweeps`
 	// PendingSweeps returns lists of on-chain outputs that lnd is currently
 	// attempting to sweep within its central batching engine. Outputs with similar
 	// fee rates are batched together in order to sweep them within a single
@@ -614,51 +689,68 @@ type WalletKitServer interface {
 	// remain supported. This is an advanced API that depends on the internals of
 	// the UtxoSweeper, so things may change.
 	PendingSweeps(context.Context, *PendingSweepsRequest) (*PendingSweepsResponse, error)
-	// BumpFee bumps the fee of an arbitrary input within a transaction. This RPC
-	// takes a different approach than bitcoind's bumpfee command. lnd has a
-	// central batching engine in which inputs with similar fee rates are batched
-	// together to save on transaction fees. Due to this, we cannot rely on
-	// bumping the fee on a specific transaction, since transactions can change at
-	// any point with the addition of new inputs. The list of inputs that
-	// currently exist within lnd's central batching engine can be retrieved
-	// through the PendingSweeps RPC.
+	// lncli: `wallet bumpfee`
+	// BumpFee is an endpoint that allows users to interact with lnd's sweeper
+	// directly. It takes an outpoint from an unconfirmed transaction and sends it
+	// to the sweeper for potential fee bumping. Depending on whether the outpoint
+	// has been registered in the sweeper (an existing input, e.g., an anchor
+	// output) or not (a new input, e.g., an unconfirmed wallet utxo), this will
+	// either be an RBF or CPFP attempt.
 	//
-	// When bumping the fee of an input that currently exists within lnd's central
-	// batching engine, a higher fee transaction will be created that replaces the
-	// lower fee transaction through the Replace-By-Fee (RBF) policy. If it
+	// When receiving an input, lnd’s sweeper needs to understand its time
+	// sensitivity to make economical fee bumps - internally a fee function is
+	// created using the deadline and budget to guide the process. When the
+	// deadline is approaching, the fee function will increase the fee rate and
+	// perform an RBF.
+	//
+	// When a force close happens, all the outputs from the force closing
+	// transaction will be registered in the sweeper. The sweeper will then handle
+	// the creation, publish, and fee bumping of the sweeping transactions.
+	// Everytime a new block comes in, unless the sweeping transaction is
+	// confirmed, an RBF is attempted. To interfere with this automatic process,
+	// users can use BumpFee to specify customized fee rate, budget, deadline, and
+	// whether the sweep should happen immediately. It's recommended to call
+	// `ListSweeps` to understand the shape of the existing sweeping transaction
+	// first - depending on the number of inputs in this transaction, the RBF
+	// requirements can be quite different.
 	//
 	// This RPC also serves useful when wanting to perform a Child-Pays-For-Parent
 	// (CPFP), where the child transaction pays for its parent's fee. This can be
 	// done by specifying an outpoint within the low fee transaction that is under
 	// the control of the wallet.
-	//
-	// The fee preference can be expressed either as a specific fee rate or a delta
-	// of blocks in which the output should be swept on-chain within. If a fee
-	// preference is not explicitly specified, then an error is returned.
-	//
-	// Note that this RPC currently doesn't perform any validation checks on the
-	// fee preference being provided. For now, the responsibility of ensuring that
-	// the new fee preference is sufficient is delegated to the user.
 	BumpFee(context.Context, *BumpFeeRequest) (*BumpFeeResponse, error)
+	// lncli: `wallet listsweeps`
 	// ListSweeps returns a list of the sweep transactions our node has produced.
 	// Note that these sweeps may not be confirmed yet, as we record sweeps on
 	// broadcast, not confirmation.
 	ListSweeps(context.Context, *ListSweepsRequest) (*ListSweepsResponse, error)
+	// lncli: `wallet labeltx`
 	// LabelTransaction adds a label to a transaction. If the transaction already
 	// has a label the call will fail unless the overwrite bool is set. This will
-	// overwrite the exiting transaction label. Labels must not be empty, and
+	// overwrite the existing transaction label. Labels must not be empty, and
 	// cannot exceed 500 characters.
 	LabelTransaction(context.Context, *LabelTransactionRequest) (*LabelTransactionResponse, error)
+	// lncli: `wallet psbt fund`
 	// FundPsbt creates a fully populated PSBT that contains enough inputs to fund
-	// the outputs specified in the template. There are two ways of specifying a
-	// template: Either by passing in a PSBT with at least one output declared or
-	// by passing in a raw TxTemplate message.
+	// the outputs specified in the template. There are three ways a user can
+	// specify what we call the template (a list of inputs and outputs to use in
+	// the PSBT): Either as a PSBT packet directly with no coin selection (using
+	// the legacy "psbt" field), a PSBT with advanced coin selection support (using
+	// the new "coin_select" field) or as a raw RPC message (using the "raw"
+	// field).
+	// The legacy "psbt" and "raw" modes, the following restrictions apply:
+	// 1. If there are no inputs specified in the template, coin selection is
+	// performed automatically.
+	// 2. If the template does contain any inputs, it is assumed that full
+	// coin selection happened externally and no additional inputs are added. If
+	// the specified inputs aren't enough to fund the outputs with the given fee
+	// rate, an error is returned.
 	//
-	// If there are no inputs specified in the template, coin selection is
-	// performed automatically. If the template does contain any inputs, it is
-	// assumed that full coin selection happened externally and no additional
-	// inputs are added. If the specified inputs aren't enough to fund the outputs
-	// with the given fee rate, an error is returned.
+	// The new "coin_select" mode does not have these restrictions and allows the
+	// user to specify a PSBT with inputs and outputs and still perform coin
+	// selection on top of that.
+	// For all modes this RPC requires any inputs that are specified to be locked
+	// by the user (if they belong to this node in the first place).
 	//
 	// After either selecting or verifying the inputs, all input UTXOs are locked
 	// with an internal app ID.
@@ -680,6 +772,7 @@ type WalletKitServer interface {
 	// input/output/fee value validation, PSBT finalization). Any input that is
 	// incomplete will be skipped.
 	SignPsbt(context.Context, *SignPsbtRequest) (*SignPsbtResponse, error)
+	// lncli: `wallet psbt finalize`
 	// FinalizePsbt expects a partial transaction with all inputs and outputs fully
 	// declared and tries to sign all inputs that belong to the wallet. Lnd must be
 	// the last signer of the transaction. That means, if there are any unsigned
@@ -720,6 +813,9 @@ func (UnimplementedWalletKitServer) DeriveKey(context.Context, *signrpc.KeyLocat
 func (UnimplementedWalletKitServer) NextAddr(context.Context, *AddrRequest) (*AddrResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NextAddr not implemented")
 }
+func (UnimplementedWalletKitServer) GetTransaction(context.Context, *GetTransactionRequest) (*lnrpc.Transaction, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetTransaction not implemented")
+}
 func (UnimplementedWalletKitServer) ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAccounts not implemented")
 }
@@ -746,6 +842,9 @@ func (UnimplementedWalletKitServer) ImportTapscript(context.Context, *ImportTaps
 }
 func (UnimplementedWalletKitServer) PublishTransaction(context.Context, *Transaction) (*PublishResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PublishTransaction not implemented")
+}
+func (UnimplementedWalletKitServer) RemoveTransaction(context.Context, *GetTransactionRequest) (*RemoveTransactionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RemoveTransaction not implemented")
 }
 func (UnimplementedWalletKitServer) SendOutputs(context.Context, *SendOutputsRequest) (*SendOutputsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendOutputs not implemented")
@@ -913,6 +1012,24 @@ func _WalletKit_NextAddr_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletKit_GetTransaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTransactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).GetTransaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/GetTransaction",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).GetTransaction(ctx, req.(*GetTransactionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletKit_ListAccounts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListAccountsRequest)
 	if err := dec(in); err != nil {
@@ -1071,6 +1188,24 @@ func _WalletKit_PublishTransaction_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WalletKitServer).PublishTransaction(ctx, req.(*Transaction))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_RemoveTransaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTransactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).RemoveTransaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/RemoveTransaction",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).RemoveTransaction(ctx, req.(*GetTransactionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1273,6 +1408,10 @@ var WalletKit_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _WalletKit_NextAddr_Handler,
 		},
 		{
+			MethodName: "GetTransaction",
+			Handler:    _WalletKit_GetTransaction_Handler,
+		},
+		{
 			MethodName: "ListAccounts",
 			Handler:    _WalletKit_ListAccounts_Handler,
 		},
@@ -1307,6 +1446,10 @@ var WalletKit_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PublishTransaction",
 			Handler:    _WalletKit_PublishTransaction_Handler,
+		},
+		{
+			MethodName: "RemoveTransaction",
+			Handler:    _WalletKit_RemoveTransaction_Handler,
 		},
 		{
 			MethodName: "SendOutputs",

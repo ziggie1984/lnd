@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
@@ -17,7 +17,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
-	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -99,6 +98,47 @@ var (
 		Name:  "time_pref",
 		Usage: "(optional) expresses time preference (range -1 to 1)",
 	}
+
+	introductionNodeFlag = cli.StringFlag{
+		Name: "introduction_node",
+		Usage: "(blinded paths) the hex encoded, cleartext node ID " +
+			"of the node to use for queries to a blinded route",
+	}
+
+	blindingPointFlag = cli.StringFlag{
+		Name: "blinding_point",
+		Usage: "(blinded paths) the hex encoded blinding point to " +
+			"use if querying a route to a blinded path, this " +
+			"value *must* be set for queries to a blinded path",
+	}
+
+	blindedHopsFlag = cli.StringSliceFlag{
+		Name: "blinded_hops",
+		Usage: "(blinded paths) the blinded hops to include in the " +
+			"query, formatted as <blinded_node_id>:" +
+			"<hex_encrypted_data>. These hops must be provided " +
+			"*in order* starting with the introduction point and " +
+			"ending with the receiving node",
+	}
+
+	blindedBaseFlag = cli.Uint64Flag{
+		Name: "blinded_base_fee",
+		Usage: "(blinded paths) the aggregate base fee for the " +
+			"blinded portion of the route, expressed in msat",
+	}
+
+	blindedPPMFlag = cli.Uint64Flag{
+		Name: "blinded_ppm_fee",
+		Usage: "(blinded paths) the aggregate proportional fee for " +
+			"the blinded portion of the route, expressed in " +
+			"parts per million",
+	}
+
+	blindedCLTVFlag = cli.Uint64Flag{
+		Name: "blinded_cltv",
+		Usage: "(blinded paths) the total cltv delay for the " +
+			"blinded portion of the route",
+	}
 )
 
 // paymentFlags returns common flags for sendpayment and payinvoice.
@@ -128,11 +168,13 @@ func paymentFlags() []cli.Flag {
 		},
 		cltvLimitFlag,
 		lastHopFlag,
-		cli.Uint64Flag{
+		cli.Int64SliceFlag{
 			Name: "outgoing_chan_id",
 			Usage: "short channel id of the outgoing channel to " +
-				"use for the first hop of the payment",
-			Value: 0,
+				"use for the first hop of the payment; can " +
+				"be specified multiple times in the same " +
+				"command",
+			Value: &cli.Int64Slice{},
 		},
 		cli.BoolFlag{
 			Name:  "force, f",
@@ -334,7 +376,8 @@ func sendPayment(ctx *cli.Context) error {
 		amount, err = strconv.ParseInt(args.First(), 10, 64)
 		args = args.Tail()
 		if err != nil {
-			return fmt.Errorf("unable to decode payment amount: %v", err)
+			return fmt.Errorf("unable to decode payment amount: %w",
+				err)
 		}
 	}
 
@@ -422,10 +465,14 @@ func sendPaymentRequest(ctx *cli.Context,
 	client := lnrpc.NewLightningClient(conn)
 	routerClient := routerrpc.NewRouterClient(conn)
 
-	outChan := ctx.Uint64("outgoing_chan_id")
-	if outChan != 0 {
-		req.OutgoingChanIds = []uint64{outChan}
+	outChan := ctx.Int64Slice("outgoing_chan_id")
+	if len(outChan) != 0 {
+		req.OutgoingChanIds = make([]uint64, len(outChan))
+		for i, c := range outChan {
+			req.OutgoingChanIds[i] = uint64(c)
+		}
 	}
+
 	if ctx.IsSet(lastHopFlag.Name) {
 		lastHop, err := route.NewVertexFromStr(
 			ctx.String(lastHopFlag.Name),
@@ -478,13 +525,13 @@ func sendPaymentRequest(ctx *cli.Context,
 
 			recordID, err := strconv.ParseUint(kv[0], 10, 64)
 			if err != nil {
-				return fmt.Errorf("invalid data format: %v",
+				return fmt.Errorf("invalid data format: %w",
 					err)
 			}
 
 			hexValue, err := hex.DecodeString(kv[1])
 			if err != nil {
-				return fmt.Errorf("invalid data format: %v",
+				return fmt.Errorf("invalid data format: %w",
 					err)
 			}
 
@@ -662,7 +709,9 @@ func printLivePayment(ctxc context.Context,
 		}
 
 		// Terminate loop if payments state is final.
-		if payment.Status != lnrpc.Payment_IN_FLIGHT {
+		if payment.Status != lnrpc.Payment_IN_FLIGHT &&
+			payment.Status != lnrpc.Payment_INITIATED {
+
 			return payment, nil
 		}
 	}
@@ -837,6 +886,7 @@ func payInvoice(ctx *cli.Context) error {
 		PaymentRequest:    stripPrefix(payReq),
 		Amt:               ctx.Int64("amt"),
 		DestCustomRecords: make(map[uint64][]byte),
+		Amp:               ctx.Bool(ampFlag.Name),
 	}
 
 	return sendPaymentRequest(ctx, req)
@@ -938,7 +988,7 @@ func sendToRoute(ctx *cli.Context) error {
 	// The user is signalling that we should read stdin in order to parse
 	// the set of target routes.
 	case args.Present() && args.First() == "-":
-		b, err := ioutil.ReadAll(os.Stdin)
+		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
@@ -1054,6 +1104,12 @@ var queryRoutesCommand = cli.Command{
 		},
 		timePrefFlag,
 		cltvLimitFlag,
+		introductionNodeFlag,
+		blindingPointFlag,
+		blindedHopsFlag,
+		blindedBaseFlag,
+		blindedPPMFlag,
+		blindedCLTVFlag,
 	},
 	Action: actionDecorator(queryRoutes),
 }
@@ -1074,9 +1130,15 @@ func queryRoutes(ctx *cli.Context) error {
 	switch {
 	case ctx.IsSet("dest"):
 		dest = ctx.String("dest")
+
 	case args.Present():
 		dest = args.First()
 		args = args.Tail()
+
+	// If we have a blinded path set, we don't have to specify a
+	// destination.
+	case ctx.IsSet(introductionNodeFlag.Name):
+
 	default:
 		return fmt.Errorf("dest argument missing")
 	}
@@ -1087,7 +1149,8 @@ func queryRoutes(ctx *cli.Context) error {
 	case args.Present():
 		amt, err = strconv.ParseInt(args.First(), 10, 64)
 		if err != nil {
-			return fmt.Errorf("unable to decode amt argument: %v", err)
+			return fmt.Errorf("unable to decode amt argument: %w",
+				err)
 		}
 	default:
 		return fmt.Errorf("amt argument missing")
@@ -1123,16 +1186,22 @@ func queryRoutes(ctx *cli.Context) error {
 		}
 	}
 
+	blindedRoutes, err := parseBlindedPaymentParameters(ctx)
+	if err != nil {
+		return err
+	}
+
 	req := &lnrpc.QueryRoutesRequest{
-		PubKey:            dest,
-		Amt:               amt,
-		FeeLimit:          feeLimit,
-		FinalCltvDelta:    int32(ctx.Int("final_cltv_delta")),
-		UseMissionControl: ctx.Bool("use_mc"),
-		CltvLimit:         uint32(ctx.Uint64(cltvLimitFlag.Name)),
-		OutgoingChanId:    ctx.Uint64("outgoing_chan_id"),
-		TimePref:          ctx.Float64(timePrefFlag.Name),
-		IgnoredPairs:      ignoredPairs,
+		PubKey:              dest,
+		Amt:                 amt,
+		FeeLimit:            feeLimit,
+		FinalCltvDelta:      int32(ctx.Int("final_cltv_delta")),
+		UseMissionControl:   ctx.Bool("use_mc"),
+		CltvLimit:           uint32(ctx.Uint64(cltvLimitFlag.Name)),
+		OutgoingChanId:      ctx.Uint64("outgoing_chan_id"),
+		TimePref:            ctx.Float64(timePrefFlag.Name),
+		IgnoredPairs:        ignoredPairs,
+		BlindedPaymentPaths: blindedRoutes,
 	}
 
 	route, err := client.QueryRoutes(ctxc, req)
@@ -1142,6 +1211,82 @@ func queryRoutes(ctx *cli.Context) error {
 
 	printRespJSON(route)
 	return nil
+}
+
+func parseBlindedPaymentParameters(ctx *cli.Context) (
+	[]*lnrpc.BlindedPaymentPath, error) {
+
+	// Return nil if we don't have a blinding set, as we don't have a
+	// blinded path.
+	if !ctx.IsSet(blindingPointFlag.Name) {
+		return nil, nil
+	}
+
+	// If any one of our blinding related flags is set, we expect the
+	// full set to be set and we'll error out accordingly.
+	introNode, err := route.NewVertexFromStr(
+		ctx.String(introductionNodeFlag.Name),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode introduction node: %w", err)
+	}
+
+	blindingPoint, err := route.NewVertexFromStr(ctx.String(
+		blindingPointFlag.Name,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("decode blinding point: %w", err)
+	}
+
+	blindedHops := ctx.StringSlice(blindedHopsFlag.Name)
+
+	pmt := &lnrpc.BlindedPaymentPath{
+		BlindedPath: &lnrpc.BlindedPath{
+			IntroductionNode: introNode[:],
+			BlindingPoint:    blindingPoint[:],
+			BlindedHops: make(
+				[]*lnrpc.BlindedHop, len(blindedHops),
+			),
+		},
+		BaseFeeMsat: ctx.Uint64(
+			blindedBaseFlag.Name,
+		),
+		ProportionalFeeRate: uint32(ctx.Uint64(
+			blindedPPMFlag.Name,
+		)),
+		TotalCltvDelta: uint32(ctx.Uint64(
+			blindedCLTVFlag.Name,
+		)),
+	}
+
+	for i, hop := range blindedHops {
+		parts := strings.Split(hop, ":")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("blinded hops should be "+
+				"expressed as "+
+				"blinded_node_id:hex_encrypted_data, got: %v",
+				hop)
+		}
+
+		hop, err := route.NewVertexFromStr(parts[0])
+		if err != nil {
+			return nil, fmt.Errorf("hop: %v node: %w", i, err)
+		}
+
+		data, err := hex.DecodeString(parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("hop: %v data: %w", i, err)
+		}
+
+		pmt.BlindedPath.BlindedHops[i] = &lnrpc.BlindedHop{
+			BlindedNode:   hop[:],
+			EncryptedData: data,
+		}
+	}
+
+	return []*lnrpc.BlindedPaymentPath{
+		pmt,
+	}, nil
 }
 
 // retrieveFeeLimitLegacy retrieves the fee limit based on the different fee
@@ -1348,7 +1493,7 @@ func forwardingHistory(ctx *cli.Context) error {
 		startTime = uint64(now.Add(-time.Hour * 24).Unix())
 	}
 	if err != nil {
-		return fmt.Errorf("unable to decode start_time: %v", err)
+		return fmt.Errorf("unable to decode start_time: %w", err)
 	}
 
 	switch {
@@ -1361,7 +1506,7 @@ func forwardingHistory(ctx *cli.Context) error {
 		endTime = uint64(now.Unix())
 	}
 	if err != nil {
-		return fmt.Errorf("unable to decode end_time: %v", err)
+		return fmt.Errorf("unable to decode end_time: %w", err)
 	}
 
 	switch {
@@ -1370,7 +1515,7 @@ func forwardingHistory(ctx *cli.Context) error {
 	case args.Present():
 		i, err := strconv.ParseInt(args.First(), 10, 64)
 		if err != nil {
-			return fmt.Errorf("unable to decode index_offset: %v",
+			return fmt.Errorf("unable to decode index_offset: %w",
 				err)
 		}
 		indexOffset = uint32(i)
@@ -1383,7 +1528,7 @@ func forwardingHistory(ctx *cli.Context) error {
 	case args.Present():
 		m, err := strconv.ParseInt(args.First(), 10, 64)
 		if err != nil {
-			return fmt.Errorf("unable to decode max_events: %v",
+			return fmt.Errorf("unable to decode max_events: %w",
 				err)
 		}
 		maxEvents = uint32(m)
@@ -1413,7 +1558,18 @@ var buildRouteCommand = cli.Command{
 	Name:     "buildroute",
 	Category: "Payments",
 	Usage:    "Build a route from a list of hop pubkeys.",
-	Action:   actionDecorator(buildRoute),
+	Description: `
+	Builds a sphinx route for the supplied hops (public keys). Make sure to
+	use a custom final_cltv_delta to create the route depending on the
+	restrictions in the invoice otherwise LND will use its default specified
+	via the bitcoin.timelockdelta setting (default 80).
+	If the final_cltv_delta mismatch you will likely see the error
+	INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS returned by the receiving node.
+
+	Moreover a payment_addr has to be provided if the invoice supplied it as
+	well otherwise the payment will be rejected by the receiving node.
+	`,
+	Action: actionDecorator(buildRoute),
 	Flags: []cli.Flag{
 		cli.Int64Flag{
 			Name: "amt",
@@ -1423,8 +1579,8 @@ var buildRouteCommand = cli.Command{
 		cli.Int64Flag{
 			Name: "final_cltv_delta",
 			Usage: "number of blocks the last hop has to reveal " +
-				"the preimage",
-			Value: chainreg.DefaultBitcoinTimeLockDelta,
+				"the preimage; if not set the default lnd " +
+				"final_cltv_delta is used",
 		},
 		cli.StringFlag{
 			Name:  "hops",
@@ -1461,7 +1617,7 @@ func buildRoute(ctx *cli.Context) error {
 	for _, k := range hops {
 		pubkey, err := route.NewVertexFromStr(k)
 		if err != nil {
-			return fmt.Errorf("error parsing %v: %v", k, err)
+			return fmt.Errorf("error parsing %v: %w", k, err)
 		}
 		rpcHops = append(rpcHops, pubkey[:])
 	}
@@ -1479,10 +1635,11 @@ func buildRoute(ctx *cli.Context) error {
 		payAddr []byte
 		err     error
 	)
+
 	if ctx.IsSet("payment_addr") {
 		payAddr, err = hex.DecodeString(ctx.String("payment_addr"))
 		if err != nil {
-			return fmt.Errorf("error parsing payment_addr: %v", err)
+			return fmt.Errorf("error parsing payment_addr: %w", err)
 		}
 	}
 
@@ -1601,7 +1758,7 @@ func deletePayments(ctx *cli.Context) error {
 	case singlePayment:
 		paymentHash, err = hex.DecodeString(ctx.String("payment_hash"))
 		if err != nil {
-			return fmt.Errorf("error decoding payment_hash: %v",
+			return fmt.Errorf("error decoding payment_hash: %w",
 				err)
 		}
 
@@ -1610,7 +1767,7 @@ func deletePayments(ctx *cli.Context) error {
 			FailedHtlcsOnly: failedHTLCsOnly,
 		})
 		if err != nil {
-			return fmt.Errorf("error deleting single payment: %v",
+			return fmt.Errorf("error deleting single payment: %w",
 				err)
 		}
 
@@ -1627,12 +1784,13 @@ func deletePayments(ctx *cli.Context) error {
 			what)
 		_, err = client.DeleteAllPayments(
 			ctxc, &lnrpc.DeleteAllPaymentsRequest{
+				AllPayments:        includeNonFailed,
 				FailedPaymentsOnly: !includeNonFailed,
 				FailedHtlcsOnly:    failedHTLCsOnly,
 			},
 		)
 		if err != nil {
-			return fmt.Errorf("error deleting payments: %v", err)
+			return fmt.Errorf("error deleting payments: %w", err)
 		}
 	}
 
@@ -1643,10 +1801,100 @@ func deletePayments(ctx *cli.Context) error {
 	return nil
 }
 
+var estimateRouteFeeCommand = cli.Command{
+	Name:     "estimateroutefee",
+	Category: "Payments",
+	Usage:    "Estimate routing fees based on a destination or an invoice.",
+	Action:   actionDecorator(estimateRouteFee),
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "dest",
+			Usage: "the 33-byte hex-encoded public key for the " +
+				"probe destination. If it is specified then " +
+				"the amt flag is required. If it isn't " +
+				"specified then the pay_req field has to.",
+		},
+		cli.Int64Flag{
+			Name: "amt",
+			Usage: "the payment amount expressed in satoshis " +
+				"that should be probed for. This field is " +
+				"mandatory if dest is specified.",
+		},
+		cli.StringFlag{
+			Name: "pay_req",
+			Usage: "a zpay32 encoded payment request which is " +
+				"used to probe. If the destination is " +
+				"not public then route hints are scanned for " +
+				"a public node.",
+		},
+		cli.DurationFlag{
+			Name: "timeout",
+			Usage: "a deadline for the probe attempt. Only " +
+				"applicable if pay_req is specified.",
+			Value: paymentTimeout,
+		},
+	},
+}
+
+func estimateRouteFee(ctx *cli.Context) error {
+	ctxc := getContext()
+	conn := getClientConn(ctx, false)
+	defer conn.Close()
+
+	client := routerrpc.NewRouterClient(conn)
+
+	req := &routerrpc.RouteFeeRequest{}
+
+	switch {
+	case ctx.IsSet("dest") && ctx.IsSet("pay_req"):
+		return fmt.Errorf("either dest or pay_req can be set")
+
+	case ctx.IsSet("dest") && !ctx.IsSet("amt"):
+		return fmt.Errorf("amt is required when dest is set")
+
+	case ctx.IsSet("dest"):
+		dest, err := hex.DecodeString(ctx.String("dest"))
+		if err != nil {
+			return err
+		}
+
+		if len(dest) != 33 {
+			return fmt.Errorf("dest node pubkey must be exactly "+
+				"33 bytes, is instead: %v", len(dest))
+		}
+
+		amtSat := ctx.Int64("amt")
+		if amtSat == 0 {
+			return fmt.Errorf("non-zero amount required")
+		}
+
+		req.Dest = dest
+		req.AmtSat = amtSat
+
+	case ctx.IsSet("pay_req"):
+		req.PaymentRequest = stripPrefix(ctx.String("pay_req"))
+		if ctx.IsSet("timeout") {
+			req.Timeout = uint32(ctx.Duration("timeout").Seconds())
+		}
+
+	default:
+		return fmt.Errorf("fee estimation arguments missing")
+	}
+
+	resp, err := client.EstimateRouteFee(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
+}
+
 // ESC is the ASCII code for escape character.
 const ESC = 27
 
-// clearCode defines a terminal escape code to clear the currently line and move
+// clearCode defines a terminal escape code to clear the current line and move
 // the cursor up.
 var clearCode = fmt.Sprintf("%c[%dA%c[2K", ESC, 1, ESC)
 

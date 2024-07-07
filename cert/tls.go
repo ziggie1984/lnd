@@ -3,7 +3,7 @@ package cert
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
+	"os"
 	"sync"
 )
 
@@ -31,11 +31,11 @@ var (
 func GetCertBytesFromPath(certPath, keyPath string) (certBytes,
 	keyBytes []byte, err error) {
 
-	certBytes, err = ioutil.ReadFile(certPath)
+	certBytes, err = os.ReadFile(certPath)
 	if err != nil {
 		return nil, nil, err
 	}
-	keyBytes, err = ioutil.ReadFile(keyPath)
+	keyBytes, err = os.ReadFile(keyPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -57,7 +57,7 @@ func LoadCert(certPath, keyPath string) (tls.Certificate, *x509.Certificate,
 		return tls.Certificate{}, nil, err
 	}
 
-	// Now parse the the PEM block of the certificate into its x509 data
+	// Now parse the PEM block of the certificate into its x509 data
 	// structure so it can be examined in more detail.
 	x509Cert, err := x509.ParseCertificate(certData.Certificate[0])
 	if err != nil {
@@ -82,7 +82,7 @@ func LoadCertFromBytes(certBytes, keyBytes []byte) (tls.Certificate,
 		return tls.Certificate{}, nil, err
 	}
 
-	// Now parse the the PEM block of the certificate into its x509 data
+	// Now parse the PEM block of the certificate into its x509 data
 	// structure so it can be examined in more detail.
 	x509Cert, err := x509.ParseCertificate(certData.Certificate[0])
 	if err != nil {

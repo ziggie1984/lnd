@@ -96,6 +96,12 @@ type AddressProperty struct {
 
 	// Balance returns the total balance of an address.
 	Balance btcutil.Amount
+
+	// DerivationPath is the derivation path of the address.
+	DerivationPath string
+
+	// PublicKey is the public key of the address.
+	PublicKey *btcec.PublicKey
 }
 
 // AccountIdentifier contains information to uniquely identify an account.
@@ -339,7 +345,8 @@ type WalletController interface {
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
 	SendOutputs(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
-		minConfs int32, label string) (*wire.MsgTx, error)
+		minConfs int32, label string,
+		strategy base.CoinSelectionStrategy) (*wire.MsgTx, error)
 
 	// CreateSimpleTx creates a Bitcoin transaction paying to the specified
 	// outputs. The transaction is not broadcasted to the network. In the
@@ -354,7 +361,13 @@ type WalletController interface {
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
 	CreateSimpleTx(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
-		minConfs int32, dryRun bool) (*txauthor.AuthoredTx, error)
+		minConfs int32, strategy base.CoinSelectionStrategy,
+		dryRun bool) (*txauthor.AuthoredTx, error)
+
+	// GetTransactionDetails returns a detailed description of a transaction
+	// given its transaction hash.
+	GetTransactionDetails(txHash *chainhash.Hash) (
+		*TransactionDetail, error)
 
 	// ListUnspentWitness returns all unspent outputs which are version 0
 	// witness programs. The 'minConfs' and 'maxConfs' parameters
@@ -381,20 +394,6 @@ type WalletController interface {
 	// empty, transactions of all wallet accounts are returned.
 	ListTransactionDetails(startHeight, endHeight int32,
 		accountFilter string) ([]*TransactionDetail, error)
-
-	// LockOutpoint marks an outpoint as locked meaning it will no longer
-	// be deemed as eligible for coin selection. Locking outputs are
-	// utilized in order to avoid race conditions when selecting inputs for
-	// usage when funding a channel.
-	//
-	// NOTE: This method requires the global coin selection lock to be held.
-	LockOutpoint(o wire.OutPoint)
-
-	// UnlockOutpoint unlocks a previously locked output, marking it
-	// eligible for coin selection.
-	//
-	// NOTE: This method requires the global coin selection lock to be held.
-	UnlockOutpoint(o wire.OutPoint)
 
 	// LeaseOutput locks an output to the given ID, preventing it from being
 	// available for any future coin selection attempts. The absolute time
@@ -468,7 +467,9 @@ type WalletController interface {
 	// to lock the inputs before handing them out.
 	FundPsbt(packet *psbt.Packet, minConfs int32,
 		feeRate chainfee.SatPerKWeight, account string,
-		changeScope *waddrmgr.KeyScope) (int32, error)
+		changeScope *waddrmgr.KeyScope,
+		strategy base.CoinSelectionStrategy,
+		allowUtxo func(wtxmgr.Credit) bool) (int32, error)
 
 	// SignPsbt expects a partial transaction with all inputs and outputs
 	// fully declared and tries to sign all unsigned inputs that have all
@@ -495,6 +496,12 @@ type WalletController interface {
 	// NOTE: This method does NOT publish the transaction after it's been
 	// finalized successfully.
 	FinalizePsbt(packet *psbt.Packet, account string) error
+
+	// DecorateInputs fetches the UTXO information of all inputs it can
+	// identify and adds the required information to the package's inputs.
+	// The failOnUnknown boolean controls whether the method should return
+	// an error if it cannot identify an input or if it should just skip it.
+	DecorateInputs(packet *psbt.Packet, failOnUnknown bool) error
 
 	// SubscribeTransactions returns a TransactionSubscription client which
 	// is capable of receiving async notifications as new transactions
@@ -530,6 +537,11 @@ type WalletController interface {
 	// which could be e.g. btcd, bitcoind, neutrino, or another consensus
 	// service.
 	BackEnd() string
+
+	// CheckMempoolAcceptance checks whether a transaction follows mempool
+	// policies and returns an error if it cannot be accepted into the
+	// mempool.
+	CheckMempoolAcceptance(tx *wire.MsgTx) error
 }
 
 // BlockChainIO is a dedicated source which will be used to obtain queries

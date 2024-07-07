@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"io/ioutil"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
@@ -81,6 +80,7 @@ const (
 	CodeExpiryTooFar                     FailCode = 21
 	CodeInvalidOnionPayload                       = FlagPerm | 22
 	CodeMPPTimeout                       FailCode = 23
+	CodeInvalidBlinding                           = FlagBadOnion | FlagPerm | 24 //nolint:lll
 )
 
 // String returns the string representation of the failure code.
@@ -157,6 +157,9 @@ func (c FailCode) String() string {
 
 	case CodeMPPTimeout:
 		return "MPPTimeout"
+
+	case CodeInvalidBlinding:
+		return "InvalidBlinding"
 
 	default:
 		return "<unknown>"
@@ -589,14 +592,14 @@ func (f *FailInvalidOnionKey) Error() string {
 	return fmt.Sprintf("InvalidOnionKey(onion_sha=%x)", f.OnionSHA256[:])
 }
 
-// parseChannelUpdateCompatabilityMode will attempt to parse a channel updated
+// parseChannelUpdateCompatibilityMode will attempt to parse a channel updated
 // encoded into an onion error payload in two ways. First, we'll try the
 // compatibility oriented version wherein we'll _skip_ the length prefixing on
 // the channel update message. Older versions of c-lighting do this so we'll
 // attempt to parse these messages in order to retain compatibility. If we're
 // unable to pull out a fully valid version, then we'll fall back to the
 // regular parsing mechanism which includes the length prefix an NO type byte.
-func parseChannelUpdateCompatabilityMode(reader io.Reader, length uint16,
+func parseChannelUpdateCompatibilityMode(reader io.Reader, length uint16,
 	chanUpdate *ChannelUpdate, pver uint32) error {
 
 	// Instantiate a LimitReader because there may be additional data
@@ -683,7 +686,8 @@ func (f *FailTemporaryChannelFailure) Decode(r io.Reader, pver uint32) error {
 
 	if length != 0 {
 		f.Update = &ChannelUpdate{}
-		return parseChannelUpdateCompatabilityMode(
+
+		return parseChannelUpdateCompatibilityMode(
 			r, length, f.Update, pver,
 		)
 	}
@@ -697,21 +701,12 @@ func (f *FailTemporaryChannelFailure) Decode(r io.Reader, pver uint32) error {
 func (f *FailTemporaryChannelFailure) Encode(w *bytes.Buffer,
 	pver uint32) error {
 
-	var payload []byte
 	if f.Update != nil {
-		var bw bytes.Buffer
-		if err := f.Update.Encode(&bw, pver); err != nil {
-			return err
-		}
-		payload = bw.Bytes()
+		return writeOnionErrorChanUpdate(w, f.Update, pver)
 	}
 
-	if err := WriteUint16(w, uint16(len(payload))); err != nil {
-		return err
-	}
-
-	_, err := w.Write(payload)
-	return err
+	// Write zero length to indicate no channel_update is present.
+	return WriteUint16(w, 0)
 }
 
 // FailAmountBelowMinimum is returned if the HTLC does not reach the current
@@ -767,7 +762,8 @@ func (f *FailAmountBelowMinimum) Decode(r io.Reader, pver uint32) error {
 	}
 
 	f.Update = ChannelUpdate{}
-	return parseChannelUpdateCompatabilityMode(
+
+	return parseChannelUpdateCompatibilityMode(
 		r, length, &f.Update, pver,
 	)
 }
@@ -835,7 +831,8 @@ func (f *FailFeeInsufficient) Decode(r io.Reader, pver uint32) error {
 	}
 
 	f.Update = ChannelUpdate{}
-	return parseChannelUpdateCompatabilityMode(
+
+	return parseChannelUpdateCompatibilityMode(
 		r, length, &f.Update, pver,
 	)
 }
@@ -903,7 +900,8 @@ func (f *FailIncorrectCltvExpiry) Decode(r io.Reader, pver uint32) error {
 	}
 
 	f.Update = ChannelUpdate{}
-	return parseChannelUpdateCompatabilityMode(
+
+	return parseChannelUpdateCompatibilityMode(
 		r, length, &f.Update, pver,
 	)
 }
@@ -960,7 +958,8 @@ func (f *FailExpiryTooSoon) Decode(r io.Reader, pver uint32) error {
 	}
 
 	f.Update = ChannelUpdate{}
-	return parseChannelUpdateCompatabilityMode(
+
+	return parseChannelUpdateCompatibilityMode(
 		r, length, &f.Update, pver,
 	)
 }
@@ -1024,7 +1023,8 @@ func (f *FailChannelDisabled) Decode(r io.Reader, pver uint32) error {
 	}
 
 	f.Update = ChannelUpdate{}
-	return parseChannelUpdateCompatabilityMode(
+
+	return parseChannelUpdateCompatibilityMode(
 		r, length, &f.Update, pver,
 	)
 }
@@ -1236,6 +1236,51 @@ func (f *FailMPPTimeout) Error() string {
 	return f.Code().String()
 }
 
+// FailInvalidBlinding is returned if there has been a route blinding related
+// error.
+type FailInvalidBlinding struct {
+	OnionSHA256 [sha256.Size]byte
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f *FailInvalidBlinding) Code() FailCode {
+	return CodeInvalidBlinding
+}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f *FailInvalidBlinding) Error() string {
+	return f.Code().String()
+}
+
+// Decode decodes the failure from bytes stream.
+//
+// NOTE: Part of the Serializable interface.
+func (f *FailInvalidBlinding) Decode(r io.Reader, _ uint32) error {
+	return ReadElement(r, f.OnionSHA256[:])
+}
+
+// Encode writes the failure in bytes stream.
+//
+// NOTE: Part of the Serializable interface.
+func (f *FailInvalidBlinding) Encode(w *bytes.Buffer, _ uint32) error {
+	return WriteBytes(w, f.OnionSHA256[:])
+}
+
+// NewInvalidBlinding creates new instance of FailInvalidBlinding.
+func NewInvalidBlinding(onion []byte) *FailInvalidBlinding {
+	// The spec allows empty onion hashes for invalid blinding, so we only
+	// include our onion hash if it's provided.
+	if onion == nil {
+		return &FailInvalidBlinding{}
+	}
+
+	return &FailInvalidBlinding{OnionSHA256: sha256.Sum256(onion)}
+}
+
 // DecodeFailure decodes, validates, and parses the lnwire onion failure, for
 // the provided protocol version.
 func DecodeFailure(r io.Reader, pver uint32) (FailureMessage, error) {
@@ -1258,7 +1303,7 @@ func DecodeFailure(r io.Reader, pver uint32) (FailureMessage, error) {
 		return nil, fmt.Errorf("unable to read pad len: %w", err)
 	}
 
-	if _, err := io.CopyN(ioutil.Discard, r, int64(padLength)); err != nil {
+	if _, err := io.CopyN(io.Discard, r, int64(padLength)); err != nil {
 		return nil, fmt.Errorf("unable to read padding %w", err)
 	}
 
@@ -1290,7 +1335,7 @@ func DecodeFailureMessage(r io.Reader, pver uint32) (FailureMessage, error) {
 	// the first two bytes of the buffer.
 	var codeBytes [2]byte
 	if _, err := io.ReadFull(r, codeBytes[:]); err != nil {
-		return nil, fmt.Errorf("unable to read failure code: %v", err)
+		return nil, fmt.Errorf("unable to read failure code: %w", err)
 	}
 	failCode := FailCode(binary.BigEndian.Uint16(codeBytes[:]))
 
@@ -1298,7 +1343,7 @@ func DecodeFailureMessage(r io.Reader, pver uint32) (FailureMessage, error) {
 	// additional data if needed.
 	failure, err := makeEmptyOnionError(failCode)
 	if err != nil {
-		return nil, fmt.Errorf("unable to make empty error: %v", err)
+		return nil, fmt.Errorf("unable to make empty error: %w", err)
 	}
 
 	// Finally, if this failure has a payload, then we'll read that now as
@@ -1454,6 +1499,9 @@ func makeEmptyOnionError(code FailCode) (FailureMessage, error) {
 	case CodeMPPTimeout:
 		return &FailMPPTimeout{}, nil
 
+	case CodeInvalidBlinding:
+		return &FailInvalidBlinding{}, nil
+
 	default:
 		return nil, errors.Errorf("unknown error code: %v", code)
 	}
@@ -1468,13 +1516,13 @@ func writeOnionErrorChanUpdate(w *bytes.Buffer, chanUpdate *ChannelUpdate,
 	// First, we encode the channel update in a temporary buffer in order
 	// to get the exact serialized size.
 	var b bytes.Buffer
-	if err := chanUpdate.Encode(&b, pver); err != nil {
+	updateLen, err := WriteMessage(&b, chanUpdate, pver)
+	if err != nil {
 		return err
 	}
 
 	// Now that we know the size, we can write the length out in the main
 	// writer.
-	updateLen := b.Len()
 	if err := WriteUint16(w, uint16(updateLen)); err != nil {
 		return err
 	}

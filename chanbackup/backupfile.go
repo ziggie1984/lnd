@@ -2,7 +2,6 @@ package chanbackup
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -93,17 +92,18 @@ func (b *MultiFile) UpdateAndSwap(newBackup PackedMulti) error {
 	var err error
 	b.tempFile, err = os.Create(b.tempFileName)
 	if err != nil {
-		return fmt.Errorf("unable to create temp file: %v", err)
+		return fmt.Errorf("unable to create temp file: %w", err)
 	}
 
 	// With the file created, we'll write the new packed multi backup and
 	// remove the temporary file all together once this method exits.
 	_, err = b.tempFile.Write([]byte(newBackup))
 	if err != nil {
-		return fmt.Errorf("unable to write backup to temp file: %v", err)
+		return fmt.Errorf("unable to write backup to temp file: %w",
+			err)
 	}
 	if err := b.tempFile.Sync(); err != nil {
-		return fmt.Errorf("unable to sync temp file: %v", err)
+		return fmt.Errorf("unable to sync temp file: %w", err)
 	}
 	defer os.Remove(b.tempFileName)
 
@@ -114,7 +114,7 @@ func (b *MultiFile) UpdateAndSwap(newBackup PackedMulti) error {
 	// sure to close the current file as some OSes don't support
 	// renaming a file that's already open (Windows).
 	if err := b.tempFile.Close(); err != nil {
-		return fmt.Errorf("unable to close file: %v", err)
+		return fmt.Errorf("unable to close file: %w", err)
 	}
 
 	// Finally, we'll attempt to atomically rename the temporary file to
@@ -137,7 +137,7 @@ func (b *MultiFile) ExtractMulti(keyChain keychain.KeyRing) (*Multi, error) {
 	// Now that we've confirmed the target file is populated, we'll read
 	// all the contents of the file. This function ensures that file is
 	// always closed, even if we can't read the contents.
-	multiBytes, err := ioutil.ReadFile(b.fileName)
+	multiBytes, err := os.ReadFile(b.fileName)
 	if err != nil {
 		return nil, err
 	}

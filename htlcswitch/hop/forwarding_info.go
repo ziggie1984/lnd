@@ -10,10 +10,6 @@ import (
 // received within the incoming HTLC, to ensure that the prior hop didn't
 // tamper with the end-to-end routing information at all.
 type ForwardingInfo struct {
-	// Network is the target blockchain network that the HTLC will travel
-	// over next.
-	Network Network
-
 	// NextHop is the channel ID of the next hop. The received HTLC should
 	// be forwarded to this particular channel in order to continue the
 	// end-to-end route.
@@ -26,4 +22,9 @@ type ForwardingInfo struct {
 	// OutgoingCTLV is the specified value of the CTLV timelock to be used
 	// in the outgoing HTLC.
 	OutgoingCTLV uint32
+
+	// NextBlinding is an optional blinding point to be passed to the next
+	// node in UpdateAddHtlc. This field is set if the htlc is part of a
+	// blinded route.
+	NextBlinding lnwire.BlindingPointRecord
 }

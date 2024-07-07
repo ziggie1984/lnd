@@ -93,7 +93,7 @@
     },
     "/v2/router/mc": {
       "get": {
-        "summary": "QueryMissionControl exposes the internal mission control state to callers.\nIt is a development feature.",
+        "summary": "lncli: `querymc`\nQueryMissionControl exposes the internal mission control state to callers.\nIt is a development feature.",
         "operationId": "Router_QueryMissionControl",
         "responses": {
           "200": {
@@ -116,7 +116,7 @@
     },
     "/v2/router/mc/probability/{from_node}/{to_node}/{amt_msat}": {
       "get": {
-        "summary": "Deprecated. QueryProbability returns the current success probability\nestimate for a given node pair and amount. The call returns a zero success\nprobability if no channel is available or if the amount violates min/max\nHTLC constraints.",
+        "summary": "lncli: `queryprob`\nDeprecated. QueryProbability returns the current success probability\nestimate for a given node pair and amount. The call returns a zero success\nprobability if no channel is available or if the amount violates min/max\nHTLC constraints.",
         "operationId": "Router_QueryProbability",
         "responses": {
           "200": {
@@ -165,7 +165,7 @@
     },
     "/v2/router/mc/reset": {
       "post": {
-        "summary": "ResetMissionControl clears all mission control state and starts with a clean\nslate.",
+        "summary": "lncli: `resetmc`\nResetMissionControl clears all mission control state and starts with a clean\nslate.",
         "operationId": "Router_ResetMissionControl",
         "responses": {
           "200": {
@@ -198,7 +198,7 @@
     },
     "/v2/router/mccfg": {
       "get": {
-        "summary": "GetMissionControlConfig returns mission control's current config.",
+        "summary": "lncli: `getmccfg`\nGetMissionControlConfig returns mission control's current config.",
         "operationId": "Router_GetMissionControlConfig",
         "responses": {
           "200": {
@@ -219,7 +219,7 @@
         ]
       },
       "post": {
-        "summary": "SetMissionControlConfig will set mission control's config, if the config\nprovided is valid.",
+        "summary": "lncli: `setmccfg`\nSetMissionControlConfig will set mission control's config, if the config\nprovided is valid.",
         "operationId": "Router_SetMissionControlConfig",
         "responses": {
           "200": {
@@ -293,7 +293,7 @@
     },
     "/v2/router/route": {
       "post": {
-        "summary": "BuildRoute builds a fully specified route based on a list of hop public\nkeys. It retrieves the relevant channel policies from the graph in order to\ncalculate the correct fees and time locks.",
+        "summary": "lncli: `buildroute`\nBuildRoute builds a fully specified route based on a list of hop public\nkeys. It retrieves the relevant channel policies from the graph in order to\ncalculate the correct fees and time locks.\nNote that LND will use its default final_cltv_delta if no value is supplied.\nMake sure to add the correct final_cltv_delta depending on the invoice\nrestriction. Moreover the caller has to make sure to provide the\npayment_addr if the route is paying an invoice which signaled it.",
         "operationId": "Router_BuildRoute",
         "responses": {
           "200": {
@@ -392,7 +392,7 @@
     },
     "/v2/router/send": {
       "post": {
-        "summary": "SendPaymentV2 attempts to route a payment described by the passed\nPaymentRequest to the final destination. The call returns a stream of\npayment updates.",
+        "summary": "SendPaymentV2 attempts to route a payment described by the passed\nPaymentRequest to the final destination. The call returns a stream of\npayment updates. When using this RPC, make sure to set a fee limit, as the\ndefault routing fee limit is 0 sats. Without a non-zero fee limit only\nroutes without fees will be attempted which often fails with\nFAILURE_REASON_NO_ROUTE.",
         "operationId": "Router_SendPaymentV2",
         "responses": {
           "200": {
@@ -434,7 +434,7 @@
     },
     "/v2/router/track/{payment_hash}": {
       "get": {
-        "summary": "TrackPaymentV2 returns an update stream for the payment identified by the\npayment hash.",
+        "summary": "lncli: `trackpayment`\nTrackPaymentV2 returns an update stream for the payment identified by the\npayment hash.",
         "operationId": "Router_TrackPaymentV2",
         "responses": {
           "200": {
@@ -483,7 +483,7 @@
     },
     "/v2/router/updatechanstatus": {
       "post": {
-        "summary": "UpdateChanStatus attempts to manually set the state of a channel\n(enabled, disabled, or auto). A manual \"disable\" request will cause the\nchannel to stay disabled until a subsequent manual request of either\n\"enable\" or \"auto\".",
+        "summary": "lncli: `updatechanstatus`\nUpdateChanStatus attempts to manually set the state of a channel\n(enabled, disabled, or auto). A manual \"disable\" request will cause the\nchannel to stay disabled until a subsequent manual request of either\n\"enable\" or \"auto\".",
         "operationId": "Router_UpdateChanStatus",
         "responses": {
           "200": {
@@ -516,7 +516,7 @@
     },
     "/v2/router/x/importhistory": {
       "post": {
-        "summary": "XImportMissionControl is an experimental API that imports the state provided\nto the internal mission control's state, using all results which are more\nrecent than our existing values. These values will only be imported\nin-memory, and will not be persisted across restarts.",
+        "summary": "lncli: `importmc`\nXImportMissionControl is an experimental API that imports the state provided\nto the internal mission control's state, using all results which are more\nrecent than our existing values. These values will only be imported\nin-memory, and will not be persisted across restarts.",
         "operationId": "Router_XImportMissionControl",
         "responses": {
           "200": {
@@ -577,6 +577,7 @@
         "EXPIRY_TOO_FAR",
         "MPP_TIMEOUT",
         "INVALID_ONION_PAYLOAD",
+        "INVALID_ONION_BLINDING",
         "INTERNAL_FAILURE",
         "UNKNOWN_FAILURE",
         "UNREADABLE_FAILURE"
@@ -771,6 +772,8 @@
         "ANCHORS_OPT",
         "ANCHORS_ZERO_FEE_HTLC_REQ",
         "ANCHORS_ZERO_FEE_HTLC_OPT",
+        "ROUTE_BLINDING_REQUIRED",
+        "ROUTE_BLINDING_OPTIONAL",
         "AMP_REQ",
         "AMP_OPT"
       ],
@@ -873,6 +876,21 @@
           "type": "string",
           "format": "byte",
           "description": "The payment metadata to send along with the payment to the payee."
+        },
+        "blinding_point": {
+          "type": "string",
+          "format": "byte",
+          "description": "Blinding point is an optional blinding point included for introduction\nnodes in blinded paths. This field is mandatory for hops that represents\nthe introduction point in a blinded path."
+        },
+        "encrypted_data": {
+          "type": "string",
+          "format": "byte",
+          "description": "Encrypted data is a receiver-produced blob of data that provides hops\nin a blinded route with forwarding data. As this data is encrypted by\nthe recipient, we will not be able to parse it - it is essentially an\narbitrary blob of data from our node's perspective. This field is\nmandatory for all hops in a blinded path, including the introduction\nnode."
+        },
+        "total_amt_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The total amount that is sent to the recipient (possibly across multiple\nHTLCs), as specified by the sender when making a payment to a blinded path.\nThis value is only set in the final hop payload of a blinded payment. This\nvalue is analogous to the MPPRecord that is used for regular (non-blinded)\nMPP payments."
         }
       }
     },
@@ -911,7 +929,7 @@
         "payment_addr": {
           "type": "string",
           "format": "byte",
-          "description": "A unique, random identifier used to authenticate the sender as the intended\npayer of a multi-path payment. The payment_addr must be the same for all\nsubpayments, and match the payment_addr provided in the receiver's invoice.\nThe same payment_addr must be used on all subpayments."
+          "description": "A unique, random identifier used to authenticate the sender as the intended\npayer of a multi-path payment. The payment_addr must be the same for all\nsubpayments, and match the payment_addr provided in the receiver's invoice.\nThe same payment_addr must be used on all subpayments. This is also called\npayment secret in specifications (e.g. BOLT 11)."
         },
         "total_amt_msat": {
           "type": "string",
@@ -1015,9 +1033,11 @@
         "UNKNOWN",
         "IN_FLIGHT",
         "SUCCEEDED",
-        "FAILED"
+        "FAILED",
+        "INITIATED"
       ],
-      "default": "UNKNOWN"
+      "default": "UNKNOWN",
+      "description": " - UNKNOWN: Deprecated. This status will never be returned.\n - IN_FLIGHT: Payment has inflight HTLCs.\n - SUCCEEDED: Payment is settled.\n - FAILED: Payment is failed.\n - INITIATED: Payment is created and has not attempted any HTLCs."
     },
     "lnrpcRoute": {
       "type": "object",
@@ -1155,7 +1175,7 @@
         "payment_addr": {
           "type": "string",
           "format": "byte",
-          "description": "An optional payment addr to be included within the last hop of the route."
+          "description": "An optional payment addr to be included within the last hop of the route.\nThis is also called payment secret in specifications (e.g. BOLT 11)."
         }
       }
     },
@@ -1624,12 +1644,21 @@
         "dest": {
           "type": "string",
           "format": "byte",
-          "description": "The destination once wishes to obtain a routing fee quote to."
+          "description": "The destination one wishes to obtain a routing fee quote to. If set, this\nparameter requires the amt_sat parameter also to be set. This parameter\ncombination triggers a graph based routing fee estimation as opposed to a\npayment probe based estimate in case a payment request is provided. The\ngraph based estimation is an algorithm that is executed on the in memory\ngraph. Hence its runtime is significantly shorter than a payment probe\nestimation that sends out actual payments to the network."
         },
         "amt_sat": {
           "type": "string",
           "format": "int64",
-          "description": "The amount one wishes to send to the target destination."
+          "description": "The amount one wishes to send to the target destination. It is only to be\nused in combination with the dest parameter."
+        },
+        "payment_request": {
+          "type": "string",
+          "description": "A payment request of the target node that the route fee request is intended\nfor. Its parameters are input to probe payments that estimate routing fees.\nThe timeout parameter can be specified to set a maximum time on the probing\nattempt. Cannot be used in combination with dest and amt_sat."
+        },
+        "timeout": {
+          "type": "integer",
+          "format": "int64",
+          "description": "A user preference of how long a probe payment should maximally be allowed to\ntake, denoted in seconds. The probing payment loop is aborted if this\ntimeout is reached. Note that the probing process itself can take longer\nthan the timeout if the HTLC becomes delayed or stuck. Canceling the context\nof this call will not cancel the payment loop, the duration is only\ncontrolled by the timeout parameter."
         }
       }
     },
@@ -1645,6 +1674,10 @@
           "type": "string",
           "format": "int64",
           "description": "An estimate of the worst case time delay that can occur. Note that callers\nwill still need to factor in the final CLTV delta of the last hop into this\nvalue."
+        },
+        "failure_reason": {
+          "$ref": "#/definitions/lnrpcPaymentFailureReason",
+          "description": "An indication whether a probing payment succeeded or whether and why it\nfailed. FAILURE_REASON_NONE indicates success."
         }
       }
     },
@@ -1661,11 +1694,6 @@
           "format": "int64",
           "description": "Number of satoshis to send.\n\nThe fields amt and amt_msat are mutually exclusive."
         },
-        "amt_msat": {
-          "type": "string",
-          "format": "int64",
-          "description": "Number of millisatoshis to send.\n\nThe fields amt and amt_msat are mutually exclusive."
-        },
         "payment_hash": {
           "type": "string",
           "format": "byte",
@@ -1675,11 +1703,6 @@
           "type": "integer",
           "format": "int32",
           "description": "The CLTV delta from the current height that should be used to set the\ntimelock for the final hop."
-        },
-        "payment_addr": {
-          "type": "string",
-          "format": "byte",
-          "description": "An optional payment addr to be included within the last hop of the route."
         },
         "payment_request": {
           "type": "string",
@@ -1695,33 +1718,15 @@
           "format": "int64",
           "description": "The maximum number of satoshis that will be paid as a fee of the payment.\nIf this field is left to the default value of 0, only zero-fee routes will\nbe considered. This usually means single hop routes connecting directly to\nthe destination. To send the payment without a fee limit, use max int here.\n\nThe fields fee_limit_sat and fee_limit_msat are mutually exclusive."
         },
-        "fee_limit_msat": {
-          "type": "string",
-          "format": "int64",
-          "description": "The maximum number of millisatoshis that will be paid as a fee of the\npayment. If this field is left to the default value of 0, only zero-fee\nroutes will be considered. This usually means single hop routes connecting\ndirectly to the destination. To send the payment without a fee limit, use\nmax int here.\n\nThe fields fee_limit_sat and fee_limit_msat are mutually exclusive."
-        },
         "outgoing_chan_id": {
           "type": "string",
           "format": "uint64",
           "description": "Deprecated, use outgoing_chan_ids. The channel id of the channel that must\nbe taken to the first hop. If zero, any channel may be used (unless\noutgoing_chan_ids are set)."
         },
-        "outgoing_chan_ids": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "format": "uint64"
-          },
-          "description": "The channel ids of the channels are allowed for the first hop. If empty,\nany channel may be used."
-        },
-        "last_hop_pubkey": {
-          "type": "string",
-          "format": "byte",
-          "description": "The pubkey of the last hop of the route. If empty, any hop may be used."
-        },
         "cltv_limit": {
           "type": "integer",
           "format": "int32",
-          "description": "An optional maximum total time lock for the route. This should not exceed\nlnd's `--max-cltv-expiry` setting. If zero, then the value of\n`--max-cltv-expiry` is enforced."
+          "description": "An optional maximum total time lock for the route. This should not\nexceed lnd's `--max-cltv-expiry` setting. If zero, then the value of\n`--max-cltv-expiry` is enforced."
         },
         "route_hints": {
           "type": "array",
@@ -1737,6 +1742,21 @@
             "format": "byte"
           },
           "description": "An optional field that can be used to pass an arbitrary set of TLV records\nto a peer which understands the new records. This can be used to pass\napplication specific data during the payment attempt. Record types are\nrequired to be in the custom range \u003e= 65536. When using REST, the values\nmust be encoded as base64."
+        },
+        "amt_msat": {
+          "type": "string",
+          "format": "int64",
+          "description": "Number of millisatoshis to send.\n\nThe fields amt and amt_msat are mutually exclusive."
+        },
+        "fee_limit_msat": {
+          "type": "string",
+          "format": "int64",
+          "description": "The maximum number of millisatoshis that will be paid as a fee of the\npayment. If this field is left to the default value of 0, only zero-fee\nroutes will be considered. This usually means single hop routes connecting\ndirectly to the destination. To send the payment without a fee limit, use\nmax int here.\n\nThe fields fee_limit_sat and fee_limit_msat are mutually exclusive."
+        },
+        "last_hop_pubkey": {
+          "type": "string",
+          "format": "byte",
+          "description": "The pubkey of the last hop of the route. If empty, any hop may be used."
         },
         "allow_self_payment": {
           "type": "boolean",
@@ -1757,6 +1777,19 @@
         "no_inflight_updates": {
           "type": "boolean",
           "description": "If set, only the final payment update is streamed back. Intermediate updates\nthat show which htlcs are still in flight are suppressed."
+        },
+        "outgoing_chan_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uint64"
+          },
+          "description": "The channel ids of the channels are allowed for the first hop. If empty,\nany channel may be used."
+        },
+        "payment_addr": {
+          "type": "string",
+          "format": "byte",
+          "description": "An optional payment addr to be included within the last hop of the route.\nThis is also called payment secret in specifications (e.g. BOLT 11)."
         },
         "max_shard_size_msat": {
           "type": "string",

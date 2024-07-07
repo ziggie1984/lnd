@@ -37,14 +37,16 @@ type ChannelGraphTimeSeries interface {
 	// ID's represents the ID's that we don't know of which were in the
 	// passed superSet.
 	FilterKnownChanIDs(chain chainhash.Hash,
-		superSet []lnwire.ShortChannelID) ([]lnwire.ShortChannelID, error)
+		superSet []channeldb.ChannelUpdateInfo,
+		isZombieChan func(time.Time, time.Time) bool) (
+		[]lnwire.ShortChannelID, error)
 
 	// FilterChannelRange returns the set of channels that we created
 	// between the start height and the end height. The channel IDs are
 	// grouped by their common block height. We'll use this to to a remote
 	// peer's QueryChannelRange message.
-	FilterChannelRange(chain chainhash.Hash,
-		startHeight, endHeight uint32) ([]channeldb.BlockChannelRange, error)
+	FilterChannelRange(chain chainhash.Hash, startHeight, endHeight uint32,
+		withTimestamps bool) ([]channeldb.BlockChannelRange, error)
 
 	// FetchChanAnns returns a full set of channel announcements as well as
 	// their updates that match the set of specified short channel ID's.
@@ -163,6 +165,8 @@ func (c *ChanSeries) UpdatesInHorizon(chain chainhash.Hash,
 		return nil, err
 	}
 	for _, nodeAnn := range nodeAnnsInHorizon {
+		nodeAnn := nodeAnn
+
 		// Ensure we only forward nodes that are publicly advertised to
 		// prevent leaking information about nodes.
 		isNodePublic, err := c.graph.IsPublicNode(nodeAnn.PubKeyBytes)
@@ -195,15 +199,12 @@ func (c *ChanSeries) UpdatesInHorizon(chain chainhash.Hash,
 // represents the ID's that we don't know of which were in the passed superSet.
 //
 // NOTE: This is part of the ChannelGraphTimeSeries interface.
-func (c *ChanSeries) FilterKnownChanIDs(chain chainhash.Hash,
-	superSet []lnwire.ShortChannelID) ([]lnwire.ShortChannelID, error) {
+func (c *ChanSeries) FilterKnownChanIDs(_ chainhash.Hash,
+	superSet []channeldb.ChannelUpdateInfo,
+	isZombieChan func(time.Time, time.Time) bool) (
+	[]lnwire.ShortChannelID, error) {
 
-	chanIDs := make([]uint64, 0, len(superSet))
-	for _, chanID := range superSet {
-		chanIDs = append(chanIDs, chanID.ToUint64())
-	}
-
-	newChanIDs, err := c.graph.FilterKnownChanIDs(chanIDs)
+	newChanIDs, err := c.graph.FilterKnownChanIDs(superSet, isZombieChan)
 	if err != nil {
 		return nil, err
 	}
@@ -224,10 +225,13 @@ func (c *ChanSeries) FilterKnownChanIDs(chain chainhash.Hash,
 // message.
 //
 // NOTE: This is part of the ChannelGraphTimeSeries interface.
-func (c *ChanSeries) FilterChannelRange(chain chainhash.Hash,
-	startHeight, endHeight uint32) ([]channeldb.BlockChannelRange, error) {
+func (c *ChanSeries) FilterChannelRange(_ chainhash.Hash, startHeight,
+	endHeight uint32, withTimestamps bool) ([]channeldb.BlockChannelRange,
+	error) {
 
-	return c.graph.FilterChannelRange(startHeight, endHeight)
+	return c.graph.FilterChannelRange(
+		startHeight, endHeight, withTimestamps,
+	)
 }
 
 // FetchChanAnns returns a full set of channel announcements as well as their
@@ -245,7 +249,7 @@ func (c *ChanSeries) FetchChanAnns(chain chainhash.Hash,
 		chanIDs = append(chanIDs, chanID.ToUint64())
 	}
 
-	channels, err := c.graph.FetchChanInfos(chanIDs)
+	channels, err := c.graph.FetchChanInfos(nil, chanIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -278,10 +282,12 @@ func (c *ChanSeries) FetchChanAnns(chain chainhash.Hash,
 
 			// If this edge has a validated node announcement, that
 			// we haven't yet sent, then we'll send that as well.
-			nodePub := channel.Policy1.Node.PubKeyBytes
-			hasNodeAnn := channel.Policy1.Node.HaveNodeAnnouncement
+			nodePub := channel.Node2.PubKeyBytes
+			hasNodeAnn := channel.Node2.HaveNodeAnnouncement
 			if _, ok := nodePubsSent[nodePub]; !ok && hasNodeAnn {
-				nodeAnn, err := channel.Policy1.Node.NodeAnnouncement(true)
+				nodeAnn, err := channel.Node2.NodeAnnouncement(
+					true,
+				)
 				if err != nil {
 					return nil, err
 				}
@@ -295,10 +301,12 @@ func (c *ChanSeries) FetchChanAnns(chain chainhash.Hash,
 
 			// If this edge has a validated node announcement, that
 			// we haven't yet sent, then we'll send that as well.
-			nodePub := channel.Policy2.Node.PubKeyBytes
-			hasNodeAnn := channel.Policy2.Node.HaveNodeAnnouncement
+			nodePub := channel.Node1.PubKeyBytes
+			hasNodeAnn := channel.Node1.HaveNodeAnnouncement
 			if _, ok := nodePubsSent[nodePub]; !ok && hasNodeAnn {
-				nodeAnn, err := channel.Policy2.Node.NodeAnnouncement(true)
+				nodeAnn, err := channel.Node1.NodeAnnouncement(
+					true,
+				)
 				if err != nil {
 					return nil, err
 				}

@@ -16,7 +16,8 @@ in `lnd` to help improve the overall readability.
 
 Blocks of code within `lnd` should be segmented into logical stanzas of
 operation. Such spacing makes the code easier to follow at a skim, and reduces
-unnecessary line noise. Coupled with the commenting scheme specified above,
+unnecessary line noise. Coupled with the commenting scheme specified in the
+[contribution guide](./code_contribution_guidelines.md#code-documentation-and-commenting),
 proper spacing allows readers to quickly scan code, extracting semantics quickly.
 Functions should _not_ just be laid out as a bare contiguous block of code.
 
@@ -124,8 +125,8 @@ myKey := "0214cd678a565041d00e6cf8d62ef8add33b4af4786fb2beb87b366a2e1" +
 ### Wrapping long function calls
 
 When wrapping a line that contains a function call as the unwrapped line exceeds
-the column limit, the close paren should be placed on its own line.
-Additionally, all arguments should begin in a new line after the open paren.
+the column limit, the close parenthesis should be placed on its own line.
+Additionally, all arguments should begin in a new line after the open parenthesis.
 
 **WRONG**
 ```go
@@ -203,6 +204,9 @@ func foo(a, b,
 
 func baz(a, b, c) (d,
 	error) {
+
+func longFunctionName(
+	a, b, c) (d, error) {
 ```
 
 If a function declaration spans multiple lines the body should start with an

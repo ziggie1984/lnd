@@ -146,14 +146,16 @@ func (w *mockWalletController) ImportTaprootScript(waddrmgr.KeyScope,
 
 // SendOutputs currently returns dummy values.
 func (w *mockWalletController) SendOutputs([]*wire.TxOut,
-	chainfee.SatPerKWeight, int32, string) (*wire.MsgTx, error) {
+	chainfee.SatPerKWeight, int32, string,
+	base.CoinSelectionStrategy) (*wire.MsgTx, error) {
 
 	return nil, nil
 }
 
 // CreateSimpleTx currently returns dummy values.
 func (w *mockWalletController) CreateSimpleTx([]*wire.TxOut,
-	chainfee.SatPerKWeight, int32, bool) (*txauthor.AuthoredTx, error) {
+	chainfee.SatPerKWeight, int32, base.CoinSelectionStrategy,
+	bool) (*txauthor.AuthoredTx, error) {
 
 	return nil, nil
 }
@@ -192,12 +194,6 @@ func (w *mockWalletController) ListTransactionDetails(int32, int32,
 	return nil, nil
 }
 
-// LockOutpoint currently does nothing.
-func (w *mockWalletController) LockOutpoint(o wire.OutPoint) {}
-
-// UnlockOutpoint currently does nothing.
-func (w *mockWalletController) UnlockOutpoint(o wire.OutPoint) {}
-
 // LeaseOutput returns the current time and a nil error.
 func (w *mockWalletController) LeaseOutput(wtxmgr.LockID, wire.OutPoint,
 	time.Duration) (time.Time, []byte, btcutil.Amount, error) {
@@ -220,7 +216,9 @@ func (w *mockWalletController) ListLeasedOutputs() (
 
 // FundPsbt currently does nothing.
 func (w *mockWalletController) FundPsbt(*psbt.Packet, int32,
-	chainfee.SatPerKWeight, string, *waddrmgr.KeyScope) (int32, error) {
+	chainfee.SatPerKWeight, string, *waddrmgr.KeyScope,
+	base.CoinSelectionStrategy, func(utxo wtxmgr.Credit) bool) (int32,
+	error) {
 
 	return 0, nil
 }
@@ -235,12 +233,24 @@ func (w *mockWalletController) FinalizePsbt(_ *psbt.Packet, _ string) error {
 	return nil
 }
 
+// DecorateInputs currently does nothing.
+func (w *mockWalletController) DecorateInputs(*psbt.Packet, bool) error {
+	return nil
+}
+
 // PublishTransaction sends a transaction to the PublishedTransactions chan.
 func (w *mockWalletController) PublishTransaction(tx *wire.MsgTx,
 	_ string) error {
 
 	w.PublishedTransactions <- tx
 	return nil
+}
+
+// GetTransactionDetails currently does nothing.
+func (w *mockWalletController) GetTransactionDetails(*chainhash.Hash) (
+	*TransactionDetail, error) {
+
+	return nil, nil
 }
 
 // LabelTransaction currently does nothing.
@@ -282,6 +292,10 @@ func (w *mockWalletController) FetchTx(chainhash.Hash) (*wire.MsgTx, error) {
 }
 
 func (w *mockWalletController) RemoveDescendants(*wire.MsgTx) error {
+	return nil
+}
+
+func (w *mockWalletController) CheckMempoolAcceptance(tx *wire.MsgTx) error {
 	return nil
 }
 

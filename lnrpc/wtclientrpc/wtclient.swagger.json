@@ -18,7 +18,7 @@
   "paths": {
     "/v2/watchtower/client": {
       "get": {
-        "summary": "ListTowers returns the list of watchtowers registered with the client.",
+        "summary": "lncli: `wtclient towers`\nListTowers returns the list of watchtowers registered with the client.",
         "operationId": "WatchtowerClient_ListTowers",
         "responses": {
           "200": {
@@ -55,7 +55,7 @@
         ]
       },
       "post": {
-        "summary": "AddTower adds a new watchtower reachable at the given address and\nconsiders it for new sessions. If the watchtower already exists, then\nany new addresses included will be considered when dialing it for\nsession negotiations and backups.",
+        "summary": "lncli: `wtclient add`\nAddTower adds a new watchtower reachable at the given address and\nconsiders it for new sessions. If the watchtower already exists, then\nany new addresses included will be considered when dialing it for\nsession negotiations and backups.",
         "operationId": "WatchtowerClient_AddTower",
         "responses": {
           "200": {
@@ -88,7 +88,7 @@
     },
     "/v2/watchtower/client/info/{pubkey}": {
       "get": {
-        "summary": "GetTowerInfo retrieves information for a registered watchtower.",
+        "summary": "lncli: `wtclient tower`\nGetTowerInfo retrieves information for a registered watchtower.",
         "operationId": "WatchtowerClient_GetTowerInfo",
         "responses": {
           "200": {
@@ -135,7 +135,7 @@
     },
     "/v2/watchtower/client/policy": {
       "get": {
-        "summary": "Policy returns the active watchtower client policy configuration.",
+        "summary": "lncli: `wtclient policy`\nPolicy returns the active watchtower client policy configuration.",
         "operationId": "WatchtowerClient_Policy",
         "responses": {
           "200": {
@@ -154,13 +154,14 @@
         "parameters": [
           {
             "name": "policy_type",
-            "description": "The client type from which to retrieve the active offering policy.\n\n - LEGACY: Selects the policy from the legacy tower client.\n - ANCHOR: Selects the policy from the anchor tower client.",
+            "description": "The client type from which to retrieve the active offering policy.\n\n - LEGACY: Selects the policy from the legacy tower client.\n - ANCHOR: Selects the policy from the anchor tower client.\n - TAPROOT: Selects the policy from the taproot tower client.",
             "in": "query",
             "required": false,
             "type": "string",
             "enum": [
               "LEGACY",
-              "ANCHOR"
+              "ANCHOR",
+              "TAPROOT"
             ],
             "default": "LEGACY"
           }
@@ -170,9 +171,42 @@
         ]
       }
     },
+    "/v2/watchtower/client/sessions/terminate/{session_id}": {
+      "post": {
+        "summary": "lncli: `wtclient session terminate`\nTerminate terminates the given session and marks it as terminal so that\nit is not used for backups anymore.",
+        "operationId": "WatchtowerClient_TerminateSession",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/wtclientrpcTerminateSessionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "session_id",
+            "description": "The ID of the session that should be terminated.",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "byte"
+          }
+        ],
+        "tags": [
+          "WatchtowerClient"
+        ]
+      }
+    },
     "/v2/watchtower/client/stats": {
       "get": {
-        "summary": "Stats returns the in-memory statistics of the client since startup.",
+        "summary": "lncli: `wtclient stats`\nStats returns the in-memory statistics of the client since startup.",
         "operationId": "WatchtowerClient_Stats",
         "responses": {
           "200": {
@@ -193,9 +227,42 @@
         ]
       }
     },
+    "/v2/watchtower/client/tower/deactivate/{pubkey}": {
+      "post": {
+        "summary": "lncli: `wtclient deactivate`\nDeactivateTower sets the given tower's status to inactive so that it\nis not considered for session negotiation. Its sessions will also not\nbe used while the tower is inactive.",
+        "operationId": "WatchtowerClient_DeactivateTower",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/wtclientrpcDeactivateTowerResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "pubkey",
+            "description": "The identifying public key of the watchtower to deactivate.",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "byte"
+          }
+        ],
+        "tags": [
+          "WatchtowerClient"
+        ]
+      }
+    },
     "/v2/watchtower/client/{pubkey}": {
       "delete": {
-        "summary": "RemoveTower removes a watchtower from being considered for future session\nnegotiations and from being used for any subsequent backups until it's added\nagain. If an address is provided, then this RPC only serves as a way of\nremoving the address from the watchtower instead.",
+        "summary": "lncli: `wtclient remove`\nRemoveTower removes a watchtower from being considered for future session\nnegotiations and from being used for any subsequent backups until it's added\nagain. If an address is provided, then this RPC only serves as a way of\nremoving the address from the watchtower instead.",
         "operationId": "WatchtowerClient_RemoveTower",
         "responses": {
           "200": {
@@ -282,6 +349,15 @@
     "wtclientrpcAddTowerResponse": {
       "type": "object"
     },
+    "wtclientrpcDeactivateTowerResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "A string describing the action that took place."
+        }
+      }
+    },
     "wtclientrpcListTowersResponse": {
       "type": "object",
       "properties": {
@@ -318,10 +394,11 @@
       "type": "string",
       "enum": [
         "LEGACY",
-        "ANCHOR"
+        "ANCHOR",
+        "TAPROOT"
       ],
       "default": "LEGACY",
-      "description": " - LEGACY: Selects the policy from the legacy tower client.\n - ANCHOR: Selects the policy from the anchor tower client."
+      "description": " - LEGACY: Selects the policy from the legacy tower client.\n - ANCHOR: Selects the policy from the anchor tower client.\n - TAPROOT: Selects the policy from the taproot tower client."
     },
     "wtclientrpcRemoveTowerResponse": {
       "type": "object"
@@ -353,6 +430,15 @@
           "type": "integer",
           "format": "int64",
           "description": "The total number of watchtower sessions that have been exhausted."
+        }
+      }
+    },
+    "wtclientrpcTerminateSessionResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "A string describing the action that took place."
         }
       }
     },
@@ -423,6 +509,11 @@
           "type": "integer",
           "format": "int64",
           "description": "The fee rate, in satoshis per vbyte, that will be used by the watchtower for\nthe justice transaction in the event of a channel breach."
+        },
+        "id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The ID of the session."
         }
       }
     },

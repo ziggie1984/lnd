@@ -23,6 +23,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntest/channels"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -651,8 +652,7 @@ func TestChannelStateTransition(t *testing.T) {
 		{
 			LogIndex: 2,
 			UpdateMsg: &lnwire.UpdateAddHTLC{
-				ChanID:    lnwire.ChannelID{1, 2, 3},
-				ExtraData: make([]byte, 0),
+				ChanID: lnwire.ChannelID{1, 2, 3},
 			},
 		},
 	}
@@ -710,25 +710,22 @@ func TestChannelStateTransition(t *testing.T) {
 				wireSig,
 				wireSig,
 			},
-			ExtraData: make([]byte, 0),
 		},
 		LogUpdates: []LogUpdate{
 			{
 				LogIndex: 1,
 				UpdateMsg: &lnwire.UpdateAddHTLC{
-					ID:        1,
-					Amount:    lnwire.NewMSatFromSatoshis(100),
-					Expiry:    25,
-					ExtraData: make([]byte, 0),
+					ID:     1,
+					Amount: lnwire.NewMSatFromSatoshis(100),
+					Expiry: 25,
 				},
 			},
 			{
 				LogIndex: 2,
 				UpdateMsg: &lnwire.UpdateAddHTLC{
-					ID:        2,
-					Amount:    lnwire.NewMSatFromSatoshis(200),
-					Expiry:    50,
-					ExtraData: make([]byte, 0),
+					ID:     2,
+					Amount: lnwire.NewMSatFromSatoshis(200),
+					Expiry: 50,
 				},
 			},
 		},
@@ -1158,6 +1155,70 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 	}
 }
 
+// TestShutdownInfo tests that a channel's shutdown info can correctly be
+// persisted and retrieved.
+func TestShutdownInfo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		localInit bool
+	}{
+		{
+			name:      "local node initiated",
+			localInit: true,
+		},
+		{
+			name:      "remote node initiated",
+			localInit: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			testShutdownInfo(t, test.localInit)
+		})
+	}
+}
+
+func testShutdownInfo(t *testing.T, locallyInitiated bool) {
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
+
+	cdb := fullDB.ChannelStateDB()
+
+	// First a test channel.
+	channel := createTestChannel(t, cdb)
+
+	// We haven't persisted any shutdown info for this channel yet.
+	_, err = channel.ShutdownInfo()
+	require.Error(t, err, ErrNoShutdownInfo)
+
+	// Construct a new delivery script and create a new ShutdownInfo object.
+	script := []byte{1, 3, 4, 5}
+
+	// Create a ShutdownInfo struct.
+	shutdownInfo := NewShutdownInfo(script, locallyInitiated)
+
+	// Persist the shutdown info.
+	require.NoError(t, channel.MarkShutdownSent(shutdownInfo))
+
+	// We should now be able to retrieve the shutdown info.
+	info, err := channel.ShutdownInfo()
+	require.NoError(t, err)
+	require.True(t, info.IsSome())
+
+	// Assert that the decoded values of the shutdown info are correct.
+	info.WhenSome(func(info ShutdownInfo) {
+		require.EqualValues(t, script, info.DeliveryScript.Val)
+		require.Equal(t, locallyInitiated, info.LocalInitiator.Val)
+	})
+}
+
 // TestRefresh asserts that Refresh updates the in-memory state of another
 // OpenChannel to reflect a preceding call to MarkOpen on a different
 // OpenChannel.
@@ -1546,9 +1607,25 @@ func TestHTLCsExtraData(t *testing.T) {
 		OnionBlob:     lnmock.MockOnion(),
 	}
 
+	// Add a blinding point to a htlc.
+	blindingPointHTLC := HTLC{
+		Signature:     testSig.Serialize(),
+		Incoming:      false,
+		Amt:           10,
+		RHash:         key,
+		RefundTimeout: 1,
+		OnionBlob:     lnmock.MockOnion(),
+		BlindingPoint: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[lnwire.BlindingPointTlvType](
+				pubKey,
+			),
+		),
+	}
+
 	testCases := []struct {
-		name  string
-		htlcs []HTLC
+		name        string
+		htlcs       []HTLC
+		blindingIdx int
 	}{
 		{
 			// Serialize multiple HLTCs with no extra data to
@@ -1560,30 +1637,12 @@ func TestHTLCsExtraData(t *testing.T) {
 			},
 		},
 		{
+			// Some HTLCs with extra data, some without.
 			name: "mixed extra data",
 			htlcs: []HTLC{
 				mockHtlc,
-				{
-					Signature:     testSig.Serialize(),
-					Incoming:      false,
-					Amt:           10,
-					RHash:         key,
-					RefundTimeout: 1,
-					OnionBlob:     lnmock.MockOnion(),
-					ExtraData:     []byte{1, 2, 3},
-				},
+				blindingPointHTLC,
 				mockHtlc,
-				{
-					Signature:     testSig.Serialize(),
-					Incoming:      false,
-					Amt:           10,
-					RHash:         key,
-					RefundTimeout: 1,
-					OnionBlob:     lnmock.MockOnion(),
-					ExtraData: bytes.Repeat(
-						[]byte{9}, 999,
-					),
-				},
 			},
 		},
 	}
@@ -1601,7 +1660,15 @@ func TestHTLCsExtraData(t *testing.T) {
 			r := bytes.NewReader(b.Bytes())
 			htlcs, err := DeserializeHtlcs(r)
 			require.NoError(t, err)
-			require.Equal(t, testCase.htlcs, htlcs)
+
+			require.EqualValues(t, len(testCase.htlcs), len(htlcs))
+			for i, htlc := range htlcs {
+				// We use the extra data field when we
+				// serialize, so we set to nil to be able to
+				// assert on equal for the test.
+				htlc.ExtraData = nil
+				require.Equal(t, testCase.htlcs[i], htlc)
+			}
 		})
 	}
 }

@@ -34,6 +34,11 @@ const (
 	MsgChannelReady                        = 36
 	MsgShutdown                            = 38
 	MsgClosingSigned                       = 39
+	MsgClosingComplete                     = 40
+	MsgClosingSig                          = 41
+	MsgDynPropose                          = 111
+	MsgDynAck                              = 113
+	MsgDynReject                           = 115
 	MsgUpdateAddHTLC                       = 128
 	MsgUpdateFulfillHTLC                   = 130
 	MsgUpdateFailHTLC                      = 131
@@ -51,6 +56,7 @@ const (
 	MsgQueryChannelRange                   = 263
 	MsgReplyChannelRange                   = 264
 	MsgGossipTimestampRange                = 265
+	MsgKickoffSig                          = 777
 )
 
 // ErrorEncodeMessage is used when failed to encode the message payload.
@@ -94,6 +100,14 @@ func (t MessageType) String() string {
 		return "Shutdown"
 	case MsgClosingSigned:
 		return "ClosingSigned"
+	case MsgDynPropose:
+		return "DynPropose"
+	case MsgDynAck:
+		return "DynAck"
+	case MsgDynReject:
+		return "DynReject"
+	case MsgKickoffSig:
+		return "KickoffSig"
 	case MsgUpdateAddHTLC:
 		return "UpdateAddHTLC"
 	case MsgUpdateFailHTLC:
@@ -134,6 +148,10 @@ func (t MessageType) String() string {
 		return "ReplyChannelRange"
 	case MsgGossipTimestampRange:
 		return "GossipTimestampRange"
+	case MsgClosingComplete:
+		return "ClosingComplete"
+	case MsgClosingSig:
+		return "ClosingSig"
 	default:
 		return "<unknown>"
 	}
@@ -172,6 +190,19 @@ type Message interface {
 	MsgType() MessageType
 }
 
+// LinkUpdater is an interface implemented by most messages in BOLT 2 that are
+// allowed to update the channel state.
+type LinkUpdater interface {
+	// All LinkUpdater messages are messages and so we embed the interface
+	// so that we can treat it as a message if all we know about it is that
+	// it is a LinkUpdater message.
+	Message
+
+	// TargetChanID returns the channel id of the link for which this
+	// message is intended.
+	TargetChanID() ChannelID
+}
+
 // makeEmptyMessage creates a new empty message of the proper concrete type
 // based on the passed message type.
 func makeEmptyMessage(msgType MessageType) (Message, error) {
@@ -196,6 +227,14 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 		msg = &Shutdown{}
 	case MsgClosingSigned:
 		msg = &ClosingSigned{}
+	case MsgDynPropose:
+		msg = &DynPropose{}
+	case MsgDynAck:
+		msg = &DynAck{}
+	case MsgDynReject:
+		msg = &DynReject{}
+	case MsgKickoffSig:
+		msg = &KickoffSig{}
 	case MsgUpdateAddHTLC:
 		msg = &UpdateAddHTLC{}
 	case MsgUpdateFailHTLC:
@@ -236,6 +275,10 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 		msg = &ReplyChannelRange{}
 	case MsgGossipTimestampRange:
 		msg = &GossipTimestampRange{}
+	case MsgClosingComplete:
+		msg = &ClosingComplete{}
+	case MsgClosingSig:
+		msg = &ClosingSig{}
 	default:
 		// If the message is not within our custom range and has not
 		// specifically been overridden, return an unknown message.

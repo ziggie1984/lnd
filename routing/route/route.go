@@ -38,6 +38,13 @@ var (
 	// ErrAMPMissingMPP is returned when the caller tries to attach an AMP
 	// record but no MPP record is presented for the final hop.
 	ErrAMPMissingMPP = errors.New("cannot send AMP without MPP record")
+
+	// ErrMissingField is returned if a required TLV is missing.
+	ErrMissingField = errors.New("required tlv missing")
+
+	// ErrUnexpectedField is returned if a tlv field is included when it
+	// should not be.
+	ErrUnexpectedField = errors.New("unexpected tlv included")
 )
 
 // Vertex is a simple alias for the serialization of a compressed Bitcoin
@@ -131,6 +138,20 @@ type Hop struct {
 	// Metadata is additional data that is sent along with the payment to
 	// the payee.
 	Metadata []byte
+
+	// EncryptedData is an encrypted data blob includes for hops that are
+	// part of a blinded route.
+	EncryptedData []byte
+
+	// BlindingPoint is an ephemeral public key used by introduction nodes
+	// in blinded routes to unblind their portion of the route and pass on
+	// the next ephemeral key to the next blinded node to do the same.
+	BlindingPoint *btcec.PublicKey
+
+	// TotalAmtMsat is the total amount for a blinded payment, potentially
+	// spread over more than one HTLC. This field should only be set for
+	// the final hop in a blinded path.
+	TotalAmtMsat lnwire.MilliSatoshi
 }
 
 // Copy returns a deep copy of the Hop.
@@ -147,17 +168,26 @@ func (h *Hop) Copy() *Hop {
 		c.AMP = &a
 	}
 
+	if h.BlindingPoint != nil {
+		b := *h.BlindingPoint
+		c.BlindingPoint = &b
+	}
+
 	return &c
 }
 
 // PackHopPayload writes to the passed io.Writer, the series of byes that can
 // be placed directly into the per-hop payload (EOB) for this hop. This will
 // include the required routing fields, as well as serializing any of the
-// passed optional TLVRecords.  nextChanID is the unique channel ID that
-// references the _outgoing_ channel ID that follows this hop. This field
-// follows the same semantics as the NextAddress field in the onion: it should
-// be set to zero to indicate the terminal hop.
-func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
+// passed optional TLVRecords. nextChanID is the unique channel ID that
+// references the _outgoing_ channel ID that follows this hop. The lastHop bool
+// is used to signal whether this hop is the final hop in a route. Previously,
+// a zero nextChanID would be used for this purpose, but with the addition of
+// blinded routes which allow zero nextChanID values for intermediate hops we
+// add an explicit signal.
+func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64,
+	finalHop bool) error {
+
 	// If this is a legacy payload, then we'll exit here as this method
 	// shouldn't be called.
 	if h.LegacyPayload == true {
@@ -169,17 +199,49 @@ func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
 	// required routing fields, as well as these optional values.
 	var records []tlv.Record
 
-	// Every hop must have an amount to forward and CLTV expiry.
-	amt := uint64(h.AmtToForward)
-	records = append(records,
-		record.NewAmtToFwdRecord(&amt),
-		record.NewLockTimeRecord(&h.OutgoingTimeLock),
-	)
+	// Hops that are not part of a blinded path will have an amount and
+	// a CLTV expiry field. In a blinded route (where encrypted data is
+	// non-nil), these values may be omitted for intermediate nodes.
+	// Validate these fields against the structure of the payload so that
+	// we know they're included (or excluded) correctly.
+	isBlinded := h.EncryptedData != nil
 
-	// BOLT 04 says the next_hop_id should be omitted for the final hop,
-	// but present for all others.
-	//
-	// TODO(conner): test using hop.Exit once available
+	if err := optionalBlindedField(
+		h.AmtToForward == 0, isBlinded, finalHop,
+	); err != nil {
+		return fmt.Errorf("%w: amount to forward: %v", err,
+			h.AmtToForward)
+	}
+
+	if err := optionalBlindedField(
+		h.OutgoingTimeLock == 0, isBlinded, finalHop,
+	); err != nil {
+		return fmt.Errorf("%w: outgoing timelock: %v", err,
+			h.OutgoingTimeLock)
+	}
+
+	// Once we've validated that these TLVs are set as we expect, we can
+	// go ahead and include them if non-zero.
+	amt := uint64(h.AmtToForward)
+	if amt != 0 {
+		records = append(
+			records, record.NewAmtToFwdRecord(&amt),
+		)
+	}
+
+	if h.OutgoingTimeLock != 0 {
+		records = append(
+			records, record.NewLockTimeRecord(&h.OutgoingTimeLock),
+		)
+	}
+
+	// Validate channel TLV is present as expected based on location in
+	// route and whether this hop is blinded.
+	err := validateNextChanID(nextChanID != 0, isBlinded, finalHop)
+	if err != nil {
+		return fmt.Errorf("%w: channel id: %v", err, nextChanID)
+	}
+
 	if nextChanID != 0 {
 		records = append(records,
 			record.NewNextHopIDRecord(&nextChanID),
@@ -190,11 +252,24 @@ func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
 	// attach it to the final hop. Otherwise the route was constructed
 	// incorrectly.
 	if h.MPP != nil {
-		if nextChanID == 0 {
+		if finalHop {
 			records = append(records, h.MPP.Record())
 		} else {
 			return ErrIntermediateMPPHop
 		}
+	}
+
+	// Add encrypted data and blinding point if present.
+	if h.EncryptedData != nil {
+		records = append(records, record.NewEncryptedDataRecord(
+			&h.EncryptedData,
+		))
+	}
+
+	if h.BlindingPoint != nil {
+		records = append(records, record.NewBlindingPointRecord(
+			&h.BlindingPoint,
+		))
 	}
 
 	// If an AMP record is destined for this hop, ensure that we only ever
@@ -216,6 +291,13 @@ func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
 		)
 	}
 
+	if h.TotalAmtMsat != 0 {
+		totalAmtInt := uint64(h.TotalAmtMsat)
+		records = append(records,
+			record.NewTotalAmtMsatBlinded(&totalAmtInt),
+		)
+	}
+
 	// Append any custom types destined for this hop.
 	tlvRecords := tlv.MapToRecords(h.CustomRecords)
 	records = append(records, tlvRecords...)
@@ -230,6 +312,62 @@ func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
 	}
 
 	return tlvStream.Encode(w)
+}
+
+// optionalBlindedField validates fields that we expect to be non-zero for all
+// hops in a regular route, but may be zero for intermediate nodes in a blinded
+// route. It will validate the following cases:
+// - Not blinded: require non-zero values.
+// - Intermediate blinded node: require zero values.
+// - Final blinded node: require non-zero values.
+func optionalBlindedField(isZero, blindedHop, finalHop bool) error {
+	switch {
+	// We are not in a blinded route and the TLV is not set when it should
+	// be.
+	case !blindedHop && isZero:
+		return ErrMissingField
+
+	// We are not in a blinded route and the TLV is set as expected.
+	case !blindedHop:
+		return nil
+
+	// In a blinded route the final hop is expected to have TLV values set.
+	case finalHop && isZero:
+		return ErrMissingField
+
+	// In an intermediate hop in a blinded route and the field is not zero.
+	case !finalHop && !isZero:
+		return ErrUnexpectedField
+	}
+
+	return nil
+}
+
+// validateNextChanID validates the presence of the nextChanID TLV field in
+// a payload. For regular payments, it is expected to be present for all hops
+// except the final hop. For blinded paths, it is not expected to be included
+// at all (as this value is provided in encrypted data).
+func validateNextChanID(nextChanIDIsSet, isBlinded, finalHop bool) error {
+	switch {
+	// Hops in a blinded route should not have a next channel ID set.
+	case isBlinded && nextChanIDIsSet:
+		return ErrUnexpectedField
+
+	// Otherwise, blinded hops are allowed to have a zero value.
+	case isBlinded:
+		return nil
+
+	// The final hop in a regular route is expected to have a zero value.
+	case finalHop && nextChanIDIsSet:
+		return ErrUnexpectedField
+
+	// Intermediate hops in regular routes require non-zero value.
+	case !finalHop && !nextChanIDIsSet:
+		return ErrMissingField
+
+	default:
+		return nil
+	}
 }
 
 // Size returns the total size this hop's payload would take up in the onion
@@ -247,13 +385,18 @@ func (h *Hop) PayloadSize(nextChanID uint64) uint64 {
 	}
 
 	// Add amount size.
-	addRecord(record.AmtOnionType, tlv.SizeTUint64(uint64(h.AmtToForward)))
-
+	if h.AmtToForward != 0 {
+		addRecord(record.AmtOnionType, tlv.SizeTUint64(
+			uint64(h.AmtToForward),
+		))
+	}
 	// Add lock time size.
-	addRecord(
-		record.LockTimeOnionType,
-		tlv.SizeTUint64(uint64(h.OutgoingTimeLock)),
-	)
+	if h.OutgoingTimeLock != 0 {
+		addRecord(
+			record.LockTimeOnionType,
+			tlv.SizeTUint64(uint64(h.OutgoingTimeLock)),
+		)
+	}
 
 	// Add next hop if present.
 	if nextChanID != 0 {
@@ -270,9 +413,31 @@ func (h *Hop) PayloadSize(nextChanID uint64) uint64 {
 		addRecord(record.AMPOnionType, h.AMP.PayloadSize())
 	}
 
+	// Add encrypted data and blinding point if present.
+	if h.EncryptedData != nil {
+		addRecord(
+			record.EncryptedDataOnionType,
+			uint64(len(h.EncryptedData)),
+		)
+	}
+
+	if h.BlindingPoint != nil {
+		addRecord(
+			record.BlindingPointOnionType,
+			btcec.PubKeyBytesLenCompressed,
+		)
+	}
+
 	// Add metadata if present.
 	if h.Metadata != nil {
 		addRecord(record.MetadataOnionType, uint64(len(h.Metadata)))
+	}
+
+	if h.TotalAmtMsat != 0 {
+		addRecord(
+			record.TotalAmtMsatBlindedType,
+			tlv.SizeTUint64(uint64(h.AmtToForward)),
+		)
 	}
 
 	// Add custom records.
@@ -333,6 +498,42 @@ func (r *Route) Copy() *Route {
 }
 
 // HopFee returns the fee charged by the route hop indicated by hopIndex.
+//
+// This calculation takes into account the possibility that the route contains
+// some blinded hops, that will not have the amount to forward set. We take
+// note of various points in the blinded route.
+//
+// Given the following route where Carol is the introduction node and B2 is
+// the recipient, Carol and B1's hops will not have an amount to forward set:
+// Alice --- Bob ---- Carol (introduction) ----- B1 ----- B2
+//
+// We locate ourselves in the route as follows:
+// * Regular Hop (eg Alice - Bob):
+//
+//	incomingAmt !=0
+//	outgoingAmt !=0
+//	->  Fee = incomingAmt - outgoingAmt
+//
+// * Introduction Hop (eg Bob - Carol):
+//
+//	incomingAmt !=0
+//	outgoingAmt = 0
+//	-> Fee = incomingAmt - receiverAmt
+//
+// This has the impact of attributing the full fees for the blinded route to
+// the introduction node.
+//
+// * Blinded Intermediate Hop (eg Carol - B1):
+//
+//	incomingAmt = 0
+//	outgoingAmt = 0
+//	-> Fee = 0
+//
+// * Final Blinded Hop (B1 - B2):
+//
+//	incomingAmt = 0
+//	outgoingAmt !=0
+//	-> Fee = 0
 func (r *Route) HopFee(hopIndex int) lnwire.MilliSatoshi {
 	var incomingAmt lnwire.MilliSatoshi
 	if hopIndex == 0 {
@@ -341,8 +542,25 @@ func (r *Route) HopFee(hopIndex int) lnwire.MilliSatoshi {
 		incomingAmt = r.Hops[hopIndex-1].AmtToForward
 	}
 
-	// Fee is calculated as difference between incoming and outgoing amount.
-	return incomingAmt - r.Hops[hopIndex].AmtToForward
+	outgoingAmt := r.Hops[hopIndex].AmtToForward
+
+	switch {
+	// If both incoming and outgoing amounts are set, we're in a normal
+	// hop
+	case incomingAmt != 0 && outgoingAmt != 0:
+		return incomingAmt - outgoingAmt
+
+	// If the incoming amount is zero, we're at an intermediate hop in
+	// a blinded route, so the fee is zero.
+	case incomingAmt == 0:
+		return 0
+
+	// If we have a non-zero incoming amount and a zero outgoing amount,
+	// we're at the introduction hop so we express the fees for the full
+	// blinded route at this hop.
+	default:
+		return incomingAmt - r.ReceiverAmt()
+	}
 }
 
 // TotalFees is the sum of the fees paid at each hop within the final route. In
@@ -400,7 +618,7 @@ func NewRouteFromHops(amtToSend lnwire.MilliSatoshi, timeLock uint32,
 }
 
 // ToSphinxPath converts a complete route into a sphinx PaymentPath that
-// contains the per-hop paylods used to encoding the HTLC routing data for each
+// contains the per-hop payloads used to encoding the HTLC routing data for each
 // hop in the route. This method also accepts an optional EOB payload for the
 // final hop.
 func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
@@ -431,7 +649,8 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 
 		// If we aren't on the last hop, then we set the "next address"
 		// field to be the channel that directly follows it.
-		if i != len(r.Hops)-1 {
+		finalHop := i == len(r.Hops)-1
+		if !finalHop {
 			nextHop = r.Hops[i+1].ChannelID
 		}
 
@@ -463,7 +682,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 			// channel should be forwarded to so we can construct a
 			// valid payload.
 			var b bytes.Buffer
-			err := hop.PackHopPayload(&b, nextHop)
+			err := hop.PackHopPayload(&b, nextHop, finalHop)
 			if err != nil {
 				return nil, err
 			}

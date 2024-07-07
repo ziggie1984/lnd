@@ -28,6 +28,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb/migration31"
 	"github.com/lightningnetwork/lnd/channeldb/migration_01_to_11"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -496,7 +497,7 @@ func initChannelDB(db kvdb.Backend) error {
 		return putMeta(meta, tx)
 	}, func() {})
 	if err != nil {
-		return fmt.Errorf("unable to create new channeldb: %v", err)
+		return fmt.Errorf("unable to create new channeldb: %w", err)
 	}
 
 	return nil
@@ -642,7 +643,7 @@ func (c *ChannelStateDB) fetchNodeChannels(chainBucket kvdb.RBucket) (
 		oChannel, err := fetchOpenChannel(chanBucket, &outPoint)
 		if err != nil {
 			return fmt.Errorf("unable to read channel data for "+
-				"chan_point=%v: %v", outPoint, err)
+				"chan_point=%v: %w", outPoint, err)
 		}
 		oChannel.Db = c
 
@@ -703,7 +704,7 @@ func (c *ChannelStateDB) FetchChannelByID(tx kvdb.RTx, id lnwire.ChannelID) (
 				return err
 			}
 
-			chanID := lnwire.NewChanIDFromOutPoint(&outPoint)
+			chanID := lnwire.NewChanIDFromOutPoint(outPoint)
 			if chanID != id {
 				return nil
 			}
@@ -1350,7 +1351,7 @@ func (d *DB) AddrsForNode(nodePub *btcec.PublicKey) ([]net.Addr,
 	if err != nil {
 		return nil, err
 	}
-	graphNode, err := d.graph.FetchLightningNode(pubKey)
+	graphNode, err := d.graph.FetchLightningNode(nil, pubKey)
 	if err != nil && err != ErrGraphNodeNotFound {
 		return nil, err
 	} else if err == ErrGraphNodeNotFound {
@@ -1822,6 +1823,14 @@ func (c *ChannelStateDB) PutOnchainFinalHtlcOutcome(
 			},
 		)
 	}, func() {})
+}
+
+// MakeTestInvoiceDB is used to create a test invoice database for testing
+// purposes. It simply calls into MakeTestDB so the same modifiers can be used.
+func MakeTestInvoiceDB(t *testing.T, modifiers ...OptionModifier) (
+	invoices.InvoiceDB, error) {
+
+	return MakeTestDB(t, modifiers...)
 }
 
 // MakeTestDB creates a new instance of the ChannelDB for testing purposes.

@@ -497,7 +497,7 @@ func (s *Switch) GetAttemptResult(attemptID uint64, paymentHash lntypes.Hash,
 			deobfuscator, n, attemptID, paymentHash,
 		)
 		if err != nil {
-			e := fmt.Errorf("unable to extract result: %v", err)
+			e := fmt.Errorf("unable to extract result: %w", err)
 			log.Error(e)
 			resultChan <- &PaymentResult{
 				Error: e,
@@ -621,7 +621,7 @@ func (s *Switch) UpdateForwardingPolicies(
 
 	// Update each link in chanPolicies.
 	for targetLink, policy := range chanPolicies {
-		cid := lnwire.NewChanIDFromOutPoint(&targetLink)
+		cid := lnwire.NewChanIDFromOutPoint(targetLink)
 
 		link, ok := s.linkIndex[cid]
 		if !ok {
@@ -709,7 +709,8 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 		default:
 			err := s.routeAsync(packet, fwdChan, linkQuit)
 			if err != nil {
-				return fmt.Errorf("failed to forward packet %v", err)
+				return fmt.Errorf("failed to forward packet %w",
+					err)
 			}
 			numSent++
 		}
@@ -754,7 +755,7 @@ func (s *Switch) ForwardPackets(linkQuit chan struct{},
 	for _, packet := range addedPackets {
 		err := s.routeAsync(packet, fwdChan, linkQuit)
 		if err != nil {
-			return fmt.Errorf("failed to forward packet %v", err)
+			return fmt.Errorf("failed to forward packet %w", err)
 		}
 		numSent++
 	}
@@ -1000,6 +1001,8 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 	// We've received a fail update which means we can finalize the
 	// user payment and return fail response.
 	case *lnwire.UpdateFailHTLC:
+		// TODO(yy): construct deobfuscator here to avoid creating it
+		// in paymentLifecycle even for settled HTLCs.
 		paymentErr := s.parseFailedPayment(
 			deobfuscator, attemptID, paymentHash, n.unencrypted,
 			n.isResolution, htlc,
@@ -1144,7 +1147,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 
 			return s.failAddPacket(packet, linkError)
 		}
-		targetPeerKey := targetLink.Peer().PubKey()
+		targetPeerKey := targetLink.PeerPubKey()
 		interfaceLinks, _ := s.getLinks(targetPeerKey)
 		s.indexMtx.RUnlock()
 
@@ -1175,7 +1178,9 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 				failure = link.CheckHtlcForward(
 					htlc.PaymentHash, packet.incomingAmount,
 					packet.amount, packet.incomingTimeout,
-					packet.outgoingTimeout, currentHeight,
+					packet.outgoingTimeout,
+					packet.inboundFee,
+					currentHeight,
 					packet.originalOutgoingChanID,
 				)
 			}
@@ -1292,6 +1297,11 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 
 		fail, isFail := htlc.(*lnwire.UpdateFailHTLC)
 		if isFail && !packet.hasSource {
+			// HTLC resolutions and messages restored from disk
+			// don't have the obfuscator set from the original htlc
+			// add packet - set it here for use in blinded errors.
+			packet.obfuscator = circuit.ErrorEncrypter
+
 			switch {
 			// No message to encrypt, locally sourced payment.
 			case circuit.ErrorEncrypter == nil:
@@ -1466,7 +1476,7 @@ func (s *Switch) failAddPacket(packet *htlcPacket, failure *LinkError) error {
 
 	log.Error(failure.Error())
 
-	// Create a failure packet for this htlc. The the full set of
+	// Create a failure packet for this htlc. The full set of
 	// information about the htlc failure is included so that they can
 	// be included in link failure notifications.
 	failPkt := &htlcPacket{
@@ -1480,6 +1490,7 @@ func (s *Switch) failAddPacket(packet *htlcPacket, failure *LinkError) error {
 		incomingTimeout: packet.incomingTimeout,
 		outgoingTimeout: packet.outgoingTimeout,
 		circuit:         packet.circuit,
+		obfuscator:      packet.obfuscator,
 		linkFailure:     failure,
 		htlc: &lnwire.UpdateFailHTLC{
 			Reason: reason,
@@ -1794,7 +1805,7 @@ out:
 		// relevant link (if it exists) so the channel can be
 		// cooperatively closed (if possible).
 		case req := <-s.chanCloseRequests:
-			chanID := lnwire.NewChanIDFromOutPoint(req.ChanPoint)
+			chanID := lnwire.NewChanIDFromOutPoint(*req.ChanPoint)
 
 			s.indexMtx.RLock()
 			link, ok := s.linkIndex[chanID]
@@ -1807,9 +1818,9 @@ out:
 			}
 			s.indexMtx.RUnlock()
 
-			peerPub := link.Peer().PubKey()
+			peerPub := link.PeerPubKey()
 			log.Debugf("Requesting local channel close: peer=%v, "+
-				"chan_id=%x", link.Peer(), chanID[:])
+				"chan_id=%x", link.PeerPubKey(), chanID[:])
 
 			go s.cfg.LocalChannelClose(peerPub[:], req)
 
@@ -1836,6 +1847,10 @@ out:
 			// resolution message on restart.
 			resolutionMsg.errChan <- nil
 
+			// Create a htlc packet for this resolution. We do
+			// not have some of the information that we'll need
+			// for blinded error handling here , so we'll rely on
+			// our forwarding logic to fill it in later.
 			pkt := &htlcPacket{
 				outgoingChanID: resolutionMsg.SourceChan,
 				outgoingHTLCID: resolutionMsg.HtlcIndex,
@@ -2060,6 +2075,8 @@ func (s *Switch) reforwardResolutions() error {
 
 		// The circuit is still open, so we can assume that the link or
 		// switch (if we are the source) hasn't cleaned it up yet.
+		// We rely on our forwarding logic to fill in details that
+		// are not currently available to us.
 		resPkt := &htlcPacket{
 			outgoingChanID: resMsg.SourceChan,
 			outgoingHTLCID: resMsg.HtlcIndex,
@@ -2209,7 +2226,8 @@ func (s *Switch) reforwardSettleFails(fwdPkgs []*channeldb.FwdPkg) {
 				// we can continue to propagate it. This
 				// failure originated from another node, so
 				// the linkFailure field is not set on this
-				// packet.
+				// packet. We rely on the link to fill in
+				// additional circuit information for us.
 				failPacket := &htlcPacket{
 					outgoingChanID: fwdPkg.Source,
 					outgoingHTLCID: pd.ParentIndex,
@@ -2244,7 +2262,8 @@ func (s *Switch) Stop() error {
 		return errors.New("htlc switch already shutdown")
 	}
 
-	log.Info("HTLC Switch shutting down")
+	log.Info("HTLC Switch shutting down...")
+	defer log.Debug("HTLC Switch shutdown complete")
 
 	close(s.quit)
 
@@ -2331,7 +2350,7 @@ func (s *Switch) addLiveLink(link ChannelLink) {
 
 	// Next we'll add the link to the interface index so we can
 	// quickly look up all the channels for a particular node.
-	peerPub := link.Peer().PubKey()
+	peerPub := link.PeerPubKey()
 	if _, ok := s.interfaceIndex[peerPub]; !ok {
 		s.interfaceIndex[peerPub] = make(map[lnwire.ChannelID]ChannelLink)
 	}
@@ -2606,7 +2625,7 @@ func (s *Switch) removeLink(chanID lnwire.ChannelID) ChannelLink {
 
 	// If the link has been added to the peer index, then we'll move to
 	// delete the entry within the index.
-	peerPub := link.Peer().PubKey()
+	peerPub := link.PeerPubKey()
 	if peerIndex, ok := s.interfaceIndex[peerPub]; ok {
 		delete(peerIndex, link.ChanID())
 

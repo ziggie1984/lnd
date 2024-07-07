@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntest/unittest"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/stretchr/testify/require"
 )
@@ -38,10 +39,20 @@ var (
 	// which is a special case for the BIP49/84 addresses in btcwallet).
 	firstAddress = "bcrt1qgdlgjc5ede7fjv350wcjqat80m0zsmfaswsj9p"
 
+	// firstAddressPubKey is the public key of the first address that we
+	// should get from the wallet.
+	firstAddressPubKey = "02b844aecf8250c29e46894147a7dae02de55a034a533b6" +
+		"0c6a6469294ee356ce4"
+
 	// firstAddressTaproot is the first address that we should get from the
 	// wallet when deriving a taproot address.
 	firstAddressTaproot = "bcrt1ps8c222fgysvnsj2m8hxk8khy6wthcrhv9va9z3t4" +
 		"h3qeyz65sh4qqwvdgc"
+
+	// firstAddressTaprootPubKey is the public key of the first address that
+	// we should get from the wallet when deriving a taproot address.
+	firstAddressTaprootPubKey = "03004113d6185c955d6e8f5922b50cc0ac3b64fa" +
+		"0979402604c5b887f07e3b5388"
 
 	testPubKeyBytes, _ = hex.DecodeString(
 		"037a67771635344641d4b56aac33cd5f7a265b59678dce3aec31b89125e3" +
@@ -284,8 +295,7 @@ func TestScriptImport(t *testing.T) {
 func newTestWallet(t *testing.T, netParams *chaincfg.Params,
 	seedBytes []byte) (*BtcWallet, *rpctest.Harness) {
 
-	chainBackend, miner, backendCleanup := getChainBackend(t, netParams)
-	t.Cleanup(backendCleanup)
+	chainBackend, miner := getChainBackend(t, netParams)
 
 	loaderOpt := LoaderWithLocalWalletDB(t.TempDir(), false, time.Minute)
 	config := Config{
@@ -314,16 +324,16 @@ func newTestWallet(t *testing.T, netParams *chaincfg.Params,
 
 // getChainBackend returns a simple btcd based chain backend to back the wallet.
 func getChainBackend(t *testing.T, netParams *chaincfg.Params) (chain.Interface,
-	*rpctest.Harness, func()) {
+	*rpctest.Harness) {
 
-	miningNode, err := rpctest.New(netParams, nil, nil, "")
-	require.NoError(t, err)
-	require.NoError(t, miningNode.SetUp(true, 25))
+	miningNode := unittest.NewMiner(
+		t, netParams, []string{"--txindex"}, true, 25,
+	)
 
 	// Next, mine enough blocks in order for SegWit and the CSV package
 	// soft-fork to activate on RegNet.
 	numBlocks := netParams.MinerConfirmationWindow * 2
-	_, err = miningNode.Client.Generate(numBlocks)
+	_, err := miningNode.Client.Generate(numBlocks)
 	require.NoError(t, err)
 
 	rpcConfig := miningNode.RPCConfig()
@@ -333,9 +343,7 @@ func getChainBackend(t *testing.T, netParams *chaincfg.Params) (chain.Interface,
 	)
 	require.NoError(t, err)
 
-	return chainClient, miningNode, func() {
-		_ = miningNode.TearDown()
-	}
+	return chainClient, miningNode
 }
 
 // hardenedKey returns a key of a hardened derivation key path.

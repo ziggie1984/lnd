@@ -28,20 +28,27 @@ func testSendMultiPathPayment(ht *lntest.HarnessTest) {
 	//       \__ Dave ____/
 	//
 	req := &mppOpenChannelRequest{
-		amtAliceCarol: 235000,
-		amtAliceDave:  135000,
-		amtCarolBob:   135000,
-		amtCarolEve:   135000,
-		amtDaveBob:    135000,
-		amtEveBob:     135000,
+		amtAliceCarol: 285000,
+		amtAliceDave:  155000,
+		amtCarolBob:   200000,
+		amtCarolEve:   155000,
+		amtDaveBob:    155000,
+		amtEveBob:     155000,
 	}
 	mts.openChannels(req)
 	chanPointAliceDave := mts.channelPoints[1]
 
-	// Increase Dave's fee to make the test deterministic. Otherwise it
+	// Increase Dave's fee to make the test deterministic. Otherwise, it
 	// would be unpredictable whether pathfinding would go through Charlie
 	// or Dave for the first shard.
-	expectedPolicy := mts.updateDaveGlobalPolicy()
+	expectedPolicy := &lnrpc.RoutingPolicy{
+		FeeBaseMsat:      500_000,
+		FeeRateMilliMsat: int64(0.001 * 1_000_000),
+		TimeLockDelta:    40,
+		MinHtlc:          1000, // default value
+		MaxHtlcMsat:      133_650_000,
+	}
+	mts.dave.UpdateGlobalPolicy(expectedPolicy)
 
 	// Make sure Alice has heard it.
 	ht.AssertChannelPolicyUpdate(

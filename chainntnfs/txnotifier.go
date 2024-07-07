@@ -74,6 +74,11 @@ var (
 	// out of range.
 	ErrNumConfsOutOfRange = fmt.Errorf("number of confirmations must be "+
 		"between %d and %d", 1, MaxNumConfs)
+
+	// ErrEmptyWitnessStack is returned when a spending transaction has an
+	// empty witness stack. More details in,
+	// - https://github.com/bitcoin/bitcoin/issues/28730
+	ErrEmptyWitnessStack = errors.New("witness stack is empty")
 )
 
 // rescanState indicates the progression of a registration before the notifier
@@ -767,8 +772,8 @@ func (n *TxNotifier) CancelConf(confRequest ConfRequest, confID uint64) {
 		return
 	}
 
-	Log.Infof("Canceling confirmation notification: conf_id=%d, %v", confID,
-		confRequest)
+	Log.Debugf("Canceling confirmation notification: conf_id=%d, %v",
+		confID, confRequest)
 
 	// We'll close all the notification channels to let the client know
 	// their cancel request has been fulfilled.
@@ -920,7 +925,7 @@ func (n *TxNotifier) dispatchConfDetails(
 	// we'll dispatch a confirmation notification to the caller.
 	confHeight := details.BlockHeight + ntfn.NumConfirmations - 1
 	if confHeight <= n.currentHeight {
-		Log.Infof("Dispatching %v confirmation notification for %v",
+		Log.Debugf("Dispatching %v confirmation notification for %v",
 			ntfn.NumConfirmations, ntfn.ConfRequest)
 
 		// We'll send a 0 value to the Updates channel,
@@ -1053,7 +1058,7 @@ func (n *TxNotifier) RegisterSpend(outpoint *wire.OutPoint, pkScript []byte,
 	n.Lock()
 	defer n.Unlock()
 
-	Log.Infof("New spend subscription: spend_id=%d, %v, height_hint=%d",
+	Log.Debugf("New spend subscription: spend_id=%d, %v, height_hint=%d",
 		ntfn.SpendID, ntfn.SpendRequest, startHeight)
 
 	// Keep track of the notification request so that we can properly
@@ -1131,7 +1136,7 @@ func (n *TxNotifier) RegisterSpend(outpoint *wire.OutPoint, pkScript []byte,
 	// notifications don't also attempt a historical dispatch.
 	spendSet.rescanStatus = rescanPending
 
-	Log.Infof("Dispatching historical spend rescan for %v, start=%d, "+
+	Log.Debugf("Dispatching historical spend rescan for %v, start=%d, "+
 		"end=%d", ntfn.SpendRequest, startHeight, n.currentHeight)
 
 	return &SpendRegistration{
@@ -1166,7 +1171,7 @@ func (n *TxNotifier) CancelSpend(spendRequest SpendRequest, spendID uint64) {
 		return
 	}
 
-	Log.Infof("Canceling spend notification: spend_id=%d, %v", spendID,
+	Log.Debugf("Canceling spend notification: spend_id=%d, %v", spendID,
 		spendRequest)
 
 	// We'll close all the notification channels to let the client know
@@ -1297,6 +1302,19 @@ func (n *TxNotifier) updateSpendDetails(spendRequest SpendRequest,
 		return nil
 	}
 
+	// Return an error if the witness data is not present in the spending
+	// transaction.
+	//
+	// NOTE: if the witness stack is empty, we will do a critical log which
+	// shuts down the node.
+	if !details.HasSpenderWitness() {
+		Log.Criticalf("Found spending tx for outpoint=%v, but the "+
+			"transaction %v does not have witness",
+			spendRequest.OutPoint, details.SpendingTx.TxHash())
+
+		return ErrEmptyWitnessStack
+	}
+
 	// If the historical rescan found the spending transaction for this
 	// request, but it's at a later height than the notifier (this can
 	// happen due to latency with the backend during a reorg), then we'll
@@ -1346,7 +1364,7 @@ func (n *TxNotifier) dispatchSpendDetails(ntfn *SpendNtfn, details *SpendDetail)
 		return nil
 	}
 
-	Log.Infof("Dispatching confirmed spend notification for %v at "+
+	Log.Debugf("Dispatching confirmed spend notification for %v at "+
 		"current height=%d: %v", ntfn.SpendRequest, n.currentHeight,
 		details)
 
@@ -1725,7 +1743,7 @@ func (n *TxNotifier) NotifyHeight(height uint32) error {
 	for ntfn := range n.ntfnsByConfirmHeight[height] {
 		confSet := n.confNotifications[ntfn.ConfRequest]
 
-		Log.Infof("Dispatching %v confirmation notification for %v",
+		Log.Debugf("Dispatching %v confirmation notification for %v",
 			ntfn.NumConfirmations, ntfn.ConfRequest)
 
 		// The default notification we assigned above includes the

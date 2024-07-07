@@ -2,6 +2,7 @@ package htlcswitch
 
 import (
 	"bytes"
+	"context"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -72,7 +73,7 @@ func genID() (lnwire.ChannelID, lnwire.ShortChannelID) {
 	hash1, _ := chainhash.NewHash(bytes.Repeat(scratch[:], 4))
 
 	chanPoint1 := wire.NewOutPoint(hash1, uint32(id))
-	chanID1 := lnwire.NewChanIDFromOutPoint(chanPoint1)
+	chanID1 := lnwire.NewChanIDFromOutPoint(*chanPoint1)
 	aliceChanID := lnwire.NewShortChanIDFromInt(id)
 
 	return chanID1, aliceChanID
@@ -780,7 +781,9 @@ func preparePayment(sendingPeer, receivingPeer lnpeer.Peer,
 
 	// Check who is last in the route and add invoice to server registry.
 	hash := invoice.Terms.PaymentPreimage.Hash()
-	if err := receiver.registry.AddInvoice(*invoice, hash); err != nil {
+	if err := receiver.registry.AddInvoice(
+		context.Background(), *invoice, hash,
+	); err != nil {
 		return nil, nil, err
 	}
 
@@ -1126,7 +1129,6 @@ func (h *hopNetwork) createChannelLink(server, peer *mockServer,
 
 	link := NewChannelLink(
 		ChannelLinkConfig{
-			Switch:        server.htlcSwitch,
 			BestHeight:    server.htlcSwitch.BestHeight,
 			FwrdingPolicy: h.globalPolicy,
 			Peer:          peer,
@@ -1153,8 +1155,8 @@ func (h *hopNetwork) createChannelLink(server, peer *mockServer,
 			BatchTicker:             ticker.NewForce(testBatchTimeout),
 			FwdPkgGCTicker:          ticker.NewForce(fwdPkgTimeout),
 			PendingCommitTicker:     ticker.New(2 * time.Minute),
-			MinFeeUpdateTimeout:     minFeeUpdateTimeout,
-			MaxFeeUpdateTimeout:     maxFeeUpdateTimeout,
+			MinUpdateTimeout:        minFeeUpdateTimeout,
+			MaxUpdateTimeout:        maxFeeUpdateTimeout,
 			OnChannelFailure:        func(lnwire.ChannelID, lnwire.ShortChannelID, LinkFailureError) {},
 			OutgoingCltvRejectDelta: 3,
 			MaxOutgoingCltvExpiry:   DefaultMaxOutgoingCltvExpiry,
@@ -1170,7 +1172,7 @@ func (h *hopNetwork) createChannelLink(server, peer *mockServer,
 		channel,
 	)
 	if err := server.htlcSwitch.AddLink(link); err != nil {
-		return nil, fmt.Errorf("unable to add channel link: %v", err)
+		return nil, fmt.Errorf("unable to add channel link: %w", err)
 	}
 
 	go func() {
@@ -1338,7 +1340,9 @@ func (n *twoHopNetwork) makeHoldPayment(sendingPeer, receivingPeer lnpeer.Peer,
 	}
 
 	// Check who is last in the route and add invoice to server registry.
-	if err := receiver.registry.AddInvoice(*invoice, rhash); err != nil {
+	if err := receiver.registry.AddInvoice(
+		context.Background(), *invoice, rhash,
+	); err != nil {
 		paymentErr <- err
 		return paymentErr
 	}

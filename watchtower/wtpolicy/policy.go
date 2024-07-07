@@ -6,9 +6,12 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/watchtower/blob"
+	"github.com/lightningnetwork/lnd/watchtower/wtwire"
 )
 
 const (
@@ -120,14 +123,38 @@ func (p Policy) String() string {
 		p.SweepFeeRate)
 }
 
+// FeatureBits returns the watchtower feature bits required for the given
+// policy.
+func (p *Policy) FeatureBits() []lnwire.FeatureBit {
+	features := []lnwire.FeatureBit{
+		wtwire.AltruistSessionsRequired,
+	}
+
+	t := p.TxPolicy.BlobType
+	switch {
+	case t.IsTaprootChannel():
+		features = append(features, wtwire.TaprootCommitRequired)
+	case t.IsAnchorChannel():
+		features = append(features, wtwire.AnchorCommitRequired)
+	}
+
+	return features
+}
+
 // IsAnchorChannel returns true if the session policy requires anchor channels.
-func (p Policy) IsAnchorChannel() bool {
+func (p *Policy) IsAnchorChannel() bool {
 	return p.TxPolicy.BlobType.IsAnchorChannel()
+}
+
+// IsTaprootChannel returns true if the session policy requires taproot
+// channels.
+func (p *Policy) IsTaprootChannel() bool {
+	return p.TxPolicy.BlobType.IsTaprootChannel()
 }
 
 // Validate ensures that the policy satisfies some minimal correctness
 // constraints.
-func (p Policy) Validate() error {
+func (p *Policy) Validate() error {
 	// RewardBase and RewardRate should not be set if the policy doesn't
 	// have a reward.
 	if !p.BlobType.Has(blob.FlagReward) &&
@@ -154,8 +181,9 @@ func (p Policy) Validate() error {
 // that pays no reward to the tower. The value is computed using the weight of
 // of the justice transaction and subtracting an amount that satisfies the
 // policy's fee rate.
-func (p *Policy) ComputeAltruistOutput(totalAmt btcutil.Amount,
-	txWeight int64, sweepScript []byte) (btcutil.Amount, error) {
+func (p *Policy) ComputeAltruistOutput(
+	totalAmt btcutil.Amount, txWeight lntypes.WeightUnit,
+	sweepScript []byte) (btcutil.Amount, error) {
 
 	txFee := p.SweepFeeRate.FeeForWeight(txWeight)
 	if txFee > totalAmt {
@@ -178,7 +206,7 @@ func (p *Policy) ComputeAltruistOutput(totalAmt btcutil.Amount,
 // and reward rate. The reward to he tower is subtracted first, before
 // splitting the remaining balance amongst the victim and fees.
 func (p *Policy) ComputeRewardOutputs(totalAmt btcutil.Amount,
-	txWeight int64,
+	txWeight lntypes.WeightUnit,
 	rewardScript []byte) (btcutil.Amount, btcutil.Amount, error) {
 
 	txFee := p.SweepFeeRate.FeeForWeight(txWeight)
@@ -240,7 +268,8 @@ func ComputeRewardAmount(total btcutil.Amount, base, rate uint32) btcutil.Amount
 // rewardPkScript is the pkScript of the tower where its reward will be
 // deposited, and will be
 // ignored if the blob type does not specify a reward.
-func (p *Policy) ComputeJusticeTxOuts(totalAmt btcutil.Amount, txWeight int64,
+func (p *Policy) ComputeJusticeTxOuts(
+	totalAmt btcutil.Amount, txWeight lntypes.WeightUnit,
 	sweepPkScript, rewardPkScript []byte) ([]*wire.TxOut, error) {
 
 	var outputs []*wire.TxOut

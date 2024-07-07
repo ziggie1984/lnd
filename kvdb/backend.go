@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"time"
@@ -157,10 +156,10 @@ func compactAndSwap(cfg *BoltBackendConfig) error {
 	// temporary DB file and close it before we write the new DB to it.
 	tempFile, err := os.Create(tempDestFilePath)
 	if err != nil {
-		return fmt.Errorf("unable to create temp DB file: %v", err)
+		return fmt.Errorf("unable to create temp DB file: %w", err)
 	}
 	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("unable to close file: %v", err)
+		return fmt.Errorf("unable to close file: %w", err)
 	}
 
 	// With the file created, we'll start the compaction and remove the
@@ -178,7 +177,7 @@ func compactAndSwap(cfg *BoltBackendConfig) error {
 	}
 	initialSize, newSize, err := c.execute()
 	if err != nil {
-		return fmt.Errorf("error during compact: %v", err)
+		return fmt.Errorf("error during compact: %w", err)
 	}
 
 	log.Infof("DB compaction of %v successful, %d -> %d bytes (gain=%.2fx)",
@@ -218,7 +217,7 @@ func lastCompactionDate(dbFile string) (time.Time, error) {
 		return zeroTime, nil
 	}
 
-	tsBytes, err := ioutil.ReadFile(tsFile)
+	tsBytes, err := os.ReadFile(tsFile)
 	if err != nil {
 		return zeroTime, err
 	}
@@ -235,7 +234,7 @@ func updateLastCompactionDate(dbFile string) error {
 	byteOrder.PutUint64(tsBytes[:], uint64(time.Now().UnixNano()))
 
 	tsFile := fmt.Sprintf("%s%s", dbFile, LastCompactionFileNameSuffix)
-	return ioutil.WriteFile(tsFile, tsBytes[:], 0600)
+	return os.WriteFile(tsFile, tsBytes[:], 0600)
 }
 
 // GetTestBackend opens (or creates if doesn't exist) a bbolt or etcd
@@ -301,6 +300,4 @@ func GetTestBackend(path, name string) (Backend, func(), error) {
 		}
 		return db, empty, nil
 	}
-
-	return nil, nil, fmt.Errorf("unknown backend")
 }

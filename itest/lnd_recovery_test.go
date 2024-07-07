@@ -254,8 +254,9 @@ func testOnchainFundRecovery(ht *lntest.HarnessTest) {
 
 		minerAddr := ht.Miner.NewMinerAddress()
 		req := &lnrpc.SendCoinsRequest{
-			Addr:   minerAddr.String(),
-			Amount: minerAmt,
+			Addr:       minerAddr.String(),
+			Amount:     minerAmt,
+			TargetConf: 6,
 		}
 		resp := node.RPC.SendCoins(req)
 
@@ -378,7 +379,7 @@ func testRescanAddressDetection(ht *lntest.HarnessTest) {
 	estimator := input.TxWeightEstimator{}
 	estimator.AddP2WKHInput()
 	estimator.AddP2WKHOutput()
-	estimatedWeight := int64(estimator.Weight())
+	estimatedWeight := estimator.Weight()
 	requiredFee := feeRate.FeeForWeight(estimatedWeight)
 
 	tx := wire.NewMsgTx(2)

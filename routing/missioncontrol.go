@@ -62,6 +62,11 @@ const (
 	// have passed since the previously recorded failure before the failure
 	// amount may be raised.
 	DefaultMinFailureRelaxInterval = time.Minute
+
+	// DefaultFeeEstimationTimeout is the default value for
+	// FeeEstimationTimeout. It defines the maximum duration that the
+	// probing fee estimation is allowed to take.
+	DefaultFeeEstimationTimeout = time.Minute
 )
 
 var (
@@ -240,6 +245,9 @@ func (m *MissionControl) RunStoreTicker() {
 
 // StopStoreTicker stops the mission control store's ticker.
 func (m *MissionControl) StopStoreTicker() {
+	log.Debug("Stopping mission control store ticker")
+	defer log.Debug("Mission control store ticker stopped")
+
 	m.store.stop()
 }
 

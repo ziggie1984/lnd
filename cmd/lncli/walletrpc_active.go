@@ -12,11 +12,17 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
 	"github.com/urfave/cli"
 )
 
@@ -29,6 +35,7 @@ var (
 			"(PSBTs).",
 		Subcommands: []cli.Command{
 			fundPsbtCommand,
+			fundTemplatePsbtCommand,
 			finalizePsbtCommand,
 		},
 	}
@@ -56,6 +63,8 @@ var (
 			verifyMessageWithAddrCommand,
 		},
 	}
+
+	p2TrChangeType = walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
 )
 
 // walletCommands will return the set of commands to enable for walletrpc
@@ -71,9 +80,12 @@ func walletCommands() []cli.Command {
 				pendingSweepsCommand,
 				bumpFeeCommand,
 				bumpCloseFeeCommand,
+				bumpForceCloseFeeCommand,
 				listSweepsCommand,
 				labelTxCommand,
 				publishTxCommand,
+				getTxCommand,
+				removeTxCommand,
 				releaseOutputCommand,
 				leaseOutputCommand,
 				listLeasesCommand,
@@ -165,56 +177,78 @@ var bumpFeeCommand = cli.Command{
 	Usage:     "Bumps the fee of an arbitrary input/transaction.",
 	ArgsUsage: "outpoint",
 	Description: `
-	This command takes a different approach than bitcoind's bumpfee command.
-	lnd has a central batching engine in which inputs with similar fee rates
-	are batched together to save on transaction fees. Due to this, we cannot
-	rely on bumping the fee on a specific transaction, since transactions
-	can change at any point with the addition of new inputs. The list of
-	inputs that currently exist within lnd's central batching engine can be
-	retrieved through lncli wallet pendingsweeps.
+	BumpFee is an endpoint that allows users to interact with lnd's sweeper
+	directly. It takes an outpoint from an unconfirmed transaction and
+	sends it to the sweeper for potential fee bumping. Depending on whether
+	the outpoint has been registered in the sweeper (an existing input,
+	e.g., an anchor output) or not (a new input, e.g., an unconfirmed
+	wallet utxo), this will either be an RBF or CPFP attempt.
 
-	When bumping the fee of an input that currently exists within lnd's
-	central batching engine, a higher fee transaction will be created that
-	replaces the lower fee transaction through the Replace-By-Fee (RBF)
-	policy.
+	When receiving an input, lnd’s sweeper needs to understand its time
+	sensitivity to make economical fee bumps - internally a fee function is
+	created using the deadline and budget to guide the process. When the
+	deadline is approaching, the fee function will increase the fee rate
+	and perform an RBF.
 
-	This command also serves useful when wanting to perform a
+	When a force close happens, all the outputs from the force closing
+	transaction will be registered in the sweeper. The sweeper will then
+	handle the creation, publish, and fee bumping of the sweeping
+	transactions. Everytime a new block comes in, unless the sweeping
+	transaction is confirmed, an RBF is attempted. To interfere with this
+	automatic process, users can use BumpFee to specify customized fee
+	rate, budget, deadline, and whether the sweep should happen
+	immediately. It's recommended to call listsweeps to understand the
+	shape of the existing sweeping transaction first - depending on the
+	number of inputs in this transaction, the RBF requirements can be quite
+	different.
+
+	This RPC also serves useful when wanting to perform a
 	Child-Pays-For-Parent (CPFP), where the child transaction pays for its
 	parent's fee. This can be done by specifying an outpoint within the low
 	fee transaction that is under the control of the wallet.
-
-	A fee preference must be provided, either through the conf_target or
-	sat_per_vbyte parameters.
-
-	Note that this command currently doesn't perform any validation checks
-	on the fee preference being provided. For now, the responsibility of
-	ensuring that the new fee preference is sufficient is delegated to the
-	user.
-
-	The force flag enables sweeping of inputs that are negatively yielding.
-	Normally it does not make sense to lose money on sweeping, unless a
-	parent transaction needs to get confirmed and there is only a small
-	output available to attach the child transaction to.
 	`,
 	Flags: []cli.Flag{
 		cli.Uint64Flag{
 			Name: "conf_target",
-			Usage: "the number of blocks that the output should " +
-				"be swept on-chain within",
+			Usage: `
+	The deadline in number of blocks that the input should be spent within.
+	When not set, for new inputs, the default value (1008) is used; for
+	exiting inputs, their current values will be retained.`,
 		},
 		cli.Uint64Flag{
 			Name:   "sat_per_byte",
 			Usage:  "Deprecated, use sat_per_vbyte instead.",
 			Hidden: true,
 		},
+		cli.BoolFlag{
+			Name:   "force",
+			Usage:  "Deprecated, use immediate instead.",
+			Hidden: true,
+		},
 		cli.Uint64Flag{
 			Name: "sat_per_vbyte",
-			Usage: "a manual fee expressed in sat/vbyte that " +
-				"should be used when sweeping the output",
+			Usage: `
+	The starting fee rate, expressed in sat/vbyte, that will be used to
+	spend the input with initially. This value will be used by the
+	sweeper's fee function as its starting fee rate. When not set, the
+	sweeper will use the estimated fee rate using the target_conf as the
+	starting fee rate.`,
 		},
 		cli.BoolFlag{
-			Name:  "force",
-			Usage: "sweep even if the yield is negative",
+			Name: "immediate",
+			Usage: `
+	Whether this input will be swept immediately. When set to true, the
+	sweeper will sweep this input without waiting for the next batch.`,
+		},
+		cli.Uint64Flag{
+			Name: "budget",
+			Usage: `
+	The max amount in sats that can be used as the fees. Setting this value
+	greater than the input's value may result in CPFP - one or more wallet
+	utxos will be used to pay the fees specified by the budget. If not set,
+	for new inputs, by default 50% of the input's value will be treated as
+	the budget for fee bumping; for existing inputs, their current budgets
+	will be retained.`,
 		},
 	},
 	Action: actionDecorator(bumpFee),
@@ -229,15 +263,6 @@ func bumpFee(ctx *cli.Context) error {
 		return cli.ShowCommandHelp(ctx, "bumpfee")
 	}
 
-	// Check that only the field sat_per_vbyte or the deprecated field
-	// sat_per_byte is used.
-	feeRateFlag, err := checkNotBothSet(
-		ctx, "sat_per_vbyte", "sat_per_byte",
-	)
-	if err != nil {
-		return err
-	}
-
 	// Validate and parse the relevant arguments/flags.
 	protoOutPoint, err := NewProtoOutPoint(ctx.Args().Get(0))
 	if err != nil {
@@ -247,11 +272,26 @@ func bumpFee(ctx *cli.Context) error {
 	client, cleanUp := getWalletClient(ctx)
 	defer cleanUp()
 
+	// Parse immediate flag (force flag was deprecated).
+	immediate := false
+	switch {
+	case ctx.IsSet("immediate") && ctx.IsSet("force"):
+		return fmt.Errorf("cannot set immediate and force flag at " +
+			"the same time")
+
+	case ctx.Bool("immediate"):
+		immediate = true
+
+	case ctx.Bool("force"):
+		immediate = true
+	}
+
 	resp, err := client.BumpFee(ctxc, &walletrpc.BumpFeeRequest{
 		Outpoint:    protoOutPoint,
 		TargetConf:  uint32(ctx.Uint64("conf_target")),
-		SatPerVbyte: ctx.Uint64(feeRateFlag),
-		Force:       ctx.Bool("force"),
+		Immediate:   immediate,
+		Budget:      ctx.Uint64("budget"),
+		SatPerVbyte: ctx.Uint64("sat_per_vbyte"),
 	})
 	if err != nil {
 		return err
@@ -264,36 +304,125 @@ func bumpFee(ctx *cli.Context) error {
 
 var bumpCloseFeeCommand = cli.Command{
 	Name:      "bumpclosefee",
-	Usage:     "Bumps the fee of a channel closing transaction.",
+	Usage:     "Bumps the fee of a channel force closing transaction.",
 	ArgsUsage: "channel_point",
+	Hidden:    true,
 	Description: `
-	This command allows the fee of a channel closing transaction to be
-	increased by using the child-pays-for-parent mechanism. It will instruct
-	the sweeper to sweep the anchor outputs of transactions in the set
-	of valid commitments for the specified channel at the requested fee
-	rate or confirmation target.
+	This command works only for unilateral closes of anchor channels. It
+	allows the fee of a channel force closing transaction to be increased by
+	using the child-pays-for-parent mechanism. It will instruct the sweeper
+	to sweep the anchor outputs of the closing transaction at the requested
+	fee rate or confirmation target. The specified fee rate will be the
+	effective fee rate taking the parent fee into account.
+	NOTE: This cmd is DEPRECATED please use bumpforceclosefee instead.
 	`,
 	Flags: []cli.Flag{
 		cli.Uint64Flag{
 			Name: "conf_target",
-			Usage: "the number of blocks that the output should " +
-				"be swept on-chain within",
+			Usage: `
+	The deadline in number of blocks that the input should be spent within.
+	When not set, for new inputs, the default value (1008) is used; for
+	exiting inputs, their current values will be retained.`,
 		},
 		cli.Uint64Flag{
 			Name:   "sat_per_byte",
 			Usage:  "Deprecated, use sat_per_vbyte instead.",
 			Hidden: true,
 		},
+		cli.BoolFlag{
+			Name:   "force",
+			Usage:  "Deprecated, use immediate instead.",
+			Hidden: true,
+		},
 		cli.Uint64Flag{
 			Name: "sat_per_vbyte",
-			Usage: "a manual fee expressed in sat/vbyte that " +
-				"should be used when sweeping the output",
+			Usage: `
+	The starting fee rate, expressed in sat/vbyte, that will be used to
+	spend the input with initially. This value will be used by the
+	sweeper's fee function as its starting fee rate. When not set, the
+	sweeper will use the estimated fee rate using the target_conf as the
+	starting fee rate.`,
+		},
+		cli.BoolFlag{
+			Name: "immediate",
+			Usage: `
+	Whether this input will be swept immediately. When set to true, the
+	sweeper will sweep this input without waiting for the next batch.`,
+		},
+		cli.Uint64Flag{
+			Name: "budget",
+			Usage: `
+	The max amount in sats that can be used as the fees. Setting this value
+	greater than the input's value may result in CPFP - one or more wallet
+	utxos will be used to pay the fees specified by the budget. If not set,
+	for new inputs, by default 50% of the input's value will be treated as
+	the budget for fee bumping; for existing inputs, their current budgets
+	will be retained.`,
 		},
 	},
-	Action: actionDecorator(bumpCloseFee),
+	Action: actionDecorator(bumpForceCloseFee),
 }
 
-func bumpCloseFee(ctx *cli.Context) error {
+var bumpForceCloseFeeCommand = cli.Command{
+	Name:      "bumpforceclosefee",
+	Usage:     "Bumps the fee of a channel force closing transaction.",
+	ArgsUsage: "channel_point",
+	Description: `
+	This command works only for unilateral closes of anchor channels. It
+	allows the fee of a channel force closing transaction to be increased by
+	using the child-pays-for-parent mechanism. It will instruct the sweeper
+	to sweep the anchor outputs of the closing transaction at the requested
+	fee rate or confirmation target. The specified fee rate will be the
+	effective fee rate taking the parent fee into account.
+	`,
+	Flags: []cli.Flag{
+		cli.Uint64Flag{
+			Name: "conf_target",
+			Usage: `
+	The deadline in number of blocks that the input should be spent within.
+	When not set, for new inputs, the default value (1008) is used; for
+	exiting inputs, their current values will be retained.`,
+		},
+		cli.Uint64Flag{
+			Name:   "sat_per_byte",
+			Usage:  "Deprecated, use sat_per_vbyte instead.",
+			Hidden: true,
+		},
+		cli.BoolFlag{
+			Name:   "force",
+			Usage:  "Deprecated, use immediate instead.",
+			Hidden: true,
+		},
+		cli.Uint64Flag{
+			Name: "sat_per_vbyte",
+			Usage: `
+	The starting fee rate, expressed in sat/vbyte, that will be used to
+	spend the input with initially. This value will be used by the
+	sweeper's fee function as its starting fee rate. When not set, the
+	sweeper will use the estimated fee rate using the target_conf as the
+	starting fee rate.`,
+		},
+		cli.BoolFlag{
+			Name: "immediate",
+			Usage: `
+	Whether this input will be swept immediately. When set to true, the
+	sweeper will sweep this input without waiting for the next batch.`,
+		},
+		cli.Uint64Flag{
+			Name: "budget",
+			Usage: `
+	The max amount in sats that can be used as the fees. Setting this value
+	greater than the input's value may result in CPFP - one or more wallet
+	utxos will be used to pay the fees specified by the budget. If not set,
+	for new inputs, by default 50% of the input's value will be treated as
+	the budget for fee bumping; for existing inputs, their current budgets
+	will be retained.`,
+		},
+	},
+	Action: actionDecorator(bumpForceCloseFee),
+}
+
+func bumpForceCloseFee(ctx *cli.Context) error {
 	ctxc := getContext()
 
 	// Display the command's help message if we do not have the expected
@@ -302,18 +431,9 @@ func bumpCloseFee(ctx *cli.Context) error {
 		return cli.ShowCommandHelp(ctx, "bumpclosefee")
 	}
 
-	// Check that only the field sat_per_vbyte or the deprecated field
-	// sat_per_byte is used.
-	feeRateFlag, err := checkNotBothSet(
-		ctx, "sat_per_vbyte", "sat_per_byte",
-	)
-	if err != nil {
-		return err
-	}
-
 	// Validate the channel point.
 	channelPoint := ctx.Args().Get(0)
-	_, err = NewProtoOutPoint(channelPoint)
+	_, err := NewProtoOutPoint(channelPoint)
 	if err != nil {
 		return err
 	}
@@ -366,19 +486,21 @@ func bumpCloseFee(ctx *cli.Context) error {
 			continue
 		}
 
-		// Bump fee of the anchor sweep.
-		fmt.Printf("Bumping fee of %v:%v\n",
-			sweepTxID, sweep.Outpoint.OutputIndex)
-
-		_, err = walletClient.BumpFee(ctxc, &walletrpc.BumpFeeRequest{
-			Outpoint:    sweep.Outpoint,
-			TargetConf:  uint32(ctx.Uint64("conf_target")),
-			SatPerVbyte: ctx.Uint64(feeRateFlag),
-			Force:       true,
-		})
+		resp, err := walletClient.BumpFee(
+			ctxc, &walletrpc.BumpFeeRequest{
+				Outpoint:    sweep.Outpoint,
+				TargetConf:  uint32(ctx.Uint64("conf_target")),
+				Budget:      ctx.Uint64("budget"),
+				Immediate:   ctx.Bool("immediate"),
+				SatPerVbyte: ctx.Uint64("sat_per_vbyte"),
+			})
 		if err != nil {
 			return err
 		}
+
+		// Bump fee of the anchor sweep.
+		fmt.Printf("Bumping fee of %v:%v: %v\n",
+			sweepTxID, sweep.Outpoint.OutputIndex, resp.GetStatus())
 	}
 
 	return nil
@@ -553,7 +675,6 @@ func publishTransaction(ctx *cli.Context) error {
 
 	req := &walletrpc.Transaction{
 		TxHex: tx,
-		Label: ctx.String("label"),
 	}
 
 	_, err = walletClient.PublishTransaction(ctxc, req)
@@ -565,6 +686,103 @@ func publishTransaction(ctx *cli.Context) error {
 		TXID string `json:"txid"`
 	}{
 		TXID: msgTx.TxHash().String(),
+	})
+
+	return nil
+}
+
+var getTxCommand = cli.Command{
+	Name:      "gettx",
+	Usage:     "Returns details of a transaction.",
+	ArgsUsage: "txid",
+	Description: `
+	Query the transaction using the given transaction id and return its 
+	details. An error is returned if the transaction is not found.
+	`,
+	Action: actionDecorator(getTransaction),
+}
+
+func getTransaction(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() != 1 {
+		return cli.ShowCommandHelp(ctx, "gettx")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	req := &walletrpc.GetTransactionRequest{
+		Txid: ctx.Args().First(),
+	}
+
+	res, err := walletClient.GetTransaction(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(res)
+
+	return nil
+}
+
+var removeTxCommand = cli.Command{
+	Name: "removetx",
+	Usage: "Attempts to remove the unconfirmed transaction with the " +
+		"specified txid and all its children from the underlying " +
+		"internal wallet.",
+	ArgsUsage: "txid",
+	Description: `
+	Removes the transaction with the specified txid from the underlying 
+	wallet which must still be unconfirmmed (in mempool). This command is 
+	useful when a transaction is RBFed by another transaction. The wallet 
+	will only resolve this conflict when the other transaction is mined 
+	(which can take time). If a transaction was removed erronously a simple
+	rebroadcast of the former transaction with the "publishtx" cmd will
+	register the relevant outputs of the raw tx again with the wallet
+	(if there are no errors broadcasting this transaction due to an RBF
+	replacement sitting in the mempool). As soon as a removed transaction
+	is confirmed funds will be registered with the wallet again.`,
+	Flags:  []cli.Flag{},
+	Action: actionDecorator(removeTransaction),
+}
+
+func removeTransaction(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() != 1 {
+		return cli.ShowCommandHelp(ctx, "removetx")
+	}
+
+	// Fetch the only cmd argument which must be a valid txid.
+	txid := ctx.Args().First()
+	txHash, err := chainhash.NewHashFromStr(txid)
+	if err != nil {
+		return err
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	req := &walletrpc.GetTransactionRequest{
+		Txid: txHash.String(),
+	}
+
+	resp, err := walletClient.RemoveTransaction(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printJSON(&struct {
+		Status string `json:"status"`
+		TxID   string `json:"txid"`
+	}{
+		Status: resp.GetStatus(),
+		TxID:   txHash.String(),
 	})
 
 	return nil
@@ -585,6 +803,356 @@ type fundPsbtResponse struct {
 	Psbt              string       `json:"psbt"`
 	ChangeOutputIndex int32        `json:"change_output_index"`
 	Locks             []*utxoLease `json:"locks"`
+}
+
+var fundTemplatePsbtCommand = cli.Command{
+	Name: "fundtemplate",
+	Usage: "Fund a Partially Signed Bitcoin Transaction (PSBT) from a " +
+		"template.",
+	ArgsUsage: "[--template_psbt=T | [--outputs=O [--inputs=I]]] " +
+		"[--conf_target=C | --sat_per_vbyte=S] " +
+		"[--change_type=A] [--change_output_index=I]",
+	Description: `
+	The fund command creates a fully populated PSBT that contains enough
+	inputs to fund the outputs specified in either the template.
+
+	The main difference to the 'fund' command is that the template PSBT
+	is allowed to already contain both inputs and outputs and coin selection
+	and fee estimation is still performed.
+
+	If '--inputs' and '--outputs' are provided instead of a template, then
+	those are used to create a new PSBT template.
+
+	The 'outputs' flag decodes addresses and the amount to send respectively
+	in the following JSON format:
+
+	    --outputs='["ExampleAddr:NumCoinsInSatoshis", "SecondAddr:Sats"]'
+
+	The 'outputs' format is different from the 'fund' command as the order
+	is important for being able to specify the change output index, so an
+	array is used rather than a map.
+
+	The optional 'inputs' flag decodes a JSON list of UTXO outpoints as
+	returned by the listunspent command for example:
+
+	    --inputs='["<txid1>:<output-index1>","<txid2>:<output-index2>",...]
+
+	Any inputs specified that belong to this lnd node MUST be locked/leased
+	(by using 'lncli wallet leaseoutput') manually to make sure they aren't
+	selected again by the coin selection algorithm.
+
+	After verifying and possibly adding new inputs, all input UTXOs added by
+	the command are locked with an internal app ID. Inputs already present
+	in the template are NOT locked, as they must already be locked when
+	invoking the command.
+
+	The '--change_output_index' flag can be used to specify the index of the
+	output in the PSBT that should be used as the change output. If '-1' is
+	specified, the wallet will automatically add a change output if one is
+	required!
+
+	The optional '--change-type' flag permits to choose the address type
+	for the change for default accounts and single imported public keys.
+	The custom address type can only be p2tr at the moment (p2wkh will be
+	used by default). No custom address type should be provided for custom
+	accounts as we will always generate the change address using the coin
+	selection key scope.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "template_psbt",
+			Usage: "the outputs to fund and optional inputs to " +
+				"spend provided in the base64 PSBT format",
+		},
+		cli.StringFlag{
+			Name: "outputs",
+			Usage: "a JSON compatible map of destination " +
+				"addresses to amounts to send, must not " +
+				"include a change address as that will be " +
+				"added automatically by the wallet",
+		},
+		cli.StringFlag{
+			Name: "inputs",
+			Usage: "an optional JSON compatible list of UTXO " +
+				"outpoints to use as the PSBT's inputs",
+		},
+		cli.Uint64Flag{
+			Name: "conf_target",
+			Usage: "the number of blocks that the transaction " +
+				"should be confirmed on-chain within",
+			Value: 6,
+		},
+		cli.Uint64Flag{
+			Name: "sat_per_vbyte",
+			Usage: "a manual fee expressed in sat/vbyte that " +
+				"should be used when creating the transaction",
+		},
+		cli.StringFlag{
+			Name: "account",
+			Usage: "(optional) the name of the account to use to " +
+				"create/fund the PSBT",
+		},
+		cli.StringFlag{
+			Name: "change_type",
+			Usage: "(optional) the type of the change address to " +
+				"use to create/fund the PSBT. If no address " +
+				"type is provided, p2wpkh will be used for " +
+				"default accounts and single imported public " +
+				"keys. No custom address type should be " +
+				"provided for custom accounts as we will " +
+				"always use the coin selection key scope to " +
+				"generate the change address",
+		},
+		cli.Uint64Flag{
+			Name: "min_confs",
+			Usage: "(optional) the minimum number of " +
+				"confirmations each input used for the PSBT " +
+				"transaction must satisfy",
+			Value: defaultUtxoMinConf,
+		},
+		cli.IntFlag{
+			Name: "change_output_index",
+			Usage: "(optional) define an existing output in the " +
+				"PSBT template that should be used as the " +
+				"change output. The value of -1 means a " +
+				"change output will be added automatically " +
+				"if required",
+			Value: -1,
+		},
+		coinSelectionStrategyFlag,
+	},
+	Action: actionDecorator(fundTemplatePsbt),
+}
+
+// fundTemplatePsbt implements the fundtemplate sub command.
+//
+//nolint:funlen
+func fundTemplatePsbt(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if there aren't any flags
+	// specified.
+	if ctx.NumFlags() == 0 {
+		return cli.ShowCommandHelp(ctx, "fund")
+	}
+
+	chainParams, err := networkParams(ctx)
+	if err != nil {
+		return err
+	}
+
+	coinSelect := &walletrpc.PsbtCoinSelect{}
+
+	// Parse template flags.
+	switch {
+	// The PSBT flag is mutually exclusive with the outputs/inputs flags.
+	case ctx.IsSet("template_psbt") &&
+		(ctx.IsSet("inputs") || ctx.IsSet("outputs")):
+
+		return fmt.Errorf("cannot set template_psbt and inputs/" +
+			"outputs flags at the same time")
+
+	// Use a pre-existing PSBT as the transaction template.
+	case len(ctx.String("template_psbt")) > 0:
+		psbtBase64 := ctx.String("template_psbt")
+		psbtBytes, err := base64.StdEncoding.DecodeString(psbtBase64)
+		if err != nil {
+			return err
+		}
+
+		coinSelect.Psbt = psbtBytes
+
+	// The user manually specified outputs and/or inputs in JSON
+	// format.
+	case len(ctx.String("outputs")) > 0 || len(ctx.String("inputs")) > 0:
+		var (
+			inputs  []*wire.OutPoint
+			outputs []*wire.TxOut
+		)
+
+		if len(ctx.String("outputs")) > 0 {
+			var outputStrings []string
+
+			// Parse the address to amount map as JSON now. At least
+			// one entry must be present.
+			jsonMap := []byte(ctx.String("outputs"))
+			err := json.Unmarshal(jsonMap, &outputStrings)
+			if err != nil {
+				return fmt.Errorf("error parsing outputs "+
+					"JSON: %w", err)
+			}
+
+			// Parse the addresses and amounts into a slice of
+			// transaction outputs.
+			for idx, addrAndAmount := range outputStrings {
+				parts := strings.Split(addrAndAmount, ":")
+				if len(parts) != 2 {
+					return fmt.Errorf("invalid output "+
+						"format at index %d", idx)
+				}
+
+				addrStr, amountStr := parts[0], parts[1]
+				amount, err := strconv.ParseInt(
+					amountStr, 10, 64,
+				)
+				if err != nil {
+					return fmt.Errorf("error parsing "+
+						"amount at index %d: %w", idx,
+						err)
+				}
+
+				addr, err := btcutil.DecodeAddress(
+					addrStr, chainParams,
+				)
+				if err != nil {
+					return fmt.Errorf("error parsing "+
+						"address at index %d: %w", idx,
+						err)
+				}
+
+				pkScript, err := txscript.PayToAddrScript(addr)
+				if err != nil {
+					return fmt.Errorf("error creating pk "+
+						"script for address at index "+
+						"%d: %w", idx, err)
+				}
+
+				outputs = append(outputs, &wire.TxOut{
+					PkScript: pkScript,
+					Value:    amount,
+				})
+			}
+		}
+
+		// Inputs are optional.
+		if len(ctx.String("inputs")) > 0 {
+			var inputStrings []string
+
+			jsonList := []byte(ctx.String("inputs"))
+			err := json.Unmarshal(jsonList, &inputStrings)
+			if err != nil {
+				return fmt.Errorf("error parsing inputs JSON: "+
+					"%w", err)
+			}
+
+			for idx, input := range inputStrings {
+				op, err := wire.NewOutPointFromString(input)
+				if err != nil {
+					return fmt.Errorf("error parsing "+
+						"UTXO outpoint %d: %w", idx,
+						err)
+				}
+				inputs = append(inputs, op)
+			}
+		}
+
+		packet, err := psbt.New(
+			inputs, outputs, 2, 0, make([]uint32, len(inputs)),
+		)
+		if err != nil {
+			return fmt.Errorf("error creating template PSBT: %w",
+				err)
+		}
+
+		var buf bytes.Buffer
+		err = packet.Serialize(&buf)
+		if err != nil {
+			return fmt.Errorf("error serializing template PSBT: %w",
+				err)
+		}
+
+		coinSelect.Psbt = buf.Bytes()
+
+	default:
+		return fmt.Errorf("must specify either template_psbt or " +
+			"inputs/outputs flag")
+	}
+
+	coinSelectionStrategy, err := parseCoinSelectionStrategy(ctx)
+	if err != nil {
+		return err
+	}
+
+	minConfs := int32(ctx.Uint64("min_confs"))
+	req := &walletrpc.FundPsbtRequest{
+		Account:          ctx.String("account"),
+		MinConfs:         minConfs,
+		SpendUnconfirmed: minConfs == 0,
+		Template: &walletrpc.FundPsbtRequest_CoinSelect{
+			CoinSelect: coinSelect,
+		},
+		CoinSelectionStrategy: coinSelectionStrategy,
+	}
+
+	// Parse fee flags.
+	switch {
+	case ctx.IsSet("conf_target") && ctx.IsSet("sat_per_vbyte"):
+		return fmt.Errorf("cannot set conf_target and sat_per_vbyte " +
+			"at the same time")
+
+	case ctx.Uint64("sat_per_vbyte") > 0:
+		req.Fees = &walletrpc.FundPsbtRequest_SatPerVbyte{
+			SatPerVbyte: ctx.Uint64("sat_per_vbyte"),
+		}
+
+	// Check conf_target last because it has a default value.
+	case ctx.Uint64("conf_target") > 0:
+		req.Fees = &walletrpc.FundPsbtRequest_TargetConf{
+			TargetConf: uint32(ctx.Uint64("conf_target")),
+		}
+	}
+
+	type existingIndex = walletrpc.PsbtCoinSelect_ExistingOutputIndex
+
+	// Parse change type flag.
+	changeOutputIndex := ctx.Int("change_output_index")
+	switch {
+	case changeOutputIndex == -1:
+		coinSelect.ChangeOutput = &walletrpc.PsbtCoinSelect_Add{
+			Add: true,
+		}
+	case changeOutputIndex >= 0:
+		coinSelect.ChangeOutput = &existingIndex{
+			ExistingOutputIndex: int32(changeOutputIndex),
+		}
+
+	default:
+		return fmt.Errorf("invalid change_output_index: %d",
+			changeOutputIndex)
+	}
+
+	if ctx.IsSet("change_type") {
+		switch addressType := ctx.String("change_type"); addressType {
+		case "p2tr":
+			req.ChangeType = p2TrChangeType
+
+		default:
+			return fmt.Errorf("invalid type for the change type: "+
+				"%s. At the moment, the only address type "+
+				"supported is p2tr (default to p2wkh)",
+				addressType)
+		}
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	response, err := walletClient.FundPsbt(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	jsonLocks := marshallLocks(response.LockedUtxos)
+
+	printJSON(&fundPsbtResponse{
+		Psbt: base64.StdEncoding.EncodeToString(
+			response.FundedPsbt,
+		),
+		ChangeOutputIndex: response.ChangeOutputIndex,
+		Locks:             jsonLocks,
+	})
+
+	return nil
 }
 
 var fundPsbtCommand = cli.Command{
@@ -676,6 +1244,7 @@ var fundPsbtCommand = cli.Command{
 				"transaction must satisfy",
 			Value: defaultUtxoMinConf,
 		},
+		coinSelectionStrategyFlag,
 	},
 	Action: actionDecorator(fundPsbt),
 }
@@ -689,16 +1258,22 @@ func fundPsbt(ctx *cli.Context) error {
 		return cli.ShowCommandHelp(ctx, "fund")
 	}
 
+	coinSelectionStrategy, err := parseCoinSelectionStrategy(ctx)
+	if err != nil {
+		return err
+	}
+
 	minConfs := int32(ctx.Uint64("min_confs"))
 	req := &walletrpc.FundPsbtRequest{
-		Account:          ctx.String("account"),
-		MinConfs:         minConfs,
-		SpendUnconfirmed: minConfs == 0,
+		Account:               ctx.String("account"),
+		MinConfs:              minConfs,
+		SpendUnconfirmed:      minConfs == 0,
+		CoinSelectionStrategy: coinSelectionStrategy,
 	}
 
 	// Parse template flags.
 	switch {
-	// The PSBT flag is mutally exclusive with the outputs/inputs flags.
+	// The PSBT flag is mutually exclusive with the outputs/inputs flags.
 	case ctx.IsSet("template_psbt") &&
 		(ctx.IsSet("inputs") || ctx.IsSet("outputs")):
 
@@ -730,8 +1305,8 @@ func fundPsbt(ctx *cli.Context) error {
 			// entry must be present.
 			jsonMap := []byte(ctx.String("outputs"))
 			if err := json.Unmarshal(jsonMap, &amountToAddr); err != nil {
-				return fmt.Errorf("error parsing outputs JSON: %v",
-					err)
+				return fmt.Errorf("error parsing outputs "+
+					"JSON: %w", err)
 			}
 			tpl.Outputs = amountToAddr
 		}
@@ -787,8 +1362,7 @@ func fundPsbt(ctx *cli.Context) error {
 	if ctx.IsSet("change_type") {
 		switch addressType := ctx.String("change_type"); addressType {
 		case "p2tr":
-			//nolint:lll
-			req.ChangeType = walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
+			req.ChangeType = p2TrChangeType
 
 		default:
 			return fmt.Errorf("invalid type for the "+
@@ -960,7 +1534,7 @@ func leaseOutput(ctx *cli.Context) error {
 	outpointStr := ctx.String("outpoint")
 	outpoint, err := NewProtoOutPoint(outpointStr)
 	if err != nil {
-		return fmt.Errorf("error parsing outpoint: %v", err)
+		return fmt.Errorf("error parsing outpoint: %w", err)
 	}
 
 	lockIDStr := ctx.String("lockid")
@@ -969,7 +1543,7 @@ func leaseOutput(ctx *cli.Context) error {
 	}
 	lockID, err := hex.DecodeString(lockIDStr)
 	if err != nil {
-		return fmt.Errorf("error parsing lockid: %v", err)
+		return fmt.Errorf("error parsing lockid: %w", err)
 	}
 
 	expiry := ctx.Uint64("expiry")
@@ -1045,16 +1619,16 @@ func releaseOutput(ctx *cli.Context) error {
 
 	outpoint, err := NewProtoOutPoint(outpointStr)
 	if err != nil {
-		return fmt.Errorf("error parsing outpoint: %v", err)
+		return fmt.Errorf("error parsing outpoint: %w", err)
 	}
 
-	lockID := walletrpc.LndInternalLockID[:]
+	lockID := chanfunding.LndInternalLockID[:]
 	lockIDStr := ctx.String("lockid")
 	if lockIDStr != "" {
 		var err error
 		lockID, err = hex.DecodeString(lockIDStr)
 		if err != nil {
-			return fmt.Errorf("error parsing lockid: %v", err)
+			return fmt.Errorf("error parsing lockid: %w", err)
 		}
 	}
 
@@ -1209,8 +1783,8 @@ var listAddressesCommand = cli.Command{
 	Flags: []cli.Flag{
 		cli.StringFlag{
 			Name: "account_name",
-			Usage: "(optional) only addreses matching this account " +
-				"are returned",
+			Usage: "(optional) only addresses matching this " +
+				"account are returned",
 		},
 		cli.BoolFlag{
 			Name: "show_custom_accounts",
@@ -1514,7 +2088,8 @@ func importAccount(ctx *cli.Context) error {
 			ctx.String("master_key_fingerprint"),
 		)
 		if err != nil {
-			return fmt.Errorf("invalid master key fingerprint: %v", err)
+			return fmt.Errorf("invalid master key fingerprint: %w",
+				err)
 		}
 	}
 

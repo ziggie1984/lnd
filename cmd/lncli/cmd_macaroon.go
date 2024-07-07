@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"unicode"
@@ -192,7 +192,7 @@ func bakeMacaroon(ctx *cli.Context) error {
 	// a file or write to the standard output using hex encoding.
 	switch {
 	case savePath != "":
-		err = ioutil.WriteFile(savePath, macBytes, 0644)
+		err = os.WriteFile(savePath, macBytes, 0644)
 		if err != nil {
 			return err
 		}
@@ -352,7 +352,7 @@ func printMacaroon(ctx *cli.Context) error {
 		macPath := lncfg.CleanAndExpandPath(ctx.String("macaroon_file"))
 
 		// Load the specified macaroon file.
-		macBytes, err = ioutil.ReadFile(macPath)
+		macBytes, err = os.ReadFile(macPath)
 		if err != nil {
 			return fmt.Errorf("unable to read macaroon path %v: %v",
 				macPath, err)
@@ -361,7 +361,7 @@ func printMacaroon(ctx *cli.Context) error {
 	case args.Present():
 		macBytes, err = hex.DecodeString(args.First())
 		if err != nil {
-			return fmt.Errorf("unable to hex decode macaroon: %v",
+			return fmt.Errorf("unable to hex decode macaroon: %w",
 				err)
 		}
 
@@ -372,7 +372,7 @@ func printMacaroon(ctx *cli.Context) error {
 	// Decode the macaroon and its protobuf encoded internal identifier.
 	mac := &macaroon.Macaroon{}
 	if err = mac.UnmarshalBinary(macBytes); err != nil {
-		return fmt.Errorf("unable to decode macaroon: %v", err)
+		return fmt.Errorf("unable to decode macaroon: %w", err)
 	}
 	rawID := mac.Id()
 	if rawID[0] != byte(bakery.LatestVersion) {
@@ -382,7 +382,7 @@ func printMacaroon(ctx *cli.Context) error {
 	idProto := rawID[1:]
 	err = proto.Unmarshal(idProto, decodedID)
 	if err != nil {
-		return fmt.Errorf("unable to decode macaroon version: %v", err)
+		return fmt.Errorf("unable to decode macaroon version: %w", err)
 	}
 
 	// Prepare everything to be printed in a more human-readable format.
@@ -441,7 +441,7 @@ func constrainMacaroon(ctx *cli.Context) error {
 	sourceMacFile := lncfg.CleanAndExpandPath(args.First())
 	args = args.Tail()
 
-	sourceMacBytes, err := ioutil.ReadFile(sourceMacFile)
+	sourceMacBytes, err := os.ReadFile(sourceMacFile)
 	if err != nil {
 		return fmt.Errorf("error trying to read source macaroon file "+
 			"%s: %v", sourceMacFile, err)
@@ -453,7 +453,7 @@ func constrainMacaroon(ctx *cli.Context) error {
 	// add first-party caveats (if necessary) to it.
 	sourceMac := &macaroon.Macaroon{}
 	if err = sourceMac.UnmarshalBinary(sourceMacBytes); err != nil {
-		return fmt.Errorf("error unmarshaling source macaroon file "+
+		return fmt.Errorf("error unmarshalling source macaroon file "+
 			"%s: %v", sourceMacFile, err)
 	}
 
@@ -471,7 +471,7 @@ func constrainMacaroon(ctx *cli.Context) error {
 	}
 
 	// Now we can output the result.
-	err = ioutil.WriteFile(destMacFile, destMacBytes, 0644)
+	err = os.WriteFile(destMacFile, destMacBytes, 0644)
 	if err != nil {
 		return fmt.Errorf("error writing destination macaroon file "+
 			"%s: %v", destMacFile, err)
@@ -550,7 +550,7 @@ func applyMacaroonConstraints(ctx *cli.Context,
 
 	constrainedMac, err := macaroons.AddConstraints(mac, macConstraints...)
 	if err != nil {
-		return nil, fmt.Errorf("error adding constraints: %v", err)
+		return nil, fmt.Errorf("error adding constraints: %w", err)
 	}
 
 	return constrainedMac, nil

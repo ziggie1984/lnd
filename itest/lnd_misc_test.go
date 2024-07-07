@@ -1,9 +1,10 @@
 package itest
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
+	"os"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
@@ -707,7 +708,7 @@ func testAbandonChannel(ht *lntest.HarnessTest) {
 	// To make sure the channel is removed from the backup file as well
 	// when being abandoned, grab a backup snapshot so we can compare it
 	// with the later state.
-	bkupBefore, err := ioutil.ReadFile(alice.Cfg.ChanBackupPath())
+	bkupBefore, err := os.ReadFile(alice.Cfg.ChanBackupPath())
 	require.NoError(ht, err, "channel backup before abandoning channel")
 
 	// Send request to abandon channel.
@@ -732,7 +733,7 @@ func testAbandonChannel(ht *lntest.HarnessTest) {
 
 	// Make sure the channel is no longer in the channel backup list.
 	err = wait.NoError(func() error {
-		bkupAfter, err := ioutil.ReadFile(alice.Cfg.ChanBackupPath())
+		bkupAfter, err := os.ReadFile(alice.Cfg.ChanBackupPath())
 		if err != nil {
 			return fmt.Errorf("could not get channel backup "+
 				"before abandoning channel: %v", err)
@@ -777,16 +778,18 @@ func testSweepAllCoins(ht *lntest.HarnessTest) {
 
 	// Ensure that we can't send coins to our own Pubkey.
 	ainz.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
-		Addr:    ainz.RPC.GetInfo().IdentityPubkey,
-		SendAll: true,
-		Label:   sendCoinsLabel,
+		Addr:       ainz.RPC.GetInfo().IdentityPubkey,
+		SendAll:    true,
+		Label:      sendCoinsLabel,
+		TargetConf: 6,
 	})
 
 	// Ensure that we can't send coins to another user's Pubkey.
 	ainz.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
-		Addr:    ht.Alice.RPC.GetInfo().IdentityPubkey,
-		SendAll: true,
-		Label:   sendCoinsLabel,
+		Addr:       ht.Alice.RPC.GetInfo().IdentityPubkey,
+		SendAll:    true,
+		Label:      sendCoinsLabel,
+		TargetConf: 6,
 	})
 
 	// With the two coins above mined, we'll now instruct Ainz to sweep all
@@ -798,23 +801,39 @@ func testSweepAllCoins(ht *lntest.HarnessTest) {
 
 	// Send coins to a testnet3 address.
 	ainz.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
-		Addr:    "tb1qfc8fusa98jx8uvnhzavxccqlzvg749tvjw82tg",
-		SendAll: true,
-		Label:   sendCoinsLabel,
+		Addr:       "tb1qfc8fusa98jx8uvnhzavxccqlzvg749tvjw82tg",
+		SendAll:    true,
+		Label:      sendCoinsLabel,
+		TargetConf: 6,
 	})
 
 	// Send coins to a mainnet address.
 	ainz.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
-		Addr:    "1MPaXKp5HhsLNjVSqaL7fChE3TVyrTMRT3",
-		SendAll: true,
-		Label:   sendCoinsLabel,
+		Addr:       "1MPaXKp5HhsLNjVSqaL7fChE3TVyrTMRT3",
+		SendAll:    true,
+		Label:      sendCoinsLabel,
+		TargetConf: 6,
 	})
+
+	// TODO(yy): we still allow default values to be used when neither conf
+	// target or fee rate is set in 0.18.0. When future release forbidden
+	// this behavior, we should revive the test below, which asserts either
+	// conf target or fee rate is set.
+	//
+	// Send coins to a compatible address without specifying fee rate or
+	// conf target.
+	// ainz.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
+	// 	Addr:    ht.Miner.NewMinerAddress().String(),
+	// 	SendAll: true,
+	// 	Label:   sendCoinsLabel,
+	// })
 
 	// Send coins to a compatible address.
 	ainz.RPC.SendCoins(&lnrpc.SendCoinsRequest{
-		Addr:    ht.Miner.NewMinerAddress().String(),
-		SendAll: true,
-		Label:   sendCoinsLabel,
+		Addr:       ht.Miner.NewMinerAddress().String(),
+		SendAll:    true,
+		Label:      sendCoinsLabel,
+		TargetConf: 6,
 	})
 
 	// We'll mine a block which should include the sweep transaction we
@@ -829,32 +848,22 @@ func testSweepAllCoins(ht *lntest.HarnessTest) {
 	// assertTxLabel is a helper function which finds a target tx in our
 	// set of transactions and checks that it has the desired label.
 	assertTxLabel := func(targetTx, label string) error {
-		// List all transactions relevant to our wallet, and find the
-		// tx so that we can check the correct label has been set.
-		txResp := ainz.RPC.GetTransactions(nil)
+		// Get the transaction from our wallet so that we can check
+		// that the correct label has been set.
+		txResp := ainz.RPC.GetTransaction(
+			&walletrpc.GetTransactionRequest{
+				Txid: targetTx,
+			},
+		)
+		require.NotNilf(ht, txResp, "target tx %v not found", targetTx)
 
-		var target *lnrpc.Transaction
-
-		// First we need to find the target tx.
-		for _, txn := range txResp.Transactions {
-			if txn.TxHash == targetTx {
-				target = txn
-				break
-			}
-		}
-
-		// If we cannot find it, return an error.
-		if target == nil {
-			return fmt.Errorf("target tx %v not found", targetTx)
-		}
-
-		// Otherwise, check the labels are matched.
-		if target.Label == label {
+		// Make sure the labels match.
+		if txResp.Label == label {
 			return nil
 		}
 
 		return fmt.Errorf("labels not match, want: "+
-			"%v, got %v", label, target.Label)
+			"%v, got %v", label, txResp.Label)
 	}
 
 	// waitTxLabel waits until the desired tx label is found or timeout.
@@ -921,10 +930,11 @@ func testSweepAllCoins(ht *lntest.HarnessTest) {
 	// If we try again, but this time specifying an amount, then the call
 	// should fail.
 	ainz.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
-		Addr:    ht.Miner.NewMinerAddress().String(),
-		Amount:  10000,
-		SendAll: true,
-		Label:   sendCoinsLabel,
+		Addr:       ht.Miner.NewMinerAddress().String(),
+		Amount:     10000,
+		SendAll:    true,
+		Label:      sendCoinsLabel,
+		TargetConf: 6,
 	})
 
 	// With all the edge cases tested, we'll now test the happy paths of
@@ -950,8 +960,9 @@ func testSweepAllCoins(ht *lntest.HarnessTest) {
 		// Let's send some coins to the main address.
 		const amt = 123456
 		resp := ainz.RPC.SendCoins(&lnrpc.SendCoinsRequest{
-			Addr:   mainAddrResp.Address,
-			Amount: amt,
+			Addr:       mainAddrResp.Address,
+			Amount:     amt,
+			TargetConf: 6,
 		})
 		block := ht.MineBlocksAndAssertNumTxes(1, 1)[0]
 		sweepTx := block.Transactions[1]
@@ -1034,6 +1045,7 @@ func testListAddresses(ht *lntest.HarnessTest) {
 			Addr:             addr,
 			Amount:           addressDetail.Balance,
 			SpendUnconfirmed: true,
+			TargetConf:       6,
 		})
 	}
 
@@ -1251,4 +1263,42 @@ func testSignVerifyMessageWithAddr(ht *lntest.HarnessTest) {
 	)
 
 	require.False(ht, respValid.Valid, "external signature did validate")
+}
+
+// testNativeSQLNoMigration tests that nodes that have invoices would not start
+// up with native SQL enabled, as we don't currently support migration of KV
+// invoices to the new SQL schema.
+func testNativeSQLNoMigration(ht *lntest.HarnessTest) {
+	alice := ht.Alice
+
+	// Make sure we run the test with SQLite or Postgres.
+	if alice.Cfg.DBBackend != node.BackendSqlite &&
+		alice.Cfg.DBBackend != node.BackendPostgres {
+
+		ht.Skip("node not running with SQLite or Postgres")
+	}
+
+	// Skip the test if the node is already running with native SQL.
+	if alice.Cfg.NativeSQL {
+		ht.Skip("node already running with native SQL")
+	}
+
+	alice.RPC.AddInvoice(&lnrpc.Invoice{
+		Value: 10_000,
+	})
+
+	alice.SetExtraArgs([]string{"--db.use-native-sql"})
+
+	// Restart the node manually as we're really only interested in the
+	// startup error.
+	require.NoError(ht, alice.Stop())
+	require.NoError(ht, alice.StartLndCmd(context.Background()))
+
+	// We expect the node to fail to start up with native SQL enabled, as we
+	// have an invoice in the KV store.
+	require.Error(ht, alice.WaitForProcessExit())
+
+	// Reset the extra args and restart alice.
+	alice.SetExtraArgs(nil)
+	require.NoError(ht, alice.Start(ht.Context()))
 }

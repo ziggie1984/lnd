@@ -76,12 +76,12 @@ var (
 	waitTime = 15 * time.Second
 
 	defaultTxPolicy = wtpolicy.TxPolicy{
-		BlobType:     blob.TypeAltruistCommit,
+		BlobType:     blob.TypeAltruistTaprootCommit,
 		SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
 	}
 
 	highSweepRateTxPolicy = wtpolicy.TxPolicy{
-		BlobType:     blob.TypeAltruistCommit,
+		BlobType:     blob.TypeAltruistTaprootCommit,
 		SweepFeeRate: 1000000, // The high sweep fee creates dust.
 	}
 )
@@ -229,17 +229,25 @@ func (c *mockChannel) createRemoteCommitTx(t *testing.T) {
 	t.Helper()
 
 	// Construct the to-local witness script.
-	toLocalScript, err := input.CommitScriptToSelf(
+	toLocalScriptTree, err := input.NewLocalCommitScriptTree(
 		c.csvDelay, c.toLocalPK, c.revPK,
 	)
 	require.NoError(t, err, "unable to create to-local script")
 
+	// Construct the to-remote witness script.
+	toRemoteScriptTree, err := input.NewRemoteCommitScriptTree(c.toRemotePK)
+	require.NoError(t, err, "unable to create to-remote script")
+
 	// Compute the to-local witness script hash.
-	toLocalScriptHash, err := input.WitnessScriptHash(toLocalScript)
+	toLocalScriptHash, err := input.PayToTaprootScript(
+		toLocalScriptTree.TaprootKey,
+	)
 	require.NoError(t, err, "unable to create to-local witness script hash")
 
 	// Compute the to-remote witness script hash.
-	toRemoteScriptHash, err := input.CommitScriptUnencumbered(c.toRemotePK)
+	toRemoteScriptHash, err := input.PayToTaprootScript(
+		toRemoteScriptTree.TaprootKey,
+	)
 	require.NoError(t, err, "unable to create to-remote script")
 
 	// Construct the remote commitment txn, containing the to-local and
@@ -264,6 +272,19 @@ func (c *mockChannel) createRemoteCommitTx(t *testing.T) {
 			PkScript: toLocalScriptHash,
 		})
 
+		revokeTapleafHash := txscript.NewBaseTapLeaf(
+			toLocalScriptTree.RevocationLeaf.Script,
+		).TapHash()
+		tapTree := toLocalScriptTree.TapscriptTree
+		revokeIdx := tapTree.LeafProofIndex[revokeTapleafHash]
+		revokeMerkleProof := tapTree.LeafMerkleProofs[revokeIdx]
+		revokeControlBlock := revokeMerkleProof.ToControlBlock(
+			&input.TaprootNUMSKey,
+		)
+
+		ctrlBytes, err := revokeControlBlock.ToBytes()
+		require.NoError(t, err)
+
 		// Create the sign descriptor used to sign for the to-local
 		// input.
 		toLocalSignDesc = &input.SignDescriptor{
@@ -271,9 +292,11 @@ func (c *mockChannel) createRemoteCommitTx(t *testing.T) {
 				KeyLocator: c.revKeyLoc,
 				PubKey:     c.revPK,
 			},
-			WitnessScript: toLocalScript,
+			WitnessScript: toLocalScriptTree.RevocationLeaf.Script,
 			Output:        commitTxn.TxOut[outputIndex],
-			HashType:      txscript.SigHashAll,
+			HashType:      txscript.SigHashDefault,
+			SignMethod:    input.TaprootScriptSpendSignMethod,
+			ControlBlock:  ctrlBytes,
 		}
 		outputIndex++
 	}
@@ -283,6 +306,18 @@ func (c *mockChannel) createRemoteCommitTx(t *testing.T) {
 			PkScript: toRemoteScriptHash,
 		})
 
+		toRemoteTapleafHash := txscript.NewBaseTapLeaf(
+			toRemoteScriptTree.SettleLeaf.Script,
+		).TapHash()
+		tapTree := toRemoteScriptTree.TapscriptTree
+		remoteIdx := tapTree.LeafProofIndex[toRemoteTapleafHash]
+		remoteMerkleProof := tapTree.LeafMerkleProofs[remoteIdx]
+		remoteControlBlock := remoteMerkleProof.ToControlBlock(
+			&input.TaprootNUMSKey,
+		)
+
+		ctrlBytes, _ := remoteControlBlock.ToBytes()
+
 		// Create the sign descriptor used to sign for the to-remote
 		// input.
 		toRemoteSignDesc = &input.SignDescriptor{
@@ -290,9 +325,11 @@ func (c *mockChannel) createRemoteCommitTx(t *testing.T) {
 				KeyLocator: c.toRemoteKeyLoc,
 				PubKey:     c.toRemotePK,
 			},
-			WitnessScript: toRemoteScriptHash,
+			WitnessScript: toRemoteScriptTree.SettleLeaf.Script,
 			Output:        commitTxn.TxOut[outputIndex],
-			HashType:      txscript.SigHashAll,
+			HashType:      txscript.SigHashDefault,
+			SignMethod:    input.TaprootScriptSpendSignMethod,
+			ControlBlock:  ctrlBytes,
 		}
 		outputIndex++
 	}
@@ -395,15 +432,16 @@ func (c *mockChannel) getState(
 }
 
 type testHarness struct {
-	t         *testing.T
-	cfg       harnessCfg
-	signer    *wtmock.MockSigner
-	capacity  lnwire.MilliSatoshi
-	clientDB  *wtdb.ClientDB
-	clientCfg *wtclient.Config
-	client    wtclient.Client
-	server    *serverHarness
-	net       *mockNet
+	t            *testing.T
+	cfg          harnessCfg
+	signer       *wtmock.MockSigner
+	capacity     lnwire.MilliSatoshi
+	clientMgr    *wtclient.Manager
+	clientDB     *wtdb.ClientDB
+	clientCfg    *wtclient.Config
+	clientPolicy wtpolicy.Policy
+	server       *serverHarness
+	net          *mockNet
 
 	blockEvents *mockBlockSub
 	height      int32
@@ -486,6 +524,7 @@ func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
 		return &channeldb.ChannelCloseSummary{CloseHeight: height}, nil
 	}
 
+	h.clientPolicy = cfg.policy
 	h.clientCfg = &wtclient.Config{
 		Signer: signer,
 		SubscribeChannelEvents: func() (subscribe.Subscription, error) {
@@ -497,7 +536,6 @@ func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
 		DB:                 clientDB,
 		AuthDial:           mockNet.AuthDial,
 		SecretKeyRing:      wtmock.NewSecretKeyRing(),
-		Policy:             cfg.policy,
 		NewAddress: func() ([]byte, error) {
 			return addrScript, nil
 		},
@@ -515,7 +553,7 @@ func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
 
 		_, retribution := h.channelFromID(id).getState(commitHeight)
 
-		return retribution, channeldb.SingleFunderBit, nil
+		return retribution, channeldb.SimpleTaprootFeatureBit, nil
 	}
 
 	if !cfg.noServerStart {
@@ -525,7 +563,7 @@ func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
 
 	h.startClient()
 	t.Cleanup(func() {
-		require.NoError(t, h.client.Stop())
+		require.NoError(h.t, h.clientMgr.Stop())
 		require.NoError(t, h.clientDB.Close())
 	})
 
@@ -559,10 +597,10 @@ func (h *testHarness) startClient() {
 		Address:     towerTCPAddr,
 	}
 
-	h.client, err = wtclient.New(h.clientCfg)
+	h.clientMgr, err = wtclient.NewManager(h.clientCfg, h.clientPolicy)
 	require.NoError(h.t, err)
-	require.NoError(h.t, h.client.Start())
-	require.NoError(h.t, h.client.AddTower(towerAddr))
+	require.NoError(h.t, h.clientMgr.Start())
+	require.NoError(h.t, h.clientMgr.AddTower(towerAddr))
 }
 
 // chanIDFromInt creates a unique channel id given a unique integral id.
@@ -663,7 +701,9 @@ func (h *testHarness) registerChannel(id uint64) {
 	h.t.Helper()
 
 	chanID := chanIDFromInt(id)
-	err := h.client.RegisterChannel(chanID)
+	err := h.clientMgr.RegisterChannel(
+		chanID, channeldb.SimpleTaprootFeatureBit,
+	)
 	require.NoError(h.t, err)
 }
 
@@ -704,8 +744,8 @@ func (h *testHarness) backupState(id, i uint64, expErr error) {
 
 	chanID := chanIDFromInt(id)
 
-	err := h.client.BackupState(&chanID, retribution.RevokedStateNum)
-	require.ErrorIs(h.t, expErr, err)
+	err := h.clientMgr.BackupState(&chanID, retribution.RevokedStateNum)
+	require.ErrorIs(h.t, err, expErr)
 }
 
 // sendPayments instructs the channel identified by id to send amt to the remote
@@ -752,7 +792,7 @@ func (h *testHarness) recvPayments(id, from, to uint64,
 func (h *testHarness) addTower(addr *lnwire.NetAddress) {
 	h.t.Helper()
 
-	err := h.client.AddTower(addr)
+	err := h.clientMgr.AddTower(addr)
 	require.NoError(h.t, err)
 }
 
@@ -761,7 +801,7 @@ func (h *testHarness) addTower(addr *lnwire.NetAddress) {
 func (h *testHarness) removeTower(pubKey *btcec.PublicKey, addr net.Addr) {
 	h.t.Helper()
 
-	err := h.client.RemoveTower(pubKey, addr)
+	err := h.clientMgr.RemoveTower(pubKey, addr)
 	require.NoError(h.t, err)
 }
 
@@ -994,15 +1034,19 @@ func (s *serverHarness) waitForUpdates(hints []blob.BreachHint,
 	// Closure to assert the server's matches are consistent with the hint
 	// set.
 	serverHasHints := func(matches []wtdb.Match) bool {
-		if len(hintSet) != len(matches) {
+		// De-dup the server matches since it might very well have
+		// multiple matches for a hint if that update was backed up on
+		// more than one session.
+		matchHints := make(map[blob.BreachHint]struct{})
+		for _, match := range matches {
+			matchHints[match.Hint] = struct{}{}
+		}
+
+		if len(hintSet) != len(matchHints) {
 			return false
 		}
 
-		for _, match := range matches {
-			_, ok := hintSet[match.Hint]
-			require.Truef(s.t, ok, "match %v in db is not in "+
-				"hint set", match.Hint)
-		}
+		require.EqualValues(s.t, hintSet, matchHints)
 
 		return true
 	}
@@ -1123,7 +1167,7 @@ var clientTests = []clientTest{
 			)
 
 			// Stop the client, subsequent backups should fail.
-			h.client.Stop()
+			require.NoError(h.t, h.clientMgr.Stop())
 
 			// Advance the channel and try to back up the states. We
 			// expect ErrClientExiting to be returned from
@@ -1238,7 +1282,7 @@ var clientTests = []clientTest{
 
 			// Stop the client to abort the state updates it has
 			// queued.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 
 			// Restart the server and allow it to ack the updates
 			// after the client retransmits the unacked update.
@@ -1249,6 +1293,7 @@ var clientTests = []clientTest{
 			// Restart the client and allow it to process the
 			// committed update.
 			h.startClient()
+			h.registerChannel(chanID)
 
 			// Wait for the committed update to be accepted by the
 			// tower.
@@ -1402,7 +1447,7 @@ var clientTests = []clientTest{
 
 			// Wait for all the updates to be populated in the
 			// server's database.
-			h.server.waitForUpdates(hints, 10*time.Second)
+			h.server.waitForUpdates(hints, waitTime)
 		},
 	},
 	{
@@ -1433,7 +1478,7 @@ var clientTests = []clientTest{
 			h.server.waitForUpdates(nil, waitTime)
 
 			// Stop the client since it has queued backups.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 
 			// Restart the server and allow it to ack session
 			// creation.
@@ -1452,9 +1497,7 @@ var clientTests = []clientTest{
 
 			// Assert that the server has updates for the clients
 			// most recent policy.
-			h.server.assertUpdatesForPolicy(
-				hints, h.clientCfg.Policy,
-			)
+			h.server.assertUpdatesForPolicy(hints, h.clientPolicy)
 		},
 	},
 	{
@@ -1485,7 +1528,7 @@ var clientTests = []clientTest{
 			h.server.waitForUpdates(nil, waitTime)
 
 			// Stop the client since it has queued backups.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 
 			// Restart the server and allow it to ack session
 			// creation.
@@ -1496,7 +1539,7 @@ var clientTests = []clientTest{
 			// Restart the client with a new policy, which will
 			// immediately try to overwrite the prior session with
 			// the old policy.
-			h.clientCfg.Policy.SweepFeeRate *= 2
+			h.clientPolicy.SweepFeeRate *= 2
 			h.startClient()
 
 			// Wait for all the updates to be populated in the
@@ -1505,9 +1548,7 @@ var clientTests = []clientTest{
 
 			// Assert that the server has updates for the clients
 			// most recent policy.
-			h.server.assertUpdatesForPolicy(
-				hints, h.clientCfg.Policy,
-			)
+			h.server.assertUpdatesForPolicy(hints, h.clientPolicy)
 		},
 	},
 	{
@@ -1541,7 +1582,7 @@ var clientTests = []clientTest{
 			h.server.waitForUpdates(hints[:numUpdates/2], waitTime)
 
 			// Stop the client, which should have no more backups.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 
 			// Record the policy that the first half was stored
 			// under. We'll expect the second half to also be
@@ -1549,11 +1590,12 @@ var clientTests = []clientTest{
 			// adjusting the MaxUpdates. The client should detect
 			// that the two policies have equivalent TxPolicies and
 			// continue using the first.
-			expPolicy := h.clientCfg.Policy
+			expPolicy := h.clientPolicy
 
 			// Restart the client with a new policy.
-			h.clientCfg.Policy.MaxUpdates = 20
+			h.clientPolicy.MaxUpdates = 20
 			h.startClient()
+			h.registerChannel(chanID)
 
 			// Now, queue the second half of the retributions.
 			h.backupStates(chanID, numUpdates/2, numUpdates, nil)
@@ -1602,8 +1644,9 @@ var clientTests = []clientTest{
 
 			// Restart the client, so we can ensure the deduping is
 			// maintained across restarts.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 			h.startClient()
+			h.registerChannel(chanID)
 
 			// Try to back up the full range of retributions. Only
 			// the second half should actually be sent.
@@ -1713,11 +1756,11 @@ var clientTests = []clientTest{
 			h.server.addr = towerAddr
 
 			// Add the new tower address to the client.
-			err = h.client.AddTower(towerAddr)
+			err = h.clientMgr.AddTower(towerAddr)
 			require.NoError(h.t, err)
 
 			// Remove the old tower address from the client.
-			err = h.client.RemoveTower(
+			err = h.clientMgr.RemoveTower(
 				towerAddr.IdentityKey, oldAddr,
 			)
 			require.NoError(h.t, err)
@@ -1751,7 +1794,7 @@ var clientTests = []clientTest{
 			// negotiation with the server will be in progress, so
 			// the client should be able to remove the server.
 			err := wait.NoError(func() error {
-				return h.client.RemoveTower(
+				return h.clientMgr.RemoveTower(
 					h.server.addr.IdentityKey, nil,
 				)
 			}, waitTime)
@@ -1794,11 +1837,11 @@ var clientTests = []clientTest{
 			require.NoError(h.t, h.server.server.Start())
 
 			// Re-add the server to the client
-			err = h.client.AddTower(h.server.addr)
+			err = h.clientMgr.AddTower(h.server.addr)
 			require.NoError(h.t, err)
 
 			// Also add the new tower address.
-			err = h.client.AddTower(towerAddr)
+			err = h.clientMgr.AddTower(towerAddr)
 			require.NoError(h.t, err)
 
 			// Assert that if the client attempts to remove the
@@ -1806,7 +1849,7 @@ var clientTests = []clientTest{
 			// address currently being locked for session
 			// negotiation.
 			err = wait.Predicate(func() bool {
-				err = h.client.RemoveTower(
+				err = h.clientMgr.RemoveTower(
 					h.server.addr.IdentityKey,
 					h.server.addr.Address,
 				)
@@ -1817,7 +1860,7 @@ var clientTests = []clientTest{
 			// Assert that the second address can be removed since
 			// it is not being used for session negotiation.
 			err = wait.NoError(func() error {
-				return h.client.RemoveTower(
+				return h.clientMgr.RemoveTower(
 					h.server.addr.IdentityKey, towerTCPAddr,
 				)
 			}, waitTime)
@@ -1829,7 +1872,7 @@ var clientTests = []clientTest{
 			// Assert that the client can now remove the first
 			// address.
 			err = wait.NoError(func() error {
-				return h.client.RemoveTower(
+				return h.clientMgr.RemoveTower(
 					h.server.addr.IdentityKey, nil,
 				)
 			}, waitTime)
@@ -1882,7 +1925,7 @@ var clientTests = []clientTest{
 			require.False(h.t, h.isSessionClosable(sessionIDs[0]))
 
 			// Restart the client.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 			h.startClient()
 
 			// The session should now have been marked as closable.
@@ -2069,7 +2112,7 @@ var clientTests = []clientTest{
 			h.server.waitForUpdates(hints[:numUpdates/2], waitTime)
 
 			// Now stop the client and reset its database.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 
 			db := newClientDB(h.t)
 			h.clientDB = db
@@ -2122,9 +2165,10 @@ var clientTests = []clientTest{
 			h.backupStates(chanID, 0, numUpdates/2, nil)
 
 			// Restart the Client. And also now start the server.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 			h.server.start()
 			h.startClient()
+			h.registerChannel(chanID)
 
 			// Back up a few more states.
 			h.backupStates(chanID, numUpdates/2, numUpdates, nil)
@@ -2222,7 +2266,7 @@ var clientTests = []clientTest{
 
 			// Now we can remove the old one.
 			err := wait.Predicate(func() bool {
-				err := h.client.RemoveTower(
+				err := h.clientMgr.RemoveTower(
 					h.server.addr.IdentityKey, nil,
 				)
 
@@ -2308,7 +2352,7 @@ var clientTests = []clientTest{
 			require.NoError(h.t, err)
 
 			// Now remove the tower.
-			err = h.client.RemoveTower(
+			err = h.clientMgr.RemoveTower(
 				h.server.addr.IdentityKey, nil,
 			)
 			require.NoError(h.t, err)
@@ -2395,11 +2439,11 @@ var clientTests = []clientTest{
 
 			// Now restart the client. This ensures that the
 			// updates are no longer in the pending queue.
-			require.NoError(h.t, h.client.Stop())
+			require.NoError(h.t, h.clientMgr.Stop())
 			h.startClient()
 
 			// Now remove the tower.
-			err = h.client.RemoveTower(
+			err = h.clientMgr.RemoveTower(
 				h.server.addr.IdentityKey, nil,
 			)
 			require.NoError(h.t, err)
@@ -2414,6 +2458,104 @@ var clientTests = []clientTest{
 			// Now we assert that the backups are backed up to the
 			// new tower.
 			server2.waitForUpdates(hints[numUpdates/2:], waitTime)
+		},
+	},
+	{
+		// Previously we would not load a session into memory if its
+		// seq num was equal to it's max-updates. This meant that we
+		// would then not properly handle any committed updates for the
+		// session meaning that we would then not remove the tower if
+		// needed. This test demonstrates that this has been fixed.
+		name: "can remove tower with an un-acked update in " +
+			"an exhausted session after a restart",
+		cfg: harnessCfg{
+			localBalance:  localBalance,
+			remoteBalance: remoteBalance,
+			policy: wtpolicy.Policy{
+				TxPolicy:   defaultTxPolicy,
+				MaxUpdates: 5,
+			},
+		},
+		fn: func(h *testHarness) {
+			const (
+				numUpdates = 5
+				chanID     = 0
+			)
+
+			// Generate numUpdates retributions.
+			hints := h.advanceChannelN(chanID, numUpdates)
+
+			// Back up all but one of the updates so that the
+			// session is almost full.
+			h.backupStates(chanID, 0, numUpdates-1, nil)
+
+			// Wait for the updates to be populated in the server's
+			// database.
+			h.server.waitForUpdates(hints[:numUpdates-1], waitTime)
+
+			// Now stop the server and restart it with the
+			// NoAckUpdates set to true.
+			h.server.restart(func(cfg *wtserver.Config) {
+				cfg.NoAckUpdates = true
+			})
+
+			// Back up the remaining task. This will bind the
+			// backup task to the session with the server. The
+			// client will also attempt to get the ack for one
+			// update which will cause a CommittedUpdate to be
+			// persisted which will also mean that the SeqNum of the
+			// session is now equal to MaxUpdates of the session
+			// policy.
+			h.backupStates(chanID, numUpdates-1, numUpdates, nil)
+
+			tower, err := h.clientDB.LoadTower(
+				h.server.addr.IdentityKey,
+			)
+			require.NoError(h.t, err)
+
+			// Wait till the updates have been persisted.
+			err = wait.Predicate(func() bool {
+				var numCommittedUpdates int
+				countUpdates := func(_ *wtdb.ClientSession,
+					update *wtdb.CommittedUpdate) {
+
+					numCommittedUpdates++
+				}
+
+				_, err := h.clientDB.ListClientSessions(
+					&tower.ID, wtdb.WithPerCommittedUpdate(
+						countUpdates,
+					),
+				)
+				require.NoError(h.t, err)
+
+				return numCommittedUpdates == 1
+
+			}, waitTime)
+			require.NoError(h.t, err)
+
+			// Now restart the client. On restart, the previous
+			// session should still be loaded even though it is
+			// exhausted since it has an un-acked update.
+			require.NoError(h.t, h.clientMgr.Stop())
+			h.startClient()
+
+			// Now remove the tower.
+			err = h.clientMgr.RemoveTower(
+				h.server.addr.IdentityKey, nil,
+			)
+			require.NoError(h.t, err)
+
+			// Add a new tower.
+			server2 := newServerHarness(
+				h.t, h.net, towerAddr2Str, nil,
+			)
+			server2.start()
+			h.addTower(server2.addr)
+
+			// Now we assert that the backups are backed up to the
+			// new tower.
+			server2.waitForUpdates(hints[numUpdates-1:], waitTime)
 		},
 	},
 	{
@@ -2519,7 +2661,7 @@ var clientTests = []clientTest{
 			// Wait for channel to be "unregistered".
 			chanID := chanIDFromInt(chanIDInt)
 			err = wait.Predicate(func() bool {
-				err := h.client.BackupState(&chanID, 0)
+				err := h.clientMgr.BackupState(&chanID, 0)
 
 				return errors.Is(
 					err, wtclient.ErrUnregisteredChannel,
@@ -2548,6 +2690,205 @@ var clientTests = []clientTest{
 				return true
 			}, waitTime)
 			require.NoError(h.t, err)
+		},
+	},
+	{
+		name: "de-activate a tower",
+		cfg: harnessCfg{
+			localBalance:  localBalance,
+			remoteBalance: remoteBalance,
+			policy: wtpolicy.Policy{
+				TxPolicy:   defaultTxPolicy,
+				MaxUpdates: 5,
+			},
+		},
+		fn: func(h *testHarness) {
+			const (
+				numUpdates = 10
+				chanIDInt  = 0
+			)
+
+			// Advance the channel with a few updates.
+			hints := h.advanceChannelN(chanIDInt, numUpdates)
+
+			// Backup a few these updates and wait for them to
+			// arrive at the server.
+			h.backupStates(chanIDInt, 0, numUpdates/2, nil)
+			h.server.waitForUpdates(hints[:numUpdates/2], waitTime)
+
+			// Lookup the tower and assert that it currently is
+			// seen as an active session candidate.
+			resp, err := h.clientMgr.LookupTower(
+				h.server.addr.IdentityKey,
+			)
+			require.NoError(h.t, err)
+			tower, ok := resp[blob.TypeAltruistTaprootCommit]
+			require.True(h.t, ok)
+			require.True(h.t, tower.ActiveSessionCandidate)
+
+			// Deactivate the tower.
+			err = h.clientMgr.DeactivateTower(
+				h.server.addr.IdentityKey,
+			)
+			require.NoError(h.t, err)
+
+			// Assert that it is no longer seen as an active
+			// session candidate.
+			resp, err = h.clientMgr.LookupTower(
+				h.server.addr.IdentityKey,
+			)
+			require.NoError(h.t, err)
+			tower, ok = resp[blob.TypeAltruistTaprootCommit]
+			require.True(h.t, ok)
+			require.False(h.t, tower.ActiveSessionCandidate)
+
+			// Add a new tower.
+			server2 := newServerHarness(
+				h.t, h.net, towerAddr2Str, nil,
+			)
+			server2.start()
+			h.addTower(server2.addr)
+
+			// Backup a few more states and assert that they appear
+			// on the second tower server.
+			h.backupStates(
+				chanIDInt, numUpdates/2, numUpdates-1, nil,
+			)
+			server2.waitForUpdates(
+				hints[numUpdates/2:numUpdates-1], waitTime,
+			)
+
+			// Reactivate the first tower.
+			err = h.clientMgr.AddTower(h.server.addr)
+			require.NoError(h.t, err)
+
+			// Deactivate the second tower.
+			err = h.clientMgr.DeactivateTower(
+				server2.addr.IdentityKey,
+			)
+			require.NoError(h.t, err)
+
+			// Backup the last backup and assert that it appears
+			// on the first tower.
+			h.backupStates(chanIDInt, numUpdates-1, numUpdates, nil)
+			h.server.waitForUpdates(hints[numUpdates-1:], waitTime)
+		},
+	},
+	{
+		name: "terminate session",
+		cfg: harnessCfg{
+			localBalance:  localBalance,
+			remoteBalance: remoteBalance,
+			policy: wtpolicy.Policy{
+				TxPolicy:   defaultTxPolicy,
+				MaxUpdates: 5,
+			},
+		},
+		fn: func(h *testHarness) {
+			const (
+				numUpdates = 10
+				chanIDInt  = 0
+			)
+
+			// Advance the channel with a few updates.
+			hints := h.advanceChannelN(chanIDInt, numUpdates)
+
+			// Backup one of these updates and wait for it to
+			// arrive at the server.
+			h.backupStates(chanIDInt, 0, 1, nil)
+			h.server.waitForUpdates(hints[:1], waitTime)
+
+			// Now, restart the server in a state where it will not
+			// ack updates. This will allow us to wait for an update
+			// to be un-acked and persisted.
+			h.server.restart(func(cfg *wtserver.Config) {
+				cfg.NoAckUpdates = true
+			})
+
+			// Backup another update. These should remain in the
+			// client as un-acked.
+			h.backupStates(chanIDInt, 1, 2, nil)
+
+			// Wait for the update to be persisted.
+			fetchUnacked := h.clientDB.FetchSessionCommittedUpdates
+			var sessID wtdb.SessionID
+			err := wait.Predicate(func() bool {
+				sessions, err := h.clientDB.ListClientSessions(
+					nil,
+				)
+				require.NoError(h.t, err)
+
+				var updates []wtdb.CommittedUpdate
+				for id := range sessions {
+					sessID = id
+					updates, err = fetchUnacked(&id)
+					require.NoError(h.t, err)
+
+					return len(updates) == 1
+				}
+
+				return false
+			}, waitTime)
+			require.NoError(h.t, err)
+
+			// Now try to terminate the session by directly calling
+			// the DB terminate method. This is expected to fail
+			// since the session still has un-acked updates.
+			err = h.clientDB.TerminateSession(sessID)
+			require.ErrorIs(
+				h.t, err, wtdb.ErrSessionHasUnackedUpdates,
+			)
+
+			// If we try to terminate the session through the client
+			// interface though, it should succeed since the client
+			// will handle the un-acked updates of the session.
+			err = h.clientMgr.TerminateSession(sessID)
+			require.NoError(h.t, err)
+
+			// Fetch the session from the DB and assert that it is
+			// in the terminal state and that it is not exhausted.
+			sess, err := h.clientDB.GetClientSession(sessID)
+			require.NoError(h.t, err)
+
+			require.Equal(h.t, wtdb.CSessionTerminal, sess.Status)
+			require.NotEqual(
+				h.t, sess.Policy.MaxUpdates, sess.SeqNum,
+			)
+
+			// Restart the server and allow it to ack updates again.
+			h.server.restart(func(cfg *wtserver.Config) {
+				cfg.NoAckUpdates = false
+			})
+
+			// Wait for the update from before to appear on the
+			// server. The server will actually have this back-up
+			// stored twice now since it would have stored it for
+			// the first session even though it did not send an ACK
+			// for it.
+			h.server.waitForUpdates(hints[1:2], waitTime)
+
+			// Now we want to assert that this update was definitely
+			// not sent on the terminated session but was instead
+			// sent in a new session.
+			var (
+				updateCounts = make(map[wtdb.SessionID]uint16)
+				totalUpdates uint16
+			)
+			sessions, err := h.clientDB.ListClientSessions(nil,
+				wtdb.WithPerNumAckedUpdates(
+					func(s *wtdb.ClientSession,
+						_ lnwire.ChannelID,
+						num uint16) {
+
+						updateCounts[s.ID] += num
+						totalUpdates += num
+					},
+				),
+			)
+			require.NoError(h.t, err)
+			require.Len(h.t, sessions, 2)
+			require.EqualValues(h.t, 1, updateCounts[sessID])
+			require.EqualValues(h.t, 2, totalUpdates)
 		},
 	},
 }

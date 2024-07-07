@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -25,6 +26,7 @@ var (
 	//  		=> cChanDBID -> db-assigned-id
 	// 		=> cChanSessions => db-session-id -> 1
 	// 		=> cChanClosedHeight -> block-height
+	// 		=> cChanMaxCommitmentHeight -> commitment-height
 	cChanDetailsBkt = []byte("client-channel-detail-bucket")
 
 	// cChanSessions is a sub-bucket of cChanDetailsBkt which stores:
@@ -44,6 +46,13 @@ var (
 	// cChannelSummary is a key used in cChanDetailsBkt to store the encoded
 	// body of ClientChanSummary.
 	cChannelSummary = []byte("client-channel-summary")
+
+	// cChanMaxCommitmentHeight is a key used in the cChanDetailsBkt used
+	// to store the highest commitment height for this channel that the
+	// tower has been handed.
+	cChanMaxCommitmentHeight = []byte(
+		"client-channel-max-commitment-height",
+	)
 
 	// cSessionBkt is a top-level bucket storing:
 	//   session-id => cSessionBody -> encoded ClientSessionBody
@@ -187,9 +196,9 @@ var (
 	// session has updates for channels that are still open.
 	errSessionHasOpenChannels = errors.New("session has open channels")
 
-	// errSessionHasUnackedUpdates is an error used to indicate that a
+	// ErrSessionHasUnackedUpdates is an error used to indicate that a
 	// session has un-acked updates.
-	errSessionHasUnackedUpdates = errors.New("session has un-acked updates")
+	ErrSessionHasUnackedUpdates = errors.New("session has un-acked updates")
 
 	// errChannelHasMoreSessions is an error used to indicate that a channel
 	// has updates in other non-closed sessions.
@@ -224,7 +233,7 @@ func NewBoltBackendCreator(active bool, dbPath,
 
 		db, err := kvdb.GetBoltBackend(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("could not open boltdb: %v", err)
+			return nil, fmt.Errorf("could not open boltdb: %w", err)
 		}
 
 		return db, nil
@@ -378,41 +387,13 @@ func (c *ClientDB) CreateTower(lnAddr *lnwire.NetAddress) (*Tower, error) {
 				return err
 			}
 
+			// Set its status to active.
+			tower.Status = TowerStatusActive
+
 			// Add the new address to the existing tower. If the
 			// address is a duplicate, this will result in no
 			// change.
 			tower.AddAddress(lnAddr.Address)
-
-			// If there are any client sessions that correspond to
-			// this tower, we'll mark them as active to ensure we
-			// load them upon restarts.
-			towerSessIndex := towerToSessionIndex.NestedReadBucket(
-				tower.ID.Bytes(),
-			)
-			if towerSessIndex == nil {
-				return ErrTowerNotFound
-			}
-
-			sessions := tx.ReadWriteBucket(cSessionBkt)
-			if sessions == nil {
-				return ErrUninitializedDB
-			}
-
-			err = towerSessIndex.ForEach(func(k, _ []byte) error {
-				session, err := getClientSessionBody(
-					sessions, k,
-				)
-				if err != nil {
-					return err
-				}
-
-				return markSessionStatus(
-					sessions, session, CSessionActive,
-				)
-			})
-			if err != nil {
-				return err
-			}
 		} else {
 			// No such tower exists, create a new tower id for our
 			// new tower. The error is unhandled since NextSequence
@@ -423,6 +404,7 @@ func (c *ClientDB) CreateTower(lnAddr *lnwire.NetAddress) (*Tower, error) {
 				ID:          TowerID(towerID),
 				IdentityKey: lnAddr.IdentityKey,
 				Addresses:   []net.Addr{lnAddr.Address},
+				Status:      TowerStatusActive,
 			}
 
 			towerIDBytes = tower.ID.Bytes()
@@ -456,10 +438,10 @@ func (c *ClientDB) CreateTower(lnAddr *lnwire.NetAddress) (*Tower, error) {
 
 // RemoveTower modifies a tower's record within the database. If an address is
 // provided, then _only_ the address record should be removed from the tower's
-// persisted state. Otherwise, we'll attempt to mark the tower as inactive by
-// marking all of its sessions inactive. If any of its sessions has unacked
-// updates, then ErrTowerUnackedUpdates is returned. If the tower doesn't have
-// any sessions at all, it'll be completely removed from the database.
+// persisted state. Otherwise, we'll attempt to mark the tower as inactive. If
+// any of its sessions has unacked updates, then ErrTowerUnackedUpdates is
+// returned. If the tower doesn't have any sessions at all, it'll be completely
+// removed from the database.
 //
 // NOTE: An error is not returned if the tower doesn't exist.
 func (c *ClientDB) RemoveTower(pubKey *btcec.PublicKey, addr net.Addr) error {
@@ -494,14 +476,14 @@ func (c *ClientDB) RemoveTower(pubKey *btcec.PublicKey, addr net.Addr) error {
 			return nil
 		}
 
+		tower, err := getTower(towers, towerIDBytes)
+		if err != nil {
+			return err
+		}
+
 		// If an address is provided, then we should _only_ remove the
 		// address record from the database.
 		if addr != nil {
-			tower, err := getTower(towers, towerIDBytes)
-			if err != nil {
-				return err
-			}
-
 			// Towers should always have at least one address saved.
 			tower.RemoveAddress(addr)
 			if len(tower.Addresses) == 0 {
@@ -551,22 +533,73 @@ func (c *ClientDB) RemoveTower(pubKey *btcec.PublicKey, addr net.Addr) error {
 			)
 		}
 
-		// We'll mark its sessions as inactive as long as they don't
-		// have any pending updates to ensure we don't load them upon
-		// restarts.
+		// Otherwise, we mark the tower as inactive.
+		tower.Status = TowerStatusInactive
+		err = putTower(towers, tower)
+		if err != nil {
+			return err
+		}
+
+		// We'll do a check to ensure that the tower's sessions don't
+		// have any pending back-ups.
 		for _, session := range towerSessions {
 			if committedUpdateCount[session.ID] > 0 {
 				return ErrTowerUnackedUpdates
 			}
-			err := markSessionStatus(
-				sessions, session, CSessionInactive,
-			)
-			if err != nil {
-				return err
-			}
 		}
 
 		return nil
+	}, func() {})
+}
+
+// DeactivateTower sets the given tower's status to inactive. This means that
+// this tower's sessions won't be loaded and used for backups. CreateTower can
+// be used to reactivate the tower again.
+func (c *ClientDB) DeactivateTower(pubKey *btcec.PublicKey) error {
+	return kvdb.Update(c.db, func(tx kvdb.RwTx) error {
+		towers := tx.ReadWriteBucket(cTowerBkt)
+		if towers == nil {
+			return ErrUninitializedDB
+		}
+
+		towerIndex := tx.ReadWriteBucket(cTowerIndexBkt)
+		if towerIndex == nil {
+			return ErrUninitializedDB
+		}
+
+		towersToSessionsIndex := tx.ReadWriteBucket(
+			cTowerToSessionIndexBkt,
+		)
+		if towersToSessionsIndex == nil {
+			return ErrUninitializedDB
+		}
+
+		chanIDIndexBkt := tx.ReadBucket(cChanIDIndexBkt)
+		if chanIDIndexBkt == nil {
+			return ErrUninitializedDB
+		}
+
+		pubKeyBytes := pubKey.SerializeCompressed()
+		towerIDBytes := towerIndex.Get(pubKeyBytes)
+		if towerIDBytes == nil {
+			return ErrTowerNotFound
+		}
+
+		tower, err := getTower(towers, towerIDBytes)
+		if err != nil {
+			return err
+		}
+
+		// If the tower already has the desired status, then we can exit
+		// here.
+		if tower.Status == TowerStatusInactive {
+			return nil
+		}
+
+		// Otherwise, we update the status and re-store the tower.
+		tower.Status = TowerStatusInactive
+
+		return putTower(towers, tower)
 	}, func() {})
 }
 
@@ -623,8 +656,14 @@ func (c *ClientDB) LoadTower(pubKey *btcec.PublicKey) (*Tower, error) {
 	return tower, nil
 }
 
-// ListTowers retrieves the list of towers available within the database.
-func (c *ClientDB) ListTowers() ([]*Tower, error) {
+// TowerFilterFn is the signature of a call-back function that can be used to
+// skip certain towers in the ListTowers method.
+type TowerFilterFn func(*Tower) bool
+
+// ListTowers retrieves the list of towers available within the database that
+// have a status matching the given status. The filter function may be set in
+// order to filter out the towers to be returned.
+func (c *ClientDB) ListTowers(filter TowerFilterFn) ([]*Tower, error) {
 	var towers []*Tower
 	err := kvdb.View(c.db, func(tx kvdb.RTx) error {
 		towerBucket := tx.ReadBucket(cTowerBkt)
@@ -637,7 +676,13 @@ func (c *ClientDB) ListTowers() ([]*Tower, error) {
 			if err != nil {
 				return err
 			}
+
+			if filter != nil && !filter(tower) {
+				return nil
+			}
+
 			towers = append(towers, tower)
+
 			return nil
 		})
 	}, func() {
@@ -1300,11 +1345,11 @@ func (c *ClientDB) NumAckedUpdates(id *SessionID) (uint64, error) {
 	return numAcked, nil
 }
 
-// FetchChanSummaries loads a mapping from all registered channels to their
-// channel summaries. Only the channels that have not yet been marked as closed
-// will be loaded.
-func (c *ClientDB) FetchChanSummaries() (ChannelSummaries, error) {
-	var summaries map[lnwire.ChannelID]ClientChanSummary
+// FetchChanInfos loads a mapping from all registered channels to their
+// ChannelInfo. Only the channels that have not yet been marked as closed will
+// be loaded.
+func (c *ClientDB) FetchChanInfos() (ChannelInfos, error) {
+	var infos ChannelInfos
 
 	err := kvdb.View(c.db, func(tx kvdb.RTx) error {
 		chanDetailsBkt := tx.ReadBucket(cChanDetailsBkt)
@@ -1317,34 +1362,47 @@ func (c *ClientDB) FetchChanSummaries() (ChannelSummaries, error) {
 			if chanDetails == nil {
 				return ErrCorruptChanDetails
 			}
-
 			// If this channel has already been marked as closed,
 			// then its summary does not need to be loaded.
 			closedHeight := chanDetails.Get(cChanClosedHeight)
 			if len(closedHeight) > 0 {
 				return nil
 			}
-
 			var chanID lnwire.ChannelID
 			copy(chanID[:], k)
-
 			summary, err := getChanSummary(chanDetails)
 			if err != nil {
 				return err
 			}
 
-			summaries[chanID] = *summary
+			info := &ChannelInfo{
+				ClientChanSummary: *summary,
+			}
+
+			maxHeightBytes := chanDetails.Get(
+				cChanMaxCommitmentHeight,
+			)
+			if len(maxHeightBytes) != 0 {
+				height, err := readBigSize(maxHeightBytes)
+				if err != nil {
+					return err
+				}
+
+				info.MaxHeight = fn.Some(height)
+			}
+
+			infos[chanID] = info
 
 			return nil
 		})
 	}, func() {
-		summaries = make(map[lnwire.ChannelID]ClientChanSummary)
+		infos = make(ChannelInfos)
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	return summaries, nil
+	return infos, nil
 }
 
 // RegisterChannel registers a channel for use within the client database. For
@@ -1765,9 +1823,10 @@ func (c *ClientDB) MarkChannelClosed(chanID lnwire.ChannelID,
 
 // isSessionClosable returns true if a session is considered closable. A session
 // is considered closable only if all the following points are true:
-// 1) It has no un-acked updates.
-// 2) It is exhausted (ie it can't accept any more updates)
-// 3) All the channels that it has acked updates for are closed.
+//  1. It has no un-acked updates.
+//  2. It is exhausted (ie it can't accept any more updates) OR it has been
+//     marked as terminal.
+//  3. All the channels that it has acked updates for are closed.
 func isSessionClosable(sessionsBkt, chanDetailsBkt, chanIDIndexBkt kvdb.RBucket,
 	id *SessionID) (bool, error) {
 
@@ -1776,22 +1835,21 @@ func isSessionClosable(sessionsBkt, chanDetailsBkt, chanIDIndexBkt kvdb.RBucket,
 		return false, ErrSessionNotFound
 	}
 
+	// Since the DeleteCommittedUpdates method deletes the cSessionCommits
+	// bucket in one go, it is possible for the session to be closable even
+	// if this bucket no longer exists.
 	commitsBkt := sessBkt.NestedReadBucket(cSessionCommits)
-	if commitsBkt == nil {
-		// If the session has no cSessionCommits bucket then we can be
-		// sure that no updates have ever been committed to the session
-		// and so it is not yet exhausted.
-		return false, nil
-	}
-
-	// If the session has any un-acked updates, then it is not yet closable.
-	err := commitsBkt.ForEach(func(_, _ []byte) error {
-		return errSessionHasUnackedUpdates
-	})
-	if errors.Is(err, errSessionHasUnackedUpdates) {
-		return false, nil
-	} else if err != nil {
-		return false, err
+	if commitsBkt != nil {
+		// If the session has any un-acked updates, then it is not yet
+		// closable.
+		err := commitsBkt.ForEach(func(_, _ []byte) error {
+			return ErrSessionHasUnackedUpdates
+		})
+		if errors.Is(err, ErrSessionHasUnackedUpdates) {
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
 	}
 
 	session, err := getClientSessionBody(sessionsBkt, id[:])
@@ -1799,10 +1857,14 @@ func isSessionClosable(sessionsBkt, chanDetailsBkt, chanIDIndexBkt kvdb.RBucket,
 		return false, err
 	}
 
+	isTerminal := session.Status == CSessionTerminal
+
 	// We have already checked that the session has no more committed
-	// updates. So now we can check if the session is exhausted.
-	if session.SeqNum < session.Policy.MaxUpdates {
-		// If the session is not yet exhausted, it is not yet closable.
+	// updates. So now we can check if the session is exhausted or has a
+	// terminal state.
+	if !isTerminal && session.SeqNum < session.Policy.MaxUpdates {
+		// If the session is not yet exhausted, and it is not yet in a
+		// terminal state then it is not yet closable.
 		return false, nil
 	}
 
@@ -1822,11 +1884,16 @@ func isSessionClosable(sessionsBkt, chanDetailsBkt, chanIDIndexBkt kvdb.RBucket,
 		}
 	}
 
-	// If the session has no acked-updates, then something is wrong since
-	// the above check ensures that this session has been exhausted meaning
-	// that it should have MaxUpdates acked updates.
 	ackedRangeBkt := sessBkt.NestedReadBucket(cSessionAckRangeIndex)
 	if ackedRangeBkt == nil {
+		if isTerminal {
+			return true, nil
+		}
+
+		// If the session has no acked-updates, and it is not in a
+		// terminal state then something is wrong since the above check
+		// ensures that this session has been exhausted meaning that it
+		// should have MaxUpdates acked updates.
 		return false, fmt.Errorf("no acked-updates found for "+
 			"exhausted session %s", id)
 	}
@@ -1963,12 +2030,17 @@ func (c *ClientDB) CommitUpdate(id *SessionID,
 			return err
 		}
 
+		// Update the channel's max commitment height if needed.
+		err = maybeUpdateMaxCommitHeight(tx, update.BackupID)
+		if err != nil {
+			return err
+		}
+
 		// Finally, capture the session's last applied value so it can
 		// be sent in the next state update to the tower.
 		lastApplied = session.TowerLastApplied
 
 		return nil
-
 	}, func() {
 		lastApplied = 0
 	})
@@ -2178,16 +2250,65 @@ func (c *ClientDB) AckUpdate(id *SessionID, seqNum uint16,
 
 // GetDBQueue returns a BackupID Queue instance under the given namespace.
 func (c *ClientDB) GetDBQueue(namespace []byte) Queue[*BackupID] {
-	return NewQueueDB[*BackupID](
+	return NewQueueDB(
 		c.db, namespace, func() *BackupID {
 			return &BackupID{}
+		}, func(tx kvdb.RwTx, item *BackupID) error {
+			return maybeUpdateMaxCommitHeight(tx, *item)
 		},
 	)
 }
 
-// DeleteCommittedUpdate deletes the committed update with the given sequence
-// number from the given session.
-func (c *ClientDB) DeleteCommittedUpdate(id *SessionID, seqNum uint16) error {
+// TerminateSession sets the given session's status to CSessionTerminal meaning
+// that it will not be usable again. An error will be returned if the given
+// session still has un-acked updates that should be attended to.
+func (c *ClientDB) TerminateSession(id SessionID) error {
+	return kvdb.Update(c.db, func(tx kvdb.RwTx) error {
+		sessions := tx.ReadWriteBucket(cSessionBkt)
+		if sessions == nil {
+			return ErrUninitializedDB
+		}
+
+		sessionsBkt := tx.ReadBucket(cSessionBkt)
+		if sessionsBkt == nil {
+			return ErrUninitializedDB
+		}
+
+		chanIDIndexBkt := tx.ReadBucket(cChanIDIndexBkt)
+		if chanIDIndexBkt == nil {
+			return ErrUninitializedDB
+		}
+
+		// Collect any un-acked updates for this session.
+		committedUpdateCount := make(map[SessionID]uint16)
+		perCommittedUpdate := func(s *ClientSession,
+			_ *CommittedUpdate) {
+
+			committedUpdateCount[s.ID]++
+		}
+
+		session, err := c.getClientSession(
+			sessionsBkt, chanIDIndexBkt, id[:],
+			WithPerCommittedUpdate(perCommittedUpdate),
+		)
+		if err != nil {
+			return err
+		}
+
+		// If there are any un-acked updates for this session then
+		// we don't allow the change of status as these updates must
+		// first be dealt with somehow.
+		if committedUpdateCount[id] > 0 {
+			return ErrSessionHasUnackedUpdates
+		}
+
+		return markSessionStatus(sessions, session, CSessionTerminal)
+	}, func() {})
+}
+
+// DeleteCommittedUpdates deletes all the committed updates for the given
+// session.
+func (c *ClientDB) DeleteCommittedUpdates(id *SessionID) error {
 	return kvdb.Update(c.db, func(tx kvdb.RwTx) error {
 		sessions := tx.ReadWriteBucket(cSessionBkt)
 		if sessions == nil {
@@ -2201,23 +2322,54 @@ func (c *ClientDB) DeleteCommittedUpdate(id *SessionID, seqNum uint16) error {
 		}
 
 		// If the commits sub-bucket doesn't exist, there can't possibly
-		// be a corresponding update to remove.
+		// be corresponding updates to remove.
 		sessionCommits := sessionBkt.NestedReadWriteBucket(
 			cSessionCommits,
 		)
 		if sessionCommits == nil {
-			return ErrCommittedUpdateNotFound
+			return nil
 		}
 
-		var seqNumBuf [2]byte
-		byteOrder.PutUint16(seqNumBuf[:], seqNum)
+		// errFoundUpdates is an error we will use to exit early from
+		// the ForEach loop. The return of this error means that at
+		// least one committed update exists.
+		var errFoundUpdates = fmt.Errorf("found committed updates")
+		err := sessionCommits.ForEach(func(k, v []byte) error {
+			return errFoundUpdates
+		})
+		switch {
+		// If the errFoundUpdates signal error was returned then there
+		// are some updates that need to be deleted.
+		case errors.Is(err, errFoundUpdates):
 
-		if sessionCommits.Get(seqNumBuf[:]) == nil {
-			return ErrCommittedUpdateNotFound
+		// If no error is returned then the ForEach call back was never
+		// entered meaning that there are no un-acked committed updates.
+		// So we can exit now as there is nothing left to do.
+		case err == nil:
+			return nil
+
+		// If an expected error is returned, return that error.
+		default:
+			return err
 		}
 
-		// Remove the corresponding committed update.
-		return sessionCommits.Delete(seqNumBuf[:])
+		session, err := getClientSessionBody(sessions, id[:])
+		if err != nil {
+			return err
+		}
+
+		// Once we delete a committed update from the session, the
+		// SeqNum of the session will be incorrect and so the session
+		// should be marked as terminal.
+		session.Status = CSessionTerminal
+		err = putClientSessionBody(sessionBkt, session)
+		if err != nil {
+			return err
+		}
+
+		// Delete all the committed updates in one go by deleting the
+		// session commits bucket.
+		return sessionBkt.DeleteNestedBucket(cSessionCommits)
 	}, func() {})
 }
 
@@ -2274,6 +2426,12 @@ func getClientSessionBody(sessions kvdb.RBucket,
 // be used to filter the sessions that are returned in any of the DB methods
 // that read sessions from the DB.
 type ClientSessionFilterFn func(*ClientSession) bool
+
+// ClientSessWithNumCommittedUpdatesFilterFn describes the signature of a
+// callback function that can be used to filter out a session based on the
+// contents of ClientSession along with the number of un-acked committed updates
+// that the session has.
+type ClientSessWithNumCommittedUpdatesFilterFn func(*ClientSession, uint16) bool
 
 // PerMaxHeightCB describes the signature of a callback function that can be
 // called for each channel that a session has updates for to communicate the
@@ -2336,7 +2494,7 @@ type ClientSessionListCfg struct {
 	// functions in ClientSessionListCfg. If a session fails this filter
 	// function then all it means is that it won't be included in the list
 	// of sessions to return.
-	PostEvaluateFilterFn ClientSessionFilterFn
+	PostEvaluateFilterFn ClientSessWithNumCommittedUpdatesFilterFn
 }
 
 // NewClientSessionCfg constructs a new ClientSessionListCfg.
@@ -2397,7 +2555,9 @@ func WithPreEvalFilterFn(fn ClientSessionFilterFn) ClientSessionListOption {
 // run against the other ClientSessionListCfg call-backs) whereas the session
 // will only reach the PostEvalFilterFn call-back once it has already been
 // evaluated by all the other call-backs.
-func WithPostEvalFilterFn(fn ClientSessionFilterFn) ClientSessionListOption {
+func WithPostEvalFilterFn(
+	fn ClientSessWithNumCommittedUpdatesFilterFn) ClientSessionListOption {
+
 	return func(cfg *ClientSessionListCfg) {
 		cfg.PostEvaluateFilterFn = fn
 	}
@@ -2429,7 +2589,7 @@ func (c *ClientDB) getClientSession(sessionsBkt, chanIDIndexBkt kvdb.RBucket,
 
 	// Pass the session's committed (un-acked) updates through the call-back
 	// if one is provided.
-	err = filterClientSessionCommits(
+	numCommittedUpdates, err := filterClientSessionCommits(
 		sessionBkt, session, cfg.PerCommittedUpdate,
 	)
 	if err != nil {
@@ -2447,7 +2607,7 @@ func (c *ClientDB) getClientSession(sessionsBkt, chanIDIndexBkt kvdb.RBucket,
 	}
 
 	if cfg.PostEvaluateFilterFn != nil &&
-		!cfg.PostEvaluateFilterFn(session) {
+		!cfg.PostEvaluateFilterFn(session, numCommittedUpdates) {
 
 		return nil, ErrSessionFailedFilterFn
 	}
@@ -2556,18 +2716,21 @@ func (c *ClientDB) filterClientSessionAcks(sessionBkt,
 // identified by the serialized session id and passes them to the given
 // PerCommittedUpdateCB callback.
 func filterClientSessionCommits(sessionBkt kvdb.RBucket, s *ClientSession,
-	cb PerCommittedUpdateCB) error {
-
-	if cb == nil {
-		return nil
-	}
+	cb PerCommittedUpdateCB) (uint16, error) {
 
 	sessionCommits := sessionBkt.NestedReadBucket(cSessionCommits)
 	if sessionCommits == nil {
-		return nil
+		return 0, nil
 	}
 
+	var numUpdates uint16
 	err := sessionCommits.ForEach(func(k, v []byte) error {
+		numUpdates++
+
+		if cb == nil {
+			return nil
+		}
+
 		var committedUpdate CommittedUpdate
 		err := committedUpdate.Decode(bytes.NewReader(v))
 		if err != nil {
@@ -2576,13 +2739,14 @@ func filterClientSessionCommits(sessionBkt kvdb.RBucket, s *ClientSession,
 		committedUpdate.SeqNum = byteOrder.Uint16(k)
 
 		cb(s, &committedUpdate)
+
 		return nil
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	return nil
+	return numUpdates, nil
 }
 
 // putClientSessionBody stores the body of the ClientSession (everything but the
@@ -2718,6 +2882,58 @@ func getDBSessionID(sessionsBkt kvdb.RBucket, sessionID SessionID) (uint64,
 	}
 
 	return id, idBytes, nil
+}
+
+// maybeUpdateMaxCommitHeight updates the given channel details bucket with the
+// given height if it is larger than the current max height stored for the
+// channel.
+func maybeUpdateMaxCommitHeight(tx kvdb.RwTx, backupID BackupID) error {
+	chanDetailsBkt := tx.ReadWriteBucket(cChanDetailsBkt)
+	if chanDetailsBkt == nil {
+		return ErrUninitializedDB
+	}
+
+	// If an entry for this channel does not exist in the channel details
+	// bucket then we exit here as this means that the channel has been
+	// closed.
+	chanDetails := chanDetailsBkt.NestedReadWriteBucket(backupID.ChanID[:])
+	if chanDetails == nil {
+		return nil
+	}
+
+	putHeight := func() error {
+		b, err := writeBigSize(backupID.CommitHeight)
+		if err != nil {
+			return err
+		}
+
+		return chanDetails.Put(
+			cChanMaxCommitmentHeight, b,
+		)
+	}
+
+	// Get current height.
+	heightBytes := chanDetails.Get(cChanMaxCommitmentHeight)
+
+	// The height might have not been set yet, in which case
+	// we can just write the new height.
+	if len(heightBytes) == 0 {
+		return putHeight()
+	}
+
+	// Otherwise, read in the current max commitment height for the channel.
+	currentHeight, err := readBigSize(heightBytes)
+	if err != nil {
+		return err
+	}
+
+	// If the new height is not larger than the current persisted height,
+	// then there is nothing left for us to do.
+	if backupID.CommitHeight <= currentHeight {
+		return nil
+	}
+
+	return putHeight()
 }
 
 func getRealSessionID(sessIDIndexBkt kvdb.RBucket, dbID uint64) (*SessionID,

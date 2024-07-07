@@ -60,12 +60,12 @@ func testSendPaymentAMPInvoiceCase(ht *lntest.HarnessTest,
 	//       \__ Dave ____/
 	//
 	mppReq := &mppOpenChannelRequest{
-		amtAliceCarol: 235000,
-		amtAliceDave:  135000,
-		amtCarolBob:   135000,
-		amtCarolEve:   135000,
-		amtDaveBob:    135000,
-		amtEveBob:     135000,
+		amtAliceCarol: 285000,
+		amtAliceDave:  155000,
+		amtCarolBob:   200000,
+		amtCarolEve:   155000,
+		amtDaveBob:    155000,
+		amtEveBob:     155000,
 	}
 	mts.openChannels(mppReq)
 	chanPointAliceDave := mts.channelPoints[1]
@@ -89,7 +89,14 @@ func testSendPaymentAMPInvoiceCase(ht *lntest.HarnessTest,
 	// Increase Dave's fee to make the test deterministic. Otherwise it
 	// would be unpredictable whether pathfinding would go through Charlie
 	// or Dave for the first shard.
-	expectedPolicy := mts.updateDaveGlobalPolicy()
+	expectedPolicy := &lnrpc.RoutingPolicy{
+		FeeBaseMsat:      500_000,
+		FeeRateMilliMsat: int64(0.001 * 1_000_000),
+		TimeLockDelta:    40,
+		MinHtlc:          1000, // default value
+		MaxHtlcMsat:      133_650_000,
+	}
+	mts.dave.UpdateGlobalPolicy(expectedPolicy)
 
 	// Make sure Alice has heard it for both Dave's channels.
 	ht.AssertChannelPolicyUpdate(
@@ -104,6 +111,10 @@ func testSendPaymentAMPInvoiceCase(ht *lntest.HarnessTest,
 	// expect an extra invoice to appear in the ListInvoices response, since
 	// a new invoice will be JIT inserted under a different payment address
 	// than the one in the invoice.
+	//
+	// NOTE: This will only work when the peer has spontaneous AMP payments
+	// enabled otherwise no invoice under a different payment_addr will be
+	// found.
 	var (
 		expNumInvoices  = 1
 		externalPayAddr []byte
@@ -118,6 +129,7 @@ func testSendPaymentAMPInvoiceCase(ht *lntest.HarnessTest,
 		PaymentAddr:    externalPayAddr,
 		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
+		Amp:            true,
 	}
 	payment := ht.SendPaymentAssertSettled(mts.alice, sendReq)
 
@@ -241,6 +253,7 @@ func testSendPaymentAMPInvoiceRepeat(ht *lntest.HarnessTest) {
 	// Now we'll use Carol to pay the invoice that Dave created.
 	ht.CompletePaymentRequests(
 		carol, []string{addInvoiceResp.PaymentRequest},
+		lntest.WithAMP(),
 	)
 
 	// Dave should get a notification that the invoice has been settled.
@@ -263,6 +276,7 @@ func testSendPaymentAMPInvoiceRepeat(ht *lntest.HarnessTest) {
 	// has received another payment.
 	ht.CompletePaymentRequests(
 		carol, []string{addInvoiceResp.PaymentRequest},
+		lntest.WithAMP(),
 	)
 
 	// Dave should get another notification.
@@ -368,20 +382,27 @@ func testSendPaymentAMP(ht *lntest.HarnessTest) {
 	//       \__ Dave ____/
 	//
 	mppReq := &mppOpenChannelRequest{
-		amtAliceCarol: 235000,
-		amtAliceDave:  135000,
-		amtCarolBob:   135000,
-		amtCarolEve:   135000,
-		amtDaveBob:    135000,
-		amtEveBob:     135000,
+		amtAliceCarol: 285000,
+		amtAliceDave:  155000,
+		amtCarolBob:   200000,
+		amtCarolEve:   155000,
+		amtDaveBob:    155000,
+		amtEveBob:     155000,
 	}
 	mts.openChannels(mppReq)
 	chanPointAliceDave := mts.channelPoints[1]
 
-	// Increase Dave's fee to make the test deterministic. Otherwise it
+	// Increase Dave's fee to make the test deterministic. Otherwise, it
 	// would be unpredictable whether pathfinding would go through Charlie
 	// or Dave for the first shard.
-	expectedPolicy := mts.updateDaveGlobalPolicy()
+	expectedPolicy := &lnrpc.RoutingPolicy{
+		FeeBaseMsat:      500_000,
+		FeeRateMilliMsat: int64(0.001 * 1_000_000),
+		TimeLockDelta:    40,
+		MinHtlc:          1000, // default value
+		MaxHtlcMsat:      133_650_000,
+	}
+	mts.dave.UpdateGlobalPolicy(expectedPolicy)
 
 	// Make sure Alice has heard it.
 	ht.AssertChannelPolicyUpdate(
@@ -410,6 +431,16 @@ func testSendPaymentAMP(ht *lntest.HarnessTest) {
 		if htlc.Status == lnrpc.HTLCAttempt_SUCCEEDED {
 			succeeded++
 		}
+
+		// When an AMP record is expected, it will only be seen on the
+		// last hop of a route. So we make sure it isn't set on any of
+		// the hops except the last one
+		for _, hop := range htlc.Route.Hops[:len(htlc.Route.Hops)-1] {
+			require.Nil(ht, hop.AmpRecord)
+		}
+
+		lastHop := htlc.Route.Hops[len(htlc.Route.Hops)-1]
+		require.NotNil(ht, lastHop.AmpRecord)
 	}
 
 	const minExpectedShards = 3
@@ -479,7 +510,7 @@ func testSendToRouteAMP(ht *lntest.HarnessTest) {
 	// Alice -- Carol ---- Bob
 	//      \              /
 	//       \__ Dave ____/
-	///
+	//
 	mppReq := &mppOpenChannelRequest{
 		// Since the channel Alice-> Carol will have to carry two
 		// shards, we make it larger.

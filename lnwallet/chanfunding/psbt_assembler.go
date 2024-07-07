@@ -192,7 +192,7 @@ func (i *PsbtIntent) FundingParams() (btcutil.Address, int64, *psbt.Packet,
 	// Encode the address in the human-readable bech32 format.
 	addr, err := script.Address(i.netParams)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("unable to encode address: %v",
+		return nil, 0, nil, fmt.Errorf("unable to encode address: %w",
 			err)
 	}
 
@@ -204,7 +204,7 @@ func (i *PsbtIntent) FundingParams() (btcutil.Address, int64, *psbt.Packet,
 		packet, err = psbt.New(nil, nil, 2, 0, nil)
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("unable to create "+
-				"PSBT: %v", err)
+				"PSBT: %w", err)
 		}
 	}
 	packet.UnsignedTx.TxOut = append(packet.UnsignedTx.TxOut, out)
@@ -227,7 +227,7 @@ func (i *PsbtIntent) Verify(packet *psbt.Packet, skipFinalize bool) error {
 	// Try to locate the channel funding multisig output.
 	_, expectedOutput, err := i.FundingOutput()
 	if err != nil {
-		return fmt.Errorf("funding output cannot be created: %v", err)
+		return fmt.Errorf("funding output cannot be created: %w", err)
 	}
 	outputFound := false
 	outputSum := int64(0)
@@ -250,7 +250,7 @@ func (i *PsbtIntent) Verify(packet *psbt.Packet, skipFinalize bool) error {
 	}
 	sum, err := psbt.SumUtxoInputValues(packet)
 	if err != nil {
-		return fmt.Errorf("error determining input sum: %v", err)
+		return fmt.Errorf("error determining input sum: %w", err)
 	}
 	if sum <= outputSum {
 		return fmt.Errorf("input amount sum must be larger than " +
@@ -304,11 +304,11 @@ func (i *PsbtIntent) Finalize(packet *psbt.Packet) error {
 	// broadcast.
 	err := psbt.MaybeFinalizeAll(packet)
 	if err != nil {
-		return fmt.Errorf("error finalizing PSBT: %v", err)
+		return fmt.Errorf("error finalizing PSBT: %w", err)
 	}
 	rawTx, err := psbt.Extract(packet)
 	if err != nil {
-		return fmt.Errorf("unable to extract funding TX: %v", err)
+		return fmt.Errorf("unable to extract funding TX: %w", err)
 	}
 
 	return i.FinalizeRawTX(rawTx)
@@ -340,13 +340,13 @@ func (i *PsbtIntent) FinalizeRawTX(rawTx *wire.MsgTx) error {
 		rawTx.TxOut, i.PendingPsbt.UnsignedTx.TxOut,
 	)
 	if err != nil {
-		return fmt.Errorf("outputs differ from verified PSBT: %v", err)
+		return fmt.Errorf("outputs differ from verified PSBT: %w", err)
 	}
 	err = psbt.VerifyInputPrevOutpointsEqual(
 		rawTx.TxIn, i.PendingPsbt.UnsignedTx.TxIn,
 	)
 	if err != nil {
-		return fmt.Errorf("inputs differ from verified PSBT: %v", err)
+		return fmt.Errorf("inputs differ from verified PSBT: %w", err)
 	}
 
 	// We also check that we have a signed TX. This is only necessary if the
@@ -354,7 +354,7 @@ func (i *PsbtIntent) FinalizeRawTX(rawTx *wire.MsgTx) error {
 	// extracting the TX from a PSBT.
 	err = verifyInputsSigned(rawTx.TxIn)
 	if err != nil {
-		return fmt.Errorf("inputs not signed: %v", err)
+		return fmt.Errorf("inputs not signed: %w", err)
 	}
 
 	// As far as we can tell, this TX is ok to be used as a funding
@@ -383,7 +383,7 @@ func (i *PsbtIntent) CompileFundingTx() (*wire.MsgTx, error) {
 	// Identify our funding outpoint now that we know everything's ready.
 	_, txOut, err := i.FundingOutput()
 	if err != nil {
-		return nil, fmt.Errorf("cannot get funding output: %v", err)
+		return nil, fmt.Errorf("cannot get funding output: %w", err)
 	}
 	ok, idx := input.FindScriptOutputIndex(i.FinalTX, txOut.PkScript)
 	if !ok {

@@ -24,6 +24,14 @@
   channel opening was pruned from memory no more channels were able to be
   created nor accepted. This PR fixes this issue and enhances the test suite
   for this behavior.
+ 
+* [Fix deadlock possibility in
+  FilterKnownChanIDs](https://github.com/lightningnetwork/lnd/pull/8400) by
+  ensuring the `cacheMu` mutex is acquired before the main database lock.
+
+* [Prevent](https://github.com/lightningnetwork/lnd/pull/8385) ping failures
+  from [deadlocking](https://github.com/lightningnetwork/lnd/issues/8379)
+  the peer connection.
 
 * [Fix](https://github.com/lightningnetwork/lnd/pull/8401) an issue that
   caused memory leak for users running `lnd` with `bitcoind.rpcpolling=1`
@@ -41,10 +49,6 @@
 # New Features
 ## Functional Enhancements
 ## RPC Additions
-
-* [Allow callers of ListSweeps to specify the start height](
-  https://github.com/lightningnetwork/lnd/pull/7372).
-
 ## lncli Additions
 
 # Improvements
@@ -63,7 +67,9 @@
 ## Tooling and Documentation
 
 # Contributors (Alphabetical Order)
-* Andras Banki-Horvath
+
 * Elle Mouton
+* Keagan McClelland
+* Olaoluwa Osuntokun
 * Yong Yu
 * ziggie1984

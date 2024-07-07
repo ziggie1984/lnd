@@ -1,12 +1,21 @@
 package zpay32
 
-import "github.com/btcsuite/btcd/btcec/v2"
+import (
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/lightningnetwork/lnd/lnwire"
+)
 
 const (
 	// DefaultAssumedFinalCLTVDelta is the default value to be used as the
 	// final CLTV delta for a route if one is unspecified in the payment
 	// request.
-	DefaultAssumedFinalCLTVDelta = 9
+	// We adhere to the recommendation in BOLT 02 for terminal payments.
+	// See also:
+	// https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
+	DefaultAssumedFinalCLTVDelta = 18
+
+	// feeRateParts is the total number of parts used to express fee rates.
+	feeRateParts = 1e6
 )
 
 // HopHint is a routing hint that contains the minimum information of a channel
@@ -41,4 +50,14 @@ func (h HopHint) Copy() HopHint {
 		FeeProportionalMillionths: h.FeeProportionalMillionths,
 		CLTVExpiryDelta:           h.CLTVExpiryDelta,
 	}
+}
+
+// HopFee calculates the fee for a given amount that is forwarded over a hop.
+// The amount has to be denoted in milli satoshi. The returned fee is also
+// denoted in milli satoshi.
+func (h HopHint) HopFee(amt lnwire.MilliSatoshi) lnwire.MilliSatoshi {
+	baseFee := lnwire.MilliSatoshi(h.FeeBaseMSat)
+	feeRate := lnwire.MilliSatoshi(h.FeeProportionalMillionths)
+
+	return baseFee + (amt*feeRate)/feeRateParts
 }

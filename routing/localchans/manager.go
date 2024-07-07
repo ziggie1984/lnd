@@ -9,6 +9,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/discovery"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -31,8 +32,8 @@ type Manager struct {
 	// ForAllOutgoingChannels is required to iterate over all our local
 	// channels.
 	ForAllOutgoingChannels func(cb func(kvdb.RTx,
-		*channeldb.ChannelEdgeInfo,
-		*channeldb.ChannelEdgePolicy) error) error
+		*models.ChannelEdgeInfo,
+		*models.ChannelEdgePolicy) error) error
 
 	// FetchChannel is used to query local channel parameters. Optionally an
 	// existing db tx can be supplied.
@@ -73,8 +74,8 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 	// otherwise we'll collect them all.
 	err := r.ForAllOutgoingChannels(func(
 		tx kvdb.RTx,
-		info *channeldb.ChannelEdgeInfo,
-		edge *channeldb.ChannelEdgePolicy) error {
+		info *models.ChannelEdgeInfo,
+		edge *models.ChannelEdgePolicy) error {
 
 		// If we have a channel filter, and this channel isn't a part
 		// of it, then we'll skip it.
@@ -105,6 +106,14 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 			Edge: edge,
 		})
 
+		// Extract inbound fees from the ExtraOpaqueData.
+		var inboundWireFee lnwire.Fee
+		_, err = edge.ExtraOpaqueData.ExtractRecords(&inboundWireFee)
+		if err != nil {
+			return err
+		}
+		inboundFee := models.NewInboundFeeFromWire(inboundWireFee)
+
 		// Add updated policy to list of policies to send to switch.
 		policiesToUpdate[info.ChannelPoint] = models.ForwardingPolicy{
 			BaseFee:       edge.FeeBaseMSat,
@@ -112,6 +121,7 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 			TimeLockDelta: uint32(edge.TimeLockDelta),
 			MinHTLCOut:    edge.MinHTLC,
 			MaxHTLC:       edge.MaxHTLC,
+			InboundFee:    inboundFee,
 		}
 
 		return nil
@@ -172,7 +182,7 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 
 // updateEdge updates the given edge with the new schema.
 func (r *Manager) updateEdge(tx kvdb.RTx, chanPoint wire.OutPoint,
-	edge *channeldb.ChannelEdgePolicy,
+	edge *models.ChannelEdgePolicy,
 	newSchema routing.ChannelPolicy) error {
 
 	// Update forwarding fee scheme and required time lock delta.
@@ -180,6 +190,19 @@ func (r *Manager) updateEdge(tx kvdb.RTx, chanPoint wire.OutPoint,
 	edge.FeeProportionalMillionths = lnwire.MilliSatoshi(
 		newSchema.FeeRate,
 	)
+
+	// If inbound fees are set, we update the edge with them.
+	err := fn.MapOptionZ(newSchema.InboundFee,
+		func(f models.InboundFee) error {
+			inboundWireFee := f.ToWire()
+			return edge.ExtraOpaqueData.PackRecords(
+				&inboundWireFee,
+			)
+		})
+	if err != nil {
+		return err
+	}
+
 	edge.TimeLockDelta = uint16(newSchema.TimeLockDelta)
 
 	// Retrieve negotiated channel htlc amt limits.

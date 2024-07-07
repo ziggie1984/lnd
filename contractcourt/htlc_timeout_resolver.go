@@ -12,6 +12,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnutils"
@@ -61,6 +62,11 @@ type htlcTimeoutResolver struct {
 	contractResolverKit
 
 	htlcLeaseResolver
+
+	// incomingHTLCExpiryHeight is the absolute block height at which the
+	// incoming HTLC will expire. This is used as the deadline height as
+	// the outgoing HTLC must be swept before its incoming HTLC expires.
+	incomingHTLCExpiryHeight fn.Option[int32]
 }
 
 // newTimeoutResolver instantiates a new timeout htlc resolver.
@@ -113,6 +119,11 @@ const (
 	// swept on-chain by them with pre-image.
 	expectedRemoteWitnessSuccessSize = 5
 
+	// expectedLocalWitnessSuccessSize is the expected size of the witness
+	// on the local commitment transaction for an outgoing HTLC that is
+	// swept on-chain by them with pre-image.
+	expectedLocalWitnessSuccessSize = 3
+
 	// remotePreimageIndex index within the witness on the remote
 	// commitment transaction that will hold they pre-image if they go to
 	// sweep it on chain.
@@ -129,6 +140,12 @@ const (
 	//   - <sender sig> <receiver sig> <preimage> <success_script>
 	//     <control_block>
 	remoteTaprootWitnessSuccessSize = 5
+
+	// localTaprootWitnessSuccessSize is the expected size of the witness
+	// on the local commitment for taproot channels. The spend path will
+	// look like
+	//  - <receiver sig> <preimage> <success_script> <control_block>
+	localTaprootWitnessSuccessSize = 4
 
 	// taprootRemotePreimageIndex is the index within the witness on the
 	// taproot remote commitment spend that'll hold the pre-image if the
@@ -329,10 +346,10 @@ func isPreimageSpend(isTaproot bool, spend *chainntnfs.SpendDetail,
 	//   - <sender sig> <receiver sig> <preimage> <success_script>
 	//     <control_block>
 	case isTaproot && !localCommit:
-		preImageIdx := taprootRemotePreimageIndex
-		//nolint:lll
-		return len(spendingWitness) == remoteTaprootWitnessSuccessSize &&
-			len(spendingWitness[preImageIdx]) == lntypes.HashSize
+		return checkSizeAndIndex(
+			spendingWitness, remoteTaprootWitnessSuccessSize,
+			taprootRemotePreimageIndex,
+		)
 
 	// Otherwise, then if this is our local commitment transaction, then if
 	// they're sweeping the transaction, it'll be directly from the output,
@@ -343,8 +360,10 @@ func isPreimageSpend(isTaproot bool, spend *chainntnfs.SpendDetail,
 	//
 	//  - <receiver sig> <preimage> <success_script> <control_block>
 	case isTaproot && localCommit:
-		return len(spendingWitness[localPreimageIndex]) ==
-			lntypes.HashSize
+		return checkSizeAndIndex(
+			spendingWitness, localTaprootWitnessSuccessSize,
+			localPreimageIndex,
+		)
 
 	// If this is the non-taproot, remote commitment then the only possible
 	// spends for outgoing HTLCs are:
@@ -358,9 +377,10 @@ func isPreimageSpend(isTaproot bool, spend *chainntnfs.SpendDetail,
 	// then this is a remote spend. If not, then we swept it ourselves, or
 	// revoked their output.
 	case !isTaproot && !localCommit:
-		return len(spendingWitness) == expectedRemoteWitnessSuccessSize &&
-			len(spendingWitness[remotePreimageIndex]) ==
-				lntypes.HashSize
+		return checkSizeAndIndex(
+			spendingWitness, expectedRemoteWitnessSuccessSize,
+			remotePreimageIndex,
+		)
 
 	// Otherwise, for our non-taproot commitment, the only possible spends
 	// for an outgoing HTLC are:
@@ -373,10 +393,23 @@ func isPreimageSpend(isTaproot bool, spend *chainntnfs.SpendDetail,
 	// element in the witness.
 	case !isTaproot:
 		fallthrough
+
 	default:
-		return len(spendingWitness[localPreimageIndex]) ==
-			lntypes.HashSize
+		return checkSizeAndIndex(
+			spendingWitness, expectedLocalWitnessSuccessSize,
+			localPreimageIndex,
+		)
 	}
+}
+
+// checkSizeAndIndex checks that the witness is of the expected size and that
+// the witness element at the specified index is of the expected size.
+func checkSizeAndIndex(witness wire.TxWitness, size, index int) bool {
+	if len(witness) != size {
+		return false
+	}
+
+	return len(witness[index]) == lntypes.HashSize
 }
 
 // Resolve kicks off full resolution of an outgoing HTLC output. If it's our
@@ -385,7 +418,9 @@ func isPreimageSpend(isTaproot bool, spend *chainntnfs.SpendDetail,
 // see a direct sweep via the timeout clause.
 //
 // NOTE: Part of the ContractResolver interface.
-func (h *htlcTimeoutResolver) Resolve() (ContractResolver, error) {
+func (h *htlcTimeoutResolver) Resolve(
+	immediate bool) (ContractResolver, error) {
+
 	// If we're already resolved, then we can exit early.
 	if h.resolved {
 		return nil, nil
@@ -394,7 +429,7 @@ func (h *htlcTimeoutResolver) Resolve() (ContractResolver, error) {
 	// Start by spending the HTLC output, either by broadcasting the
 	// second-level timeout transaction, or directly if this is the remote
 	// commitment.
-	commitSpend, err := h.spendHtlcOutput()
+	commitSpend, err := h.spendHtlcOutput(immediate)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +444,8 @@ func (h *htlcTimeoutResolver) Resolve() (ContractResolver, error) {
 
 		log.Infof("%T(%v): HTLC has been swept with pre-image by "+
 			"remote party during timeout flow! Adding pre-image to "+
-			"witness cache", h.htlcResolution.ClaimOutpoint)
+			"witness cache", h, h.htlc.RHash[:],
+			h.htlcResolution.ClaimOutpoint)
 
 		return h.claimCleanUp(commitSpend)
 	}
@@ -437,7 +473,7 @@ func (h *htlcTimeoutResolver) Resolve() (ContractResolver, error) {
 
 // sweepSecondLevelTx sends a second level timeout transaction to the sweeper.
 // This transaction uses the SINLGE|ANYONECANPAY flag.
-func (h *htlcTimeoutResolver) sweepSecondLevelTx() error {
+func (h *htlcTimeoutResolver) sweepSecondLevelTx(immediate bool) error {
 	log.Infof("%T(%x): offering second-layer timeout tx to sweeper: %v",
 		h, h.htlc.RHash[:],
 		spew.Sdump(h.htlcResolution.SignedTimeoutTx))
@@ -456,13 +492,46 @@ func (h *htlcTimeoutResolver) sweepSecondLevelTx() error {
 			h.broadcastHeight,
 		))
 	}
+
+	// Calculate the budget.
+	//
+	// TODO(yy): the budget is twice the output's value, which is needed as
+	// we don't force sweep the output now. To prevent cascading force
+	// closes, we use all its output value plus a wallet input as the
+	// budget. This is a temporary solution until we can optionally cancel
+	// the incoming HTLC, more details in,
+	// - https://github.com/lightningnetwork/lnd/issues/7969
+	budget := calculateBudget(
+		btcutil.Amount(inp.SignDesc().Output.Value), 2, 0,
+	)
+
+	// For an outgoing HTLC, it must be swept before the RefundTimeout of
+	// its incoming HTLC is reached.
+	//
+	// TODO(yy): we may end up mixing inputs with different time locks.
+	// Suppose we have two outgoing HTLCs,
+	// - HTLC1: nLocktime is 800000, CLTV delta is 80.
+	// - HTLC2: nLocktime is 800001, CLTV delta is 79.
+	// This means they would both have an incoming HTLC that expires at
+	// 800080, hence they share the same deadline but different locktimes.
+	// However, with current design, when we are at block 800000, HTLC1 is
+	// offered to the sweeper. When block 800001 is reached, HTLC1's
+	// sweeping process is already started, while HTLC2 is being offered to
+	// the sweeper, so they won't be mixed. This can become an issue tho,
+	// if we decide to sweep per X blocks. Or the contractcourt sees the
+	// block first while the sweeper is only aware of the last block. To
+	// properly fix it, we need `blockbeat` to make sure subsystems are in
+	// sync.
+	log.Infof("%T(%x): offering second-level HTLC timeout tx to sweeper "+
+		"with deadline=%v, budget=%v", h, h.htlc.RHash[:],
+		h.incomingHTLCExpiryHeight, budget)
+
 	_, err := h.Sweeper.SweepInput(
 		inp,
 		sweep.Params{
-			Fee: sweep.FeePreference{
-				ConfTarget: secondLevelConfTarget,
-			},
-			Force: true,
+			Budget:         budget,
+			DeadlineHeight: h.incomingHTLCExpiryHeight,
+			Immediate:      immediate,
 		},
 	)
 	if err != nil {
@@ -480,8 +549,9 @@ func (h *htlcTimeoutResolver) sendSecondLevelTxLegacy() error {
 		h.htlcResolution.ClaimOutpoint)
 
 	err := h.IncubateOutputs(
-		h.ChanPoint, &h.htlcResolution, nil,
-		h.broadcastHeight,
+		h.ChanPoint, fn.Some(h.htlcResolution),
+		fn.None[lnwallet.IncomingHtlcResolution](),
+		h.broadcastHeight, h.incomingHTLCExpiryHeight,
 	)
 	if err != nil {
 		return err
@@ -497,14 +567,16 @@ func (h *htlcTimeoutResolver) sendSecondLevelTxLegacy() error {
 // used to spend the output into the next stage. If this is the remote
 // commitment, the output will be swept directly without the timeout
 // transaction.
-func (h *htlcTimeoutResolver) spendHtlcOutput() (*chainntnfs.SpendDetail, error) {
+func (h *htlcTimeoutResolver) spendHtlcOutput(
+	immediate bool) (*chainntnfs.SpendDetail, error) {
+
 	switch {
 	// If we have non-nil SignDetails, this means that have a 2nd level
 	// HTLC transaction that is signed using sighash SINGLE|ANYONECANPAY
 	// (the case for anchor type channels). In this case we can re-sign it
 	// and attach fees at will. We let the sweeper handle this job.
 	case h.htlcResolution.SignDetails != nil && !h.outputIncubating:
-		if err := h.sweepSecondLevelTx(); err != nil {
+		if err := h.sweepSecondLevelTx(immediate); err != nil {
 			log.Errorf("Sending timeout tx to sweeper: %v", err)
 
 			return nil, err
@@ -640,6 +712,25 @@ func (h *htlcTimeoutResolver) handleCommitSpend(
 				"height %v", h, h.htlc.RHash[:], waitHeight)
 		}
 
+		// Deduct one block so this input is offered to the sweeper one
+		// block earlier since the sweeper will wait for one block to
+		// trigger the sweeping.
+		//
+		// TODO(yy): this is done so the outputs can be aggregated
+		// properly. Suppose CSV locks of five 2nd-level outputs all
+		// expire at height 840000, there is a race in block digestion
+		// between contractcourt and sweeper:
+		// - G1: block 840000 received in contractcourt, it now offers
+		//   the outputs to the sweeper.
+		// - G2: block 840000 received in sweeper, it now starts to
+		//   sweep the received outputs - there's no guarantee all
+		//   fives have been received.
+		// To solve this, we either offer the outputs earlier, or
+		// implement `blockbeat`, and force contractcourt and sweeper
+		// to consume each block sequentially.
+		waitHeight--
+
+		// TODO(yy): let sweeper handles the wait?
 		err := waitForHeight(waitHeight, h.Notifier, h.quit)
 		if err != nil {
 			return nil, err
@@ -669,15 +760,29 @@ func (h *htlcTimeoutResolver) handleCommitSpend(
 			op, csvWitnessType,
 			input.LeaseHtlcOfferedTimeoutSecondLevel,
 			&h.htlcResolution.SweepSignDesc,
-			h.htlcResolution.CsvDelay, h.broadcastHeight,
-			h.htlc.RHash,
+			h.htlcResolution.CsvDelay,
+			uint32(commitSpend.SpendingHeight), h.htlc.RHash,
 		)
+		// Calculate the budget for this sweep.
+		budget := calculateBudget(
+			btcutil.Amount(inp.SignDesc().Output.Value),
+			h.Budget.NoDeadlineHTLCRatio,
+			h.Budget.NoDeadlineHTLC,
+		)
+
+		log.Infof("%T(%x): offering second-level timeout tx output to "+
+			"sweeper with no deadline and budget=%v at height=%v",
+			h, h.htlc.RHash[:], budget, waitHeight)
+
 		_, err = h.Sweeper.SweepInput(
 			inp,
 			sweep.Params{
-				Fee: sweep.FeePreference{
-					ConfTarget: sweepConfTarget,
-				},
+				Budget: budget,
+
+				// For second level success tx, there's no rush
+				// to get it confirmed, so we use a nil
+				// deadline.
+				DeadlineHeight: fn.None[int32](),
 			},
 		)
 		if err != nil {
@@ -889,6 +994,14 @@ func (h *htlcTimeoutResolver) Supplement(htlc channeldb.HTLC) {
 // NOTE: Part of the htlcContractResolver interface.
 func (h *htlcTimeoutResolver) HtlcPoint() wire.OutPoint {
 	return h.htlcResolution.HtlcPoint()
+}
+
+// SupplementDeadline sets the incomingHTLCExpiryHeight for this outgoing htlc
+// resolver.
+//
+// NOTE: Part of the htlcContractResolver interface.
+func (h *htlcTimeoutResolver) SupplementDeadline(d fn.Option[int32]) {
+	h.incomingHTLCExpiryHeight = d
 }
 
 // A compile time assertion to ensure htlcTimeoutResolver meets the

@@ -5,6 +5,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -15,14 +16,20 @@ type weightEstimator struct {
 	feeRate       chainfee.SatPerKWeight
 	parents       map[chainhash.Hash]struct{}
 	parentsFee    btcutil.Amount
-	parentsWeight int64
+	parentsWeight lntypes.WeightUnit
+
+	// maxFeeRate is the max allowed fee rate configured by the user.
+	maxFeeRate chainfee.SatPerKWeight
 }
 
 // newWeightEstimator instantiates a new sweeper weight estimator.
-func newWeightEstimator(feeRate chainfee.SatPerKWeight) *weightEstimator {
+func newWeightEstimator(
+	feeRate, maxFeeRate chainfee.SatPerKWeight) *weightEstimator {
+
 	return &weightEstimator{
-		feeRate: feeRate,
-		parents: make(map[chainhash.Hash]struct{}),
+		feeRate:    feeRate,
+		maxFeeRate: maxFeeRate,
+		parents:    make(map[chainhash.Hash]struct{}),
 	}
 }
 
@@ -96,15 +103,28 @@ func (w *weightEstimator) addOutput(txOut *wire.TxOut) {
 }
 
 // weight gets the estimated weight of the transaction.
-func (w *weightEstimator) weight() int {
+func (w *weightEstimator) weight() lntypes.WeightUnit {
 	return w.estimator.Weight()
 }
 
-// fee returns the tx fee to use for the aggregated inputs and outputs, taking
-// into account unconfirmed parent transactions (cpfp).
+// fee returns the tx fee to use for the aggregated inputs and outputs, which
+// is different from feeWithParent as it doesn't take into account unconfirmed
+// parent transactions.
 func (w *weightEstimator) fee() btcutil.Amount {
+	// Calculate the weight of the transaction.
+	weight := w.estimator.Weight()
+
+	// Calculate the fee.
+	fee := w.feeRate.FeeForWeight(weight)
+
+	return fee
+}
+
+// feeWithParent returns the tx fee to use for the aggregated inputs and
+// outputs, taking into account unconfirmed parent transactions (cpfp).
+func (w *weightEstimator) feeWithParent() btcutil.Amount {
 	// Calculate fee and weight for just this tx.
-	childWeight := int64(w.estimator.Weight())
+	childWeight := w.estimator.Weight()
 
 	// Add combined weight of unconfirmed parent txes.
 	totalWeight := childWeight + w.parentsWeight
@@ -117,6 +137,25 @@ func (w *weightEstimator) fee() btcutil.Amount {
 	childFee := w.feeRate.FeeForWeight(childWeight)
 	if childFee > fee {
 		fee = childFee
+	}
+
+	// Exit early if maxFeeRate is not set.
+	if w.maxFeeRate == 0 {
+		return fee
+	}
+
+	// Clamp the fee to the max fee rate.
+	maxFee := w.maxFeeRate.FeeForWeight(childWeight)
+	if fee > maxFee {
+		// Calculate the effective fee rate for logging.
+		childFeeRate := chainfee.SatPerKWeight(
+			fee * 1000 / btcutil.Amount(childWeight),
+		)
+		log.Warnf("Child fee rate %v exceeds max allowed fee rate %v, "+
+			"returning fee %v instead of %v", childFeeRate,
+			w.maxFeeRate, maxFee, fee)
+
+		fee = maxFee
 	}
 
 	return fee

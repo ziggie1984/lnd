@@ -10,8 +10,10 @@ import (
 	"github.com/btcsuite/btcd/btcutil/txsort"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/watchtower/blob"
 	"github.com/lightningnetwork/lnd/watchtower/lookout"
@@ -52,6 +54,8 @@ var (
 	altruistCommitType = blob.FlagCommitOutputs.Type()
 
 	altruistAnchorCommitType = blob.TypeAltruistAnchorCommit
+
+	altruisticTaprootCommitType = blob.TypeAltruistTaprootCommit
 )
 
 // TestJusticeDescriptor asserts that a JusticeDescriptor is able to produce the
@@ -73,6 +77,10 @@ func TestJusticeDescriptor(t *testing.T) {
 			name:     "altruist anchor commit type",
 			blobType: altruistAnchorCommitType,
 		},
+		{
+			name:     "altruist taproot commit type",
+			blobType: altruisticTaprootCommitType,
+		},
 	}
 
 	for _, test := range tests {
@@ -84,6 +92,7 @@ func TestJusticeDescriptor(t *testing.T) {
 
 func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	isAnchorChannel := blobType.IsAnchorChannel()
+	isTaprootChannel := blobType.IsTaprootChannel()
 
 	const (
 		localAmount  = btcutil.Amount(100000)
@@ -92,15 +101,13 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	)
 
 	// Parse the key pairs for all keys used in the test.
-	revSK, revPK := btcec.PrivKeyFromBytes(
-		revPrivBytes,
-	)
-	_, toLocalPK := btcec.PrivKeyFromBytes(
-		toLocalPrivBytes,
-	)
-	toRemoteSK, toRemotePK := btcec.PrivKeyFromBytes(
-		toRemotePrivBytes,
-	)
+	revSK, revPK := btcec.PrivKeyFromBytes(revPrivBytes)
+	_, toLocalPK := btcec.PrivKeyFromBytes(toLocalPrivBytes)
+	toRemoteSK, toRemotePK := btcec.PrivKeyFromBytes(toRemotePrivBytes)
+
+	// Get the commitment type.
+	commitType, err := blobType.CommitmentType(nil)
+	require.NoError(t, err)
 
 	// Create the signer, and add the revocation and to-remote privkeys.
 	signer := wtmock.NewMockSigner()
@@ -109,15 +116,34 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 		toRemoteKeyLoc = signer.AddPrivKey(toRemoteSK)
 	)
 
-	// Construct the to-local witness script.
-	toLocalScript, err := input.CommitScriptToSelf(
-		csvDelay, toLocalPK, revPK,
+	var (
+		toLocalScript, toLocalScriptHash []byte
+		toLocalCommitTree                *input.CommitScriptTree
 	)
-	require.Nil(t, err)
 
-	// Compute the to-local witness script hash.
-	toLocalScriptHash, err := input.WitnessScriptHash(toLocalScript)
-	require.Nil(t, err)
+	if isTaprootChannel {
+		toLocalCommitTree, err = input.NewLocalCommitScriptTree(
+			csvDelay, toLocalPK, revPK,
+		)
+		require.NoError(t, err)
+
+		toLocalScript = toLocalCommitTree.RevocationLeaf.Script
+
+		toLocalScriptHash, err = input.PayToTaprootScript(
+			toLocalCommitTree.TaprootKey,
+		)
+		require.NoError(t, err)
+	} else {
+		// Construct the to-local witness script.
+		toLocalScript, err = input.CommitScriptToSelf(
+			csvDelay, toLocalPK, revPK,
+		)
+		require.NoError(t, err)
+
+		// Compute the to-local witness script hash.
+		toLocalScriptHash, err = input.WitnessScriptHash(toLocalScript)
+		require.NoError(t, err)
+	}
 
 	// Compute the to-remote redeem script, witness script hash, and
 	// sequence numbers.
@@ -141,27 +167,57 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 		toRemoteRedeemScript  []byte
 		toRemoteScriptHash    []byte
 		toRemoteSigningScript []byte
+		toRemoteCtrlBlock     []byte
 	)
-	if isAnchorChannel {
+	switch {
+	case isTaprootChannel:
+		toRemoteSequence = 1
+
+		commitScriptTree, err := input.NewRemoteCommitScriptTree(
+			toRemotePK,
+		)
+		require.NoError(t, err)
+
+		toRemoteSigningScript = commitScriptTree.SettleLeaf.Script
+
+		toRemoteScriptHash, err = input.PayToTaprootScript(
+			commitScriptTree.TaprootKey,
+		)
+		require.NoError(t, err)
+
+		tree := commitScriptTree.TapscriptTree
+		settleTapleafHash := commitScriptTree.SettleLeaf.TapHash()
+		settleIdx := tree.LeafProofIndex[settleTapleafHash]
+		settleMerkleProof := tree.LeafMerkleProofs[settleIdx]
+		settleControlBlock := settleMerkleProof.ToControlBlock(
+			&input.TaprootNUMSKey,
+		)
+
+		ctrlBytes, err := settleControlBlock.ToBytes()
+		require.NoError(t, err)
+		toRemoteCtrlBlock = ctrlBytes
+
+	case isAnchorChannel:
 		toRemoteSequence = 1
 		toRemoteRedeemScript, err = input.CommitScriptToRemoteConfirmed(
 			toRemotePK,
 		)
-		require.Nil(t, err)
+		require.NoError(t, err)
 
 		toRemoteScriptHash, err = input.WitnessScriptHash(
 			toRemoteRedeemScript,
 		)
-		require.Nil(t, err)
+		require.NoError(t, err)
 
 		// As it should be.
 		toRemoteSigningScript = toRemoteRedeemScript
-	} else {
+
+	default:
 		toRemoteRedeemScript = toRemotePK.SerializeCompressed()
 		toRemoteScriptHash, err = input.CommitScriptUnencumbered(
 			toRemotePK,
 		)
-		require.Nil(t, err)
+		require.NoError(t, err)
 
 		// NOTE: This is the _pkscript_.
 		toRemoteSigningScript = toRemoteScriptHash
@@ -188,26 +244,24 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	// Compute the weight estimate for our justice transaction.
 	var weightEstimate input.TxWeightEstimator
 
-	// An older ToLocalPenaltyWitnessSize constant used to underestimate the
-	// size by one byte. The diferrence in weight can cause different output
-	// values on the sweep transaction, so we mimic the original bug and
-	// create signatures using the original weight estimate. For anchor
-	// channels we fix this and use the correct witness size.
-	if isAnchorChannel {
-		weightEstimate.AddWitnessInput(input.ToLocalPenaltyWitnessSize)
-	} else {
-		weightEstimate.AddWitnessInput(input.ToLocalPenaltyWitnessSize - 1)
-	}
+	// Add the local witness size to the weight estimator.
+	toLocalWitnessSize, err := commitType.ToLocalWitnessSize()
+	require.NoError(t, err)
+	weightEstimate.AddWitnessInput(toLocalWitnessSize)
 
-	if isAnchorChannel {
-		weightEstimate.AddWitnessInput(input.ToRemoteConfirmedWitnessSize)
-	} else {
-		weightEstimate.AddWitnessInput(input.P2WKHWitnessSize)
-	}
+	// Add the remote witness size to the weight estimator.
+	toRemoteWitnessSize, err := commitType.ToRemoteWitnessSize()
+	require.NoError(t, err)
+	weightEstimate.AddWitnessInput(toRemoteWitnessSize)
+
+	// Add the sweep output to the weight estimator.
 	weightEstimate.AddP2WKHOutput()
+
+	// Add the reward output to the weight estimator.
 	if blobType.Has(blob.FlagReward) {
 		weightEstimate.AddP2WKHOutput()
 	}
+
 	txWeight := weightEstimate.Weight()
 
 	// Create a session info so that simulate agreement of the sweep
@@ -225,16 +279,19 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 		RewardAddress: makeAddrSlice(22),
 	}
 
-	// Begin to assemble the justice kit, starting with the sweep address,
-	// pubkeys, and csv delay.
-	justiceKit := &blob.JusticeKit{
-		BlobType:     blobType,
-		SweepAddress: makeAddrSlice(22),
-		CSVDelay:     csvDelay,
+	breachInfo := &lnwallet.BreachRetribution{
+		RemoteDelay: csvDelay,
+		KeyRing: &lnwallet.CommitmentKeyRing{
+			ToLocalKey:    toLocalPK,
+			ToRemoteKey:   toRemotePK,
+			RevocationKey: revPK,
+		},
 	}
-	copy(justiceKit.RevocationPubKey[:], revPK.SerializeCompressed())
-	copy(justiceKit.LocalDelayPubKey[:], toLocalPK.SerializeCompressed())
-	copy(justiceKit.CommitToRemotePubKey[:], toRemotePK.SerializeCompressed())
+
+	justiceKit, err := commitType.NewJusticeKit(
+		makeAddrSlice(22), breachInfo, true,
+	)
+	require.NoError(t, err)
 
 	// Create a transaction spending from the outputs of the breach
 	// transaction created earlier. The inputs are always ordered w/
@@ -260,40 +317,91 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	}
 
 	outputs, err := policy.ComputeJusticeTxOuts(
-		totalAmount, int64(txWeight), justiceKit.SweepAddress,
+		totalAmount, txWeight, justiceKit.SweepAddress(),
 		sessionInfo.RewardAddress,
 	)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	// Attach the txouts and BIP69 sort the resulting transaction.
 	justiceTxn.TxOut = outputs
 	txsort.InPlaceSort(justiceTxn)
 
-	hashCache := input.NewTxSigHashesV0Only(justiceTxn)
+	var (
+		toLocalSignDesc  *input.SignDescriptor
+		toRemoteSignDesc *input.SignDescriptor
+	)
 
-	// Create the sign descriptor used to sign for the to-local input.
-	toLocalSignDesc := &input.SignDescriptor{
-		KeyDesc: keychain.KeyDescriptor{
-			KeyLocator: revKeyLoc,
-		},
-		WitnessScript: toLocalScript,
-		Output:        breachTxn.TxOut[0],
-		SigHashes:     hashCache,
-		InputIndex:    0,
-		HashType:      txscript.SigHashAll,
-	}
+	if isTaprootChannel {
+		prevOuts := map[wire.OutPoint]*wire.TxOut{
+			{
+				Hash:  breachTxID,
+				Index: 0,
+			}: breachTxn.TxOut[0],
+			{
+				Hash:  breachTxID,
+				Index: 1,
+			}: breachTxn.TxOut[1],
+		}
+		prevOutputFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
+		hashCache := txscript.NewTxSigHashes(
+			justiceTxn, prevOutputFetcher,
+		)
 
-	// Create the sign descriptor used to sign for the to-remote input.
-	toRemoteSignDesc := &input.SignDescriptor{
-		KeyDesc: keychain.KeyDescriptor{
-			KeyLocator: toRemoteKeyLoc,
-			PubKey:     toRemotePK,
-		},
-		WitnessScript: toRemoteSigningScript,
-		Output:        breachTxn.TxOut[1],
-		SigHashes:     hashCache,
-		InputIndex:    1,
-		HashType:      txscript.SigHashAll,
+		toLocalSignDesc = &input.SignDescriptor{
+			KeyDesc: keychain.KeyDescriptor{
+				KeyLocator: revKeyLoc,
+			},
+			WitnessScript:     toLocalScript,
+			Output:            breachTxn.TxOut[0],
+			SigHashes:         hashCache,
+			PrevOutputFetcher: prevOutputFetcher,
+			InputIndex:        0,
+			HashType:          txscript.SigHashDefault,
+			SignMethod:        input.TaprootScriptSpendSignMethod,
+		}
+
+		toRemoteSignDesc = &input.SignDescriptor{
+			KeyDesc: keychain.KeyDescriptor{
+				KeyLocator: toRemoteKeyLoc,
+				PubKey:     toRemotePK,
+			},
+			WitnessScript:     toRemoteSigningScript,
+			Output:            breachTxn.TxOut[1],
+			PrevOutputFetcher: prevOutputFetcher,
+			SigHashes:         hashCache,
+			InputIndex:        1,
+			HashType:          txscript.SigHashDefault,
+			SignMethod:        input.TaprootScriptSpendSignMethod,
+		}
+	} else {
+		hashCache := input.NewTxSigHashesV0Only(justiceTxn)
+
+		// Create the sign descriptor used to sign for the to-local
+		// input.
+		toLocalSignDesc = &input.SignDescriptor{
+			KeyDesc: keychain.KeyDescriptor{
+				KeyLocator: revKeyLoc,
+			},
+			WitnessScript: toLocalScript,
+			Output:        breachTxn.TxOut[0],
+			SigHashes:     hashCache,
+			InputIndex:    0,
+			HashType:      txscript.SigHashAll,
+		}
+
+		// Create the sign descriptor used to sign for the to-remote
+		// input.
+		toRemoteSignDesc = &input.SignDescriptor{
+			KeyDesc: keychain.KeyDescriptor{
+				KeyLocator: toRemoteKeyLoc,
+				PubKey:     toRemotePK,
+			},
+			WitnessScript: toRemoteSigningScript,
+			Output:        breachTxn.TxOut[1],
+			SigHashes:     hashCache,
+			InputIndex:    1,
+			HashType:      txscript.SigHashAll,
+		}
 	}
 
 	// Verify that our test justice transaction is sane.
@@ -301,27 +409,25 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	err = blockchain.CheckTransactionSanity(btx)
 	require.Nil(t, err)
 
-	// Compute a DER-encoded signature for the to-local input.
+	// Compute a signature for the to-local input.
 	toLocalSigRaw, err := signer.SignOutputRaw(justiceTxn, toLocalSignDesc)
 	require.Nil(t, err)
 
-	// Compute the witness for the to-remote input. The first element is a
-	// DER-encoded signature under the to-remote pubkey. The sighash flag is
-	// also present, so we trim it.
+	// Compute the witness for the to-remote input.
 	toRemoteSigRaw, err := signer.SignOutputRaw(justiceTxn, toRemoteSignDesc)
 	require.Nil(t, err)
 
-	// Convert the DER to-local sig into a fixed-size signature.
+	// Convert the to-local sig into a fixed-size signature.
 	toLocalSig, err := lnwire.NewSigFromSignature(toLocalSigRaw)
 	require.Nil(t, err)
 
-	// Convert the DER to-remote sig into a fixed-size signature.
+	// Convert the to-remote sig into a fixed-size signature.
 	toRemoteSig, err := lnwire.NewSigFromSignature(toRemoteSigRaw)
 	require.Nil(t, err)
 
 	// Complete our justice kit by copying the signatures into the payload.
-	justiceKit.CommitToLocalSig = toLocalSig
-	justiceKit.CommitToRemoteSig = toRemoteSig
+	justiceKit.AddToLocalSig(toLocalSig)
+	justiceKit.AddToRemoteSig(toRemoteSig)
 
 	justiceDesc := &lookout.JusticeDescriptor{
 		BreachedCommitTx: breachTxn,
@@ -342,7 +448,7 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	// Exact retribution on the offender. If no error is returned, we expect
 	// the justice transaction to be published via the channel.
 	err = punisher.Punish(justiceDesc, nil)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	// Retrieve the published justice transaction.
 	var wtJusticeTxn *wire.MsgTx
@@ -352,18 +458,59 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 		t.Fatalf("punisher did not publish justice txn")
 	}
 
-	// Construct the test's to-local witness.
-	justiceTxn.TxIn[0].Witness = make([][]byte, 3)
-	justiceTxn.TxIn[0].Witness[0] = append(toLocalSigRaw.Serialize(),
-		byte(txscript.SigHashAll))
-	justiceTxn.TxIn[0].Witness[1] = []byte{1}
-	justiceTxn.TxIn[0].Witness[2] = toLocalScript
+	if isTaprootChannel {
+		revokeLeaf := txscript.NewBaseTapLeaf(toLocalScript)
+		outputKey := txscript.ComputeTaprootOutputKey(
+			&input.TaprootNUMSKey, toLocalCommitTree.TapscriptRoot,
+		)
 
-	// Construct the test's to-remote witness.
-	justiceTxn.TxIn[1].Witness = make([][]byte, 2)
-	justiceTxn.TxIn[1].Witness[0] = append(toRemoteSigRaw.Serialize(),
-		byte(txscript.SigHashAll))
-	justiceTxn.TxIn[1].Witness[1] = toRemoteRedeemScript
+		var outputKeyYIsOdd bool
+		if outputKey.SerializeCompressed()[0] ==
+			secp.PubKeyFormatCompressedOdd {
+
+			outputKeyYIsOdd = true
+		}
+
+		delayScriptHash := toLocalCommitTree.SettleLeaf.TapHash()
+
+		ctrlBlock := txscript.ControlBlock{
+			InternalKey:     &input.TaprootNUMSKey,
+			OutputKeyYIsOdd: outputKeyYIsOdd,
+			LeafVersion:     revokeLeaf.LeafVersion,
+			InclusionProof:  delayScriptHash[:],
+		}
+
+		ctrlBytes, err := ctrlBlock.ToBytes()
+		require.NoError(t, err)
+
+		justiceTxn.TxIn[0].Witness = make([][]byte, 3)
+		justiceTxn.TxIn[0].Witness[0] = toLocalSigRaw.Serialize()
+		justiceTxn.TxIn[0].Witness[1] = toLocalScript
+		justiceTxn.TxIn[0].Witness[2] = ctrlBytes
+
+		// Construct the test's to-remote witness.
+		justiceTxn.TxIn[1].Witness = make([][]byte, 3)
+		justiceTxn.TxIn[1].Witness[0] = toRemoteSigRaw.Serialize()
+		justiceTxn.TxIn[1].Witness[1] = toRemoteSigningScript
+		justiceTxn.TxIn[1].Witness[2] = toRemoteCtrlBlock
+	} else {
+		// Construct the test's to-local witness.
+		justiceTxn.TxIn[0].Witness = make([][]byte, 3)
+		justiceTxn.TxIn[0].Witness[0] = append(
+			toLocalSigRaw.Serialize(),
+			byte(txscript.SigHashAll),
+		)
+		justiceTxn.TxIn[0].Witness[1] = []byte{1}
+		justiceTxn.TxIn[0].Witness[2] = toLocalScript
+
+		// Construct the test's to-remote witness.
+		justiceTxn.TxIn[1].Witness = make([][]byte, 2)
+		justiceTxn.TxIn[1].Witness[0] = append(
+			toRemoteSigRaw.Serialize(),
+			byte(txscript.SigHashAll),
+		)
+		justiceTxn.TxIn[1].Witness[1] = toRemoteRedeemScript
+	}
 
 	// Assert that the watchtower derives the same justice txn.
 	require.Equal(t, justiceTxn, wtJusticeTxn)

@@ -29,6 +29,8 @@ http:
     - selector: walletrpc.WalletKit.NextAddr
       post: "/v2/wallet/address/next"
       body: "*"
+    - selector: walletrpc.WalletKit.GetTransaction
+      get: "/v2/wallet/tx"
     - selector: walletrpc.WalletKit.PublishTransaction
       post: "/v2/wallet/tx"
       body: "*"
@@ -70,4 +72,7 @@ http:
       body: "*"
     - selector: walletrpc.WalletKit.VerifyMessageWithAddr
       post: "/v2/wallet/address/verifymessage"
+      body: "*"
+    - selector: walletrpc.WalletKit.RemoveTransaction
+      post: "/v2/wallet/removetx"
       body: "*"

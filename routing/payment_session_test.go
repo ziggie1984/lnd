@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -137,7 +138,7 @@ func TestUpdateAdditionalEdge(t *testing.T) {
 	require.Equal(t, 1, len(policies), "should have 1 edge policy")
 
 	// Check that the policy has been created as expected.
-	policy := policies[0]
+	policy := policies[0].EdgePolicy()
 	require.Equal(t, testChannelID, policy.ChannelID, "channel ID mismatch")
 	require.Equal(t,
 		oldExpiryDelta, policy.TimeLockDelta, "timelock delta mismatch",
@@ -211,7 +212,7 @@ func TestRequestRoute(t *testing.T) {
 	// Override pathfinder with a mock.
 	session.pathFinder = func(_ *graphParams, r *RestrictParams,
 		_ *PathFindingConfig, _, _ route.Vertex, _ lnwire.MilliSatoshi,
-		_ float64, _ int32) ([]*channeldb.CachedEdgePolicy, float64,
+		_ float64, _ int32) ([]*unifiedEdge, float64,
 		error) {
 
 		// We expect find path to receive a cltv limit excluding the
@@ -220,14 +221,16 @@ func TestRequestRoute(t *testing.T) {
 			t.Fatal("wrong cltv limit")
 		}
 
-		path := []*channeldb.CachedEdgePolicy{
+		path := []*unifiedEdge{
 			{
-				ToNodePubKey: func() route.Vertex {
-					return route.Vertex{}
+				policy: &models.CachedEdgePolicy{
+					ToNodePubKey: func() route.Vertex {
+						return route.Vertex{}
+					},
+					ToNodeFeatures: lnwire.NewFeatureVector(
+						nil, nil,
+					),
 				},
-				ToNodeFeatures: lnwire.NewFeatureVector(
-					nil, nil,
-				),
 			},
 		}
 

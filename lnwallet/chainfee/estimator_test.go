@@ -3,26 +3,12 @@ package chainfee
 import (
 	"bytes"
 	"encoding/json"
-	"io"
-	"reflect"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/stretchr/testify/require"
 )
-
-type mockSparseConfFeeSource struct {
-	url  string
-	fees map[uint32]uint32
-}
-
-func (e mockSparseConfFeeSource) GenQueryURL() string {
-	return e.url
-}
-
-func (e mockSparseConfFeeSource) ParseResponse(r io.Reader) (map[uint32]uint32, error) {
-	return e.fees, nil
-}
 
 // TestFeeRateTypes checks that converting fee rates between the
 // different types that represent fee rates and calculating fees
@@ -113,10 +99,6 @@ func TestSparseConfFeeSource(t *testing.T) {
 	// Test that GenQueryURL returns the URL as is.
 	url := "test"
 	feeSource := SparseConfFeeSource{URL: url}
-	queryURL := feeSource.GenQueryURL()
-	if queryURL != url {
-		t.Fatalf("expected query URL of %v, got %v", url, queryURL)
-	}
 
 	// Test parsing a properly formatted JSON API response.
 	// First, create the response as a bytes.Reader.
@@ -125,17 +107,17 @@ func TestSparseConfFeeSource(t *testing.T) {
 		2: 42,
 		3: 54321,
 	}
-	testJSON := map[string]map[uint32]uint32{"fee_by_block_target": testFees}
+	testJSON := map[string]map[uint32]uint32{
+		"fee_by_block_target": testFees,
+	}
 	jsonResp, err := json.Marshal(testJSON)
 	require.NoError(t, err, "unable to marshal JSON API response")
 	reader := bytes.NewReader(jsonResp)
 
 	// Finally, ensure the expected map is returned without error.
-	fees, err := feeSource.ParseResponse(reader)
+	fees, err := feeSource.parseResponse(reader)
 	require.NoError(t, err, "unable to parse API response")
-	if !reflect.DeepEqual(fees, testFees) {
-		t.Fatalf("expected %v, got %v", testFees, fees)
-	}
+	require.Equal(t, testFees, fees, "unexpected fee map returned")
 
 	// Test parsing an improperly formatted JSON API response.
 	badFees := map[string]uint32{"hi": 12345, "hello": 42, "satoshi": 54321}
@@ -145,10 +127,8 @@ func TestSparseConfFeeSource(t *testing.T) {
 	reader = bytes.NewReader(jsonResp)
 
 	// Finally, ensure the improperly formatted fees error.
-	_, err = feeSource.ParseResponse(reader)
-	if err == nil {
-		t.Fatalf("expected ParseResponse to fail")
-	}
+	_, err = feeSource.parseResponse(reader)
+	require.Error(t, err, "expected error when parsing bad JSON")
 }
 
 // TestWebAPIFeeEstimator checks that the WebAPIFeeEstimator returns fee rates
@@ -163,6 +143,9 @@ func TestWebAPIFeeEstimator(t *testing.T) {
 		// Fee rates are in sat/kb.
 		minFeeRate uint32 = 2000 // 500 sat/kw
 		maxFeeRate uint32 = 4000 // 1000 sat/kw
+
+		minFeeUpdateTimeout = 5 * time.Minute
+		maxFeeUpdateTimeout = 20 * time.Minute
 	)
 
 	testCases := []struct {
@@ -189,7 +172,7 @@ func TestWebAPIFeeEstimator(t *testing.T) {
 			expectedErr:     "",
 		},
 		{
-			// When requested target is smaller than the min cahced
+			// When requested target is smaller than the min cached
 			// target, the fee rate of the min cached target is
 			// returned.
 			name:            "API-omitted_target",
@@ -216,12 +199,13 @@ func TestWebAPIFeeEstimator(t *testing.T) {
 		maxTarget: minFeeRate,
 	}
 
-	feeSource := mockSparseConfFeeSource{
-		url:  "https://www.github.com",
-		fees: feeRateResp,
-	}
+	// Create a mock fee source and mock its returned map.
+	feeSource := &mockFeeSource{}
+	feeSource.On("GetFeeMap").Return(feeRateResp, nil)
 
-	estimator := NewWebAPIEstimator(feeSource, false)
+	estimator, _ := NewWebAPIEstimator(
+		feeSource, false, minFeeUpdateTimeout, maxFeeUpdateTimeout,
+	)
 
 	// Test that requesting a fee when no fees have been cached won't fail.
 	feeRate, err := estimator.EstimateFeePerKW(5)
@@ -250,12 +234,15 @@ func TestWebAPIFeeEstimator(t *testing.T) {
 
 			exp := SatPerKVByte(tc.expectedFeeRate).FeePerKWeight()
 			require.Equalf(t, exp, est, "target %v failed, fee "+
-				"map is %v", tc.target, feeSource.fees)
+				"map is %v", tc.target, feeRateResp)
 		})
 	}
 
 	// Stop the estimator when test ends.
 	require.NoError(t, estimator.Stop(), "unable to stop fee estimator")
+
+	// Assert the mocked fee source is called as expected.
+	feeSource.AssertExpectations(t)
 }
 
 // TestGetCachedFee checks that the fee caching logic works as expected.
@@ -266,10 +253,15 @@ func TestGetCachedFee(t *testing.T) {
 
 		minFeeRate uint32 = 100
 		maxFeeRate uint32 = 1000
+
+		minFeeUpdateTimeout = 5 * time.Minute
+		maxFeeUpdateTimeout = 20 * time.Minute
 	)
 
 	// Create a dummy estimator without WebAPIFeeSource.
-	estimator := NewWebAPIEstimator(nil, false)
+	estimator, _ := NewWebAPIEstimator(
+		nil, false, minFeeUpdateTimeout, maxFeeUpdateTimeout,
+	)
 
 	// When the cache is empty, an error should be returned.
 	cachedFee, err := estimator.getCachedFee(minTarget)
@@ -333,4 +325,39 @@ func TestGetCachedFee(t *testing.T) {
 			require.Equal(t, tc.expectedFee, cachedFee)
 		})
 	}
+}
+
+func TestRandomFeeUpdateTimeout(t *testing.T) {
+	t.Parallel()
+
+	var (
+		minFeeUpdateTimeout = 1 * time.Minute
+		maxFeeUpdateTimeout = 2 * time.Minute
+	)
+
+	estimator, _ := NewWebAPIEstimator(
+		nil, false, minFeeUpdateTimeout, maxFeeUpdateTimeout,
+	)
+
+	for i := 0; i < 1000; i++ {
+		timeout := estimator.randomFeeUpdateTimeout()
+
+		require.GreaterOrEqual(t, timeout, minFeeUpdateTimeout)
+		require.LessOrEqual(t, timeout, maxFeeUpdateTimeout)
+	}
+}
+
+func TestInvalidFeeUpdateTimeout(t *testing.T) {
+	t.Parallel()
+
+	var (
+		minFeeUpdateTimeout = 2 * time.Minute
+		maxFeeUpdateTimeout = 1 * time.Minute
+	)
+
+	_, err := NewWebAPIEstimator(
+		nil, false, minFeeUpdateTimeout, maxFeeUpdateTimeout,
+	)
+	require.Error(t, err, "NewWebAPIEstimator should return an error "+
+		"when minFeeUpdateTimeout > maxFeeUpdateTimeout")
 }

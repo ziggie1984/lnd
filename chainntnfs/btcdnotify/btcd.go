@@ -14,8 +14,10 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/queue"
 )
 
@@ -58,7 +60,7 @@ type BtcdNotifier struct {
 	active  int32 // To be used atomically.
 	stopped int32 // To be used atomically.
 
-	chainConn   *rpcclient.Client
+	chainConn   *chain.RPCClient
 	chainParams *chaincfg.Params
 
 	notificationCancels  chan interface{}
@@ -127,21 +129,30 @@ func New(config *rpcclient.ConnConfig, chainParams *chaincfg.Params,
 		quit: make(chan struct{}),
 	}
 
+	// Disable connecting to btcd within the rpcclient.New method. We
+	// defer establishing the connection to our .Start() method.
+	config.DisableConnectOnNew = true
+	config.DisableAutoReconnect = false
+
 	ntfnCallbacks := &rpcclient.NotificationHandlers{
 		OnBlockConnected:    notifier.onBlockConnected,
 		OnBlockDisconnected: notifier.onBlockDisconnected,
 		OnRedeemingTx:       notifier.onRedeemingTx,
 	}
 
-	// Disable connecting to btcd within the rpcclient.New method. We
-	// defer establishing the connection to our .Start() method.
-	config.DisableConnectOnNew = true
-	config.DisableAutoReconnect = false
-	chainConn, err := rpcclient.New(config, ntfnCallbacks)
+	rpcCfg := &chain.RPCClientConfig{
+		ReconnectAttempts:    20,
+		Conn:                 config,
+		Chain:                chainParams,
+		NotificationHandlers: ntfnCallbacks,
+	}
+
+	chainRPC, err := chain.NewRPCClientWithConfig(rpcCfg)
 	if err != nil {
 		return nil, err
 	}
-	notifier.chainConn = chainConn
+
+	notifier.chainConn = chainRPC
 
 	return notifier, nil
 }
@@ -169,7 +180,8 @@ func (b *BtcdNotifier) Stop() error {
 		return nil
 	}
 
-	chainntnfs.Log.Info("btcd notifier shutting down")
+	chainntnfs.Log.Info("btcd notifier shutting down...")
+	defer chainntnfs.Log.Debug("btcd notifier shutdown complete")
 
 	// Shutdown the rpc client, this gracefully disconnects from btcd, and
 	// cleans up all related resources.
@@ -535,7 +547,12 @@ func (b *BtcdNotifier) handleRelevantTx(tx *btcutil.Tx,
 	// If this is a mempool spend, we'll ask the mempool notifier to hanlde
 	// it.
 	if mempool {
-		b.memNotifier.ProcessRelevantSpendTx(tx)
+		err := b.memNotifier.ProcessRelevantSpendTx(tx)
+		if err != nil {
+			chainntnfs.Log.Errorf("Unable to process transaction "+
+				"%v: %v", tx.Hash(), err)
+		}
+
 		return
 	}
 
@@ -661,7 +678,7 @@ func (b *BtcdNotifier) confDetailsManually(confRequest chainntnfs.ConfRequest,
 			}
 
 			return &chainntnfs.TxConfirmation{
-				Tx:          tx,
+				Tx:          tx.Copy(),
 				BlockHash:   blockHash,
 				BlockHeight: height,
 				TxIndex:     uint32(txIndex),
@@ -686,7 +703,7 @@ func (b *BtcdNotifier) handleBlockConnected(epoch chainntnfs.BlockEpoch) error {
 	// clients.
 	rawBlock, err := b.GetBlock(epoch.Hash)
 	if err != nil {
-		return fmt.Errorf("unable to get block: %v", err)
+		return fmt.Errorf("unable to get block: %w", err)
 	}
 	newBlock := &filteredBlock{
 		hash:    *epoch.Hash,
@@ -700,7 +717,7 @@ func (b *BtcdNotifier) handleBlockConnected(epoch chainntnfs.BlockEpoch) error {
 	// us.
 	err = b.txNotifier.ConnectTip(newBlock.block, newBlock.height)
 	if err != nil {
-		return fmt.Errorf("unable to connect tip: %v", err)
+		return fmt.Errorf("unable to connect tip: %w", err)
 	}
 
 	chainntnfs.Log.Infof("New block: height=%v, sha=%v", epoch.Height,
@@ -779,7 +796,8 @@ func (b *BtcdNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 			pkScript, b.chainParams,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("unable to parse script: %v", err)
+			return nil, fmt.Errorf("unable to parse script: %w",
+				err)
 		}
 		if err := b.chainConn.NotifyReceived(addrs); err != nil {
 			return nil, err
@@ -817,7 +835,8 @@ func (b *BtcdNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 			pkScript, b.chainParams,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("unable to parse address: %v", err)
+			return nil, fmt.Errorf("unable to parse address: %w",
+				err)
 		}
 
 		asyncResult := b.chainConn.RescanAsync(startHash, addrs, nil)
@@ -878,8 +897,8 @@ func (b *BtcdNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 		// proceed with fallback methods.
 		jsonErr, ok := err.(*btcjson.RPCError)
 		if !ok || jsonErr.Code != btcjson.ErrRPCNoTxInfo {
-			return nil, fmt.Errorf("unable to query for txid %v: %v",
-				outpoint.Hash, err)
+			return nil, fmt.Errorf("unable to query for txid %v: "+
+				"%w", outpoint.Hash, err)
 		}
 	}
 
@@ -1118,4 +1137,27 @@ func (b *BtcdNotifier) CancelMempoolSpendEvent(
 	sub *chainntnfs.MempoolSpendEvent) {
 
 	b.memNotifier.UnsubscribeEvent(sub)
+}
+
+// LookupInputMempoolSpend takes an outpoint and queries the mempool to find
+// its spending tx. Returns the tx if found, otherwise fn.None.
+//
+// NOTE: part of the MempoolWatcher interface.
+func (b *BtcdNotifier) LookupInputMempoolSpend(
+	op wire.OutPoint) fn.Option[wire.MsgTx] {
+
+	// Find the spending txid.
+	txid, found := b.chainConn.LookupInputMempoolSpend(op)
+	if !found {
+		return fn.None[wire.MsgTx]()
+	}
+
+	// Query the spending tx using the id.
+	tx, err := b.chainConn.GetRawTransaction(&txid)
+	if err != nil {
+		// TODO(yy): enable logging errors in this package.
+		return fn.None[wire.MsgTx]()
+	}
+
+	return fn.Some(*tx.MsgTx().Copy())
 }

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntest/rpc"
 	"github.com/lightningnetwork/lnd/lntest/wait"
@@ -96,7 +96,12 @@ type HarnessNode struct {
 func NewHarnessNode(t *testing.T, cfg *BaseNodeConfig) (*HarnessNode, error) {
 	if cfg.BaseDir == "" {
 		var err error
-		cfg.BaseDir, err = ioutil.TempDir("", "lndtest-node")
+
+		// Create a temporary directory for the node's data and logs.
+		// Use dash suffix as a separator between base name and random
+		// suffix.
+		dirBaseName := fmt.Sprintf("lndtest-node-%s-", cfg.Name)
+		cfg.BaseDir, err = os.MkdirTemp("", dirBaseName)
 		if err != nil {
 			return nil, err
 		}
@@ -107,7 +112,7 @@ func NewHarnessNode(t *testing.T, cfg *BaseNodeConfig) (*HarnessNode, error) {
 	cfg.TLSKeyPath = filepath.Join(cfg.BaseDir, "tls.key")
 
 	networkDir := filepath.Join(
-		cfg.DataDir, "chain", "bitcoin", cfg.NetParams.Name,
+		cfg.DataDir, "chain", lnd.BitcoinChainName, cfg.NetParams.Name,
 	)
 	cfg.AdminMacPath = filepath.Join(networkDir, "admin.macaroon")
 	cfg.ReadMacPath = filepath.Join(networkDir, "readonly.macaroon")
@@ -291,16 +296,16 @@ func (hn *HarnessNode) ReadMacaroon(macPath string, timeout time.Duration) (
 	// using it.
 	var mac *macaroon.Macaroon
 	err := wait.NoError(func() error {
-		macBytes, err := ioutil.ReadFile(macPath)
+		macBytes, err := os.ReadFile(macPath)
 		if err != nil {
-			return fmt.Errorf("error reading macaroon file: %v",
+			return fmt.Errorf("error reading macaroon file: %w",
 				err)
 		}
 
 		newMac := &macaroon.Macaroon{}
 		if err = newMac.UnmarshalBinary(macBytes); err != nil {
 			return fmt.Errorf("error unmarshalling macaroon "+
-				"file: %v", err)
+				"file: %w", err)
 		}
 		mac = newMac
 
@@ -326,7 +331,7 @@ func (hn *HarnessNode) ConnectRPCWithMacaroon(mac *macaroon.Macaroon) (
 		return err
 	}, wait.DefaultTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("error reading TLS cert: %v", err)
+		return nil, fmt.Errorf("error reading TLS cert: %w", err)
 	}
 
 	opts := []grpc.DialOption{
@@ -342,7 +347,7 @@ func (hn *HarnessNode) ConnectRPCWithMacaroon(mac *macaroon.Macaroon) (
 	}
 	macCred, err := macaroons.NewMacaroonCredential(mac)
 	if err != nil {
-		return nil, fmt.Errorf("error cloning mac: %v", err)
+		return nil, fmt.Errorf("error cloning mac: %w", err)
 	}
 	opts = append(opts, grpc.WithPerRPCCredentials(macCred))
 
@@ -451,7 +456,7 @@ func (hn *HarnessNode) Start(ctxt context.Context) error {
 
 	// Wait till the server is starting.
 	if err := hn.WaitUntilStarted(); err != nil {
-		return fmt.Errorf("waiting for start got: %v", err)
+		return fmt.Errorf("waiting for start got: %w", err)
 	}
 
 	// Subscribe for topology updates.
@@ -543,7 +548,7 @@ func (hn *HarnessNode) waitTillServerState(
 		case <-time.After(wait.NodeStartTimeout):
 			return fmt.Errorf("timeout waiting for server state")
 		case err := <-errChan:
-			return fmt.Errorf("receive server state err: %v", err)
+			return fmt.Errorf("receive server state err: %w", err)
 
 		case <-done:
 			return nil
@@ -618,7 +623,7 @@ func (hn *HarnessNode) cleanup() error {
 	if hn.Cfg.backupDBDir != "" {
 		err := os.RemoveAll(hn.Cfg.backupDBDir)
 		if err != nil {
-			return fmt.Errorf("unable to remove backup dir: %v",
+			return fmt.Errorf("unable to remove backup dir: %w",
 				err)
 		}
 	}
@@ -628,7 +633,7 @@ func (hn *HarnessNode) cleanup() error {
 
 // waitForProcessExit Launch a new goroutine which that bubbles up any
 // potential fatal process errors to the goroutine running the tests.
-func (hn *HarnessNode) waitForProcessExit() error {
+func (hn *HarnessNode) WaitForProcessExit() error {
 	var err error
 
 	errChan := make(chan error, 1)
@@ -751,7 +756,7 @@ func (hn *HarnessNode) Stop() error {
 	}
 
 	// Wait for lnd process to exit in the end.
-	return hn.waitForProcessExit()
+	return hn.WaitForProcessExit()
 }
 
 // CloseConn closes the grpc connection.
@@ -818,7 +823,7 @@ func (hn *HarnessNode) BackupDB() error {
 		}
 	} else {
 		// Backup files.
-		tempDir, err := ioutil.TempDir("", "past-state")
+		tempDir, err := os.MkdirTemp("", "past-state")
 		if err != nil {
 			return fmt.Errorf("unable to create temp db folder: %w",
 				err)
@@ -875,6 +880,19 @@ func (hn *HarnessNode) RestoreDB() error {
 	return nil
 }
 
+// UpdateGlobalPolicy updates a node's global channel policy.
+func (hn *HarnessNode) UpdateGlobalPolicy(policy *lnrpc.RoutingPolicy) {
+	updateFeeReq := &lnrpc.PolicyUpdateRequest{
+		BaseFeeMsat: policy.FeeBaseMsat,
+		FeeRate: float64(policy.FeeRateMilliMsat) /
+			float64(1_000_000),
+		TimeLockDelta: policy.TimeLockDelta,
+		Scope:         &lnrpc.PolicyUpdateRequest_Global{Global: true},
+		MaxHtlcMsat:   policy.MaxHtlcMsat,
+	}
+	hn.RPC.UpdateChannelPolicy(updateFeeReq)
+}
+
 func postgresDatabaseDsn(dbName string) string {
 	return fmt.Sprintf(postgresDsn, dbName)
 }
@@ -905,7 +923,7 @@ func executePgQuery(query string) error {
 		postgresDatabaseDsn("postgres"),
 	)
 	if err != nil {
-		return fmt.Errorf("unable to connect to database: %v", err)
+		return fmt.Errorf("unable to connect to database: %w", err)
 	}
 	defer pool.Close()
 
@@ -1013,7 +1031,7 @@ func addLogFile(hn *HarnessNode) error {
 // copyAll copies all files and directories from srcDir to dstDir recursively.
 // Note that this function does not support links.
 func copyAll(dstDir, srcDir string) error {
-	entries, err := ioutil.ReadDir(srcDir)
+	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return err
 	}

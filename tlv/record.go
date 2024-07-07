@@ -17,6 +17,10 @@ type Type uint64
 // slice containing the encoded data.
 type TypeMap map[Type][]byte
 
+// Blob is a type alias for a byte slice. It's used to indicate that a slice of
+// bytes is actually an encoded TLV stream.
+type Blob = []byte
+
 // Encoder is a signature for methods that can encode TLV values. An error
 // should be returned if the Encoder cannot support the underlying type of val.
 // The provided scratch buffer must be non-nil.
@@ -63,6 +67,15 @@ type Record struct {
 	decoder    Decoder
 }
 
+// Record (the function) is the trivial implementation of RecordProducer for
+// Record (the type). This makes it seamless to mix primitive and dynamic
+// records together in the same collections.
+//
+// NOTE: Part of the RecordProducer interface.
+func (f *Record) Record() Record {
+	return *f
+}
+
 // Size returns the size of the Record's value. If no static size is known, the
 // dynamic size will be evaluated.
 func (f *Record) Size() uint64 {
@@ -104,6 +117,11 @@ func MakePrimitiveRecord(typ Type, val interface{}) Record {
 		decoder    Decoder
 	)
 	switch e := val.(type) {
+	case *bool:
+		staticSize = 1
+		encoder = EBool
+		decoder = DBool
+
 	case *uint8:
 		staticSize = 1
 		encoder = EUint8

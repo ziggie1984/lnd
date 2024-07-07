@@ -72,7 +72,7 @@ func (c *batchChannel) processPendingUpdate(u *lnrpc.OpenStatusUpdate) error {
 
 	hash, err := chainhash.NewHash(pendingUpd.Txid)
 	if err != nil {
-		return fmt.Errorf("could not parse outpoint TX hash: %v", err)
+		return fmt.Errorf("could not parse outpoint TX hash: %w", err)
 	}
 
 	c.chanPoint = &wire.OutPoint{
@@ -226,7 +226,7 @@ func (b *Batcher) BatchFund(ctx context.Context,
 					"chan ID")
 			}
 		} else if _, err := rand.Read(pendingChanID[:]); err != nil {
-			return nil, fmt.Errorf("error making temp chan ID: %v",
+			return nil, fmt.Errorf("error making temp chan ID: %w",
 				err)
 		}
 
@@ -265,7 +265,7 @@ func (b *Batcher) BatchFund(ctx context.Context,
 			},
 		})
 		if err != nil {
-			return nil, fmt.Errorf("error parsing channel %d: %v",
+			return nil, fmt.Errorf("error parsing channel %d: %w",
 				idx, err)
 		}
 
@@ -331,18 +331,19 @@ func (b *Batcher) BatchFund(ctx context.Context,
 	// settings from the first request as all of them should be equal
 	// anyway.
 	firstReq := b.channels[0].fundingReq
-	feeRateSatPerKVByte := firstReq.FundingFeePerKw.FeePerKVByte()
+	feeRateSatPerVByte := firstReq.FundingFeePerKw.FeePerVByte()
 	changeType := walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
 	fundPsbtReq := &walletrpc.FundPsbtRequest{
 		Template: &walletrpc.FundPsbtRequest_Raw{
 			Raw: txTemplate,
 		},
 		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
-			SatPerVbyte: uint64(feeRateSatPerKVByte) / 1000,
+			SatPerVbyte: uint64(feeRateSatPerVByte),
 		},
-		MinConfs:         firstReq.MinConfs,
-		SpendUnconfirmed: firstReq.MinConfs == 0,
-		ChangeType:       changeType,
+		MinConfs:              firstReq.MinConfs,
+		SpendUnconfirmed:      firstReq.MinConfs == 0,
+		ChangeType:            changeType,
+		CoinSelectionStrategy: req.CoinSelectionStrategy,
 	}
 	fundPsbtResp, err := b.cfg.WalletKitServer.FundPsbt(ctx, fundPsbtReq)
 	if err != nil {
@@ -373,7 +374,7 @@ func (b *Batcher) BatchFund(ctx context.Context,
 			channel.pendingChanID, unsignedPacket, false,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("error verifying PSBT: %v", err)
+			return nil, fmt.Errorf("error verifying PSBT: %w", err)
 		}
 	}
 
@@ -391,7 +392,7 @@ func (b *Batcher) BatchFund(ctx context.Context,
 	finalTx := &wire.MsgTx{}
 	txReader := bytes.NewReader(finalizePsbtResp.RawFinalTx)
 	if err := finalTx.Deserialize(txReader); err != nil {
-		return nil, fmt.Errorf("error parsing signed raw TX: %v", err)
+		return nil, fmt.Errorf("error parsing signed raw TX: %w", err)
 	}
 	log.Tracef("[batchopenchannel] signed PSBT: %s",
 		base64.StdEncoding.EncodeToString(finalizePsbtResp.SignedPsbt))
@@ -403,7 +404,7 @@ func (b *Batcher) BatchFund(ctx context.Context,
 			channel.pendingChanID, nil, finalTx,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("error finalizing PSBT: %v", err)
+			return nil, fmt.Errorf("error finalizing PSBT: %w", err)
 		}
 	}
 

@@ -29,11 +29,16 @@ type CoopFeeEstimator interface {
 // closing process.
 type Channel interface { //nolint:interfacebloat
 	// ChannelPoint returns the channel point of the target channel.
-	ChannelPoint() *wire.OutPoint
+	ChannelPoint() wire.OutPoint
 
 	// MarkCoopBroadcasted persistently marks that the channel close
 	// transaction has been broadcast.
 	MarkCoopBroadcasted(*wire.MsgTx, bool) error
+
+	// MarkShutdownSent persists the given ShutdownInfo. The existence of
+	// the ShutdownInfo represents the fact that the Shutdown message has
+	// been sent by us and so should be re-sent on re-establish.
+	MarkShutdownSent(info *channeldb.ShutdownInfo) error
 
 	// IsInitiator returns true we are the initiator of the channel.
 	IsInitiator() bool

@@ -7,7 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -121,11 +121,11 @@ func (r *RPCKeyRing) NewAddress(addrType lnwallet.AddressType, change bool,
 //
 // NOTE: This method only signs with BIP49/84 keys.
 func (r *RPCKeyRing) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, minConfs int32,
-	label string) (*wire.MsgTx, error) {
+	feeRate chainfee.SatPerKWeight, minConfs int32, label string,
+	strategy basewallet.CoinSelectionStrategy) (*wire.MsgTx, error) {
 
 	tx, err := r.WalletController.SendOutputs(
-		outputs, feeRate, minConfs, label,
+		outputs, feeRate, minConfs, label, strategy,
 	)
 	if err != nil && err != basewallet.ErrTxUnsigned {
 		return nil, err
@@ -156,7 +156,7 @@ func (r *RPCKeyRing) SendOutputs(outputs []*wire.TxOut,
 			&txIn.PreviousOutPoint,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("error looking up utxo: %v", err)
+			return nil, fmt.Errorf("error looking up utxo: %w", err)
 		}
 
 		if txscript.IsPayToTaproot(info.PkScript) {
@@ -201,7 +201,7 @@ func (r *RPCKeyRing) SignPsbt(packet *psbt.Packet) ([]uint32, error) {
 
 	var buf bytes.Buffer
 	if err := packet.Serialize(&buf); err != nil {
-		return nil, fmt.Errorf("error serializing PSBT: %v", err)
+		return nil, fmt.Errorf("error serializing PSBT: %w", err)
 	}
 
 	resp, err := r.walletClient.SignPsbt(ctxt, &walletrpc.SignPsbtRequest{
@@ -217,7 +217,7 @@ func (r *RPCKeyRing) SignPsbt(packet *psbt.Packet) ([]uint32, error) {
 		bytes.NewReader(resp.SignedPsbt), false,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing signed PSBT: %v", err)
+		return nil, fmt.Errorf("error parsing signed PSBT: %w", err)
 	}
 
 	// The caller expects the packet to be modified instead of a new
@@ -349,7 +349,7 @@ func (r *RPCKeyRing) FinalizePsbt(packet *psbt.Packet, _ string) error {
 		var witnessBytes bytes.Buffer
 		err = psbt.WriteTxWitness(&witnessBytes, script.Witness)
 		if err != nil {
-			return fmt.Errorf("error serializing witness: %v", err)
+			return fmt.Errorf("error serializing witness: %w", err)
 		}
 		packet.Inputs[idx].FinalScriptWitness = witnessBytes.Bytes()
 		packet.Inputs[idx].FinalScriptSig = script.SigScript
@@ -359,7 +359,7 @@ func (r *RPCKeyRing) FinalizePsbt(packet *psbt.Packet, _ string) error {
 	// broadcast.
 	err = psbt.MaybeFinalizeAll(packet)
 	if err != nil {
-		return fmt.Errorf("error finalizing PSBT: %v", err)
+		return fmt.Errorf("error finalizing PSBT: %w", err)
 	}
 
 	return nil
@@ -513,8 +513,8 @@ func (r *RPCKeyRing) SignMessageCompact(keyLoc keychain.KeyLocator,
 //
 // NOTE: This method is part of the keychain.MessageSignerRing interface.
 func (r *RPCKeyRing) SignMessageSchnorr(keyLoc keychain.KeyLocator,
-	msg []byte, doubleHash bool, taprootTweak []byte) (*schnorr.Signature,
-	error) {
+	msg []byte, doubleHash bool, taprootTweak []byte,
+	tag []byte) (*schnorr.Signature, error) {
 
 	ctxt, cancel := context.WithTimeout(context.Background(), r.rpcTimeout)
 	defer cancel()
@@ -528,16 +528,17 @@ func (r *RPCKeyRing) SignMessageSchnorr(keyLoc keychain.KeyLocator,
 		DoubleHash:         doubleHash,
 		SchnorrSig:         true,
 		SchnorrSigTapTweak: taprootTweak,
+		Tag:                tag,
 	})
 	if err != nil {
 		considerShutdown(err)
 		return nil, fmt.Errorf("error signing message in remote "+
-			"signer instance: %v", err)
+			"signer instance: %w", err)
 	}
 
 	sigParsed, err := schnorr.ParseSignature(resp.Signature)
 	if err != nil {
-		return nil, fmt.Errorf("can't parse schnorr signature: %v",
+		return nil, fmt.Errorf("can't parse schnorr signature: %w",
 			err)
 	}
 	return sigParsed, nil
@@ -633,7 +634,7 @@ func (r *RPCKeyRing) ComputeInputScript(tx *wire.MsgTx,
 	// input.
 	sig, err := r.remoteSign(tx, signDesc, witnessProgram)
 	if err != nil {
-		return nil, fmt.Errorf("error signing with remote instance: %v",
+		return nil, fmt.Errorf("error signing with remote instance: %w",
 			err)
 	}
 
@@ -731,7 +732,7 @@ func (r *RPCKeyRing) MuSig2CreateSession(bipVersion input.MuSig2Version,
 
 	info.CombinedKey, err = schnorr.ParsePubKey(resp.CombinedKey)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing combined key: %v", err)
+		return nil, fmt.Errorf("error parsing combined key: %w", err)
 	}
 
 	if tweaks.HasTaprootTweak() {
@@ -739,7 +740,7 @@ func (r *RPCKeyRing) MuSig2CreateSession(bipVersion input.MuSig2Version,
 			resp.TaprootInternalKey,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing internal key: %v",
+			return nil, fmt.Errorf("error parsing internal key: %w",
 				err)
 		}
 	}
@@ -890,7 +891,7 @@ func (r *RPCKeyRing) remoteSign(tx *wire.MsgTx, signDesc *input.SignDescriptor,
 
 	packet, err := packetFromTx(tx)
 	if err != nil {
-		return nil, fmt.Errorf("error converting TX into PSBT: %v", err)
+		return nil, fmt.Errorf("error converting TX into PSBT: %w", err)
 	}
 
 	// We need to add witness information for all inputs! Otherwise, we'll
@@ -1156,7 +1157,7 @@ func (r *RPCKeyRing) remoteSign(tx *wire.MsgTx, signDesc *input.SignDescriptor,
 
 	var buf bytes.Buffer
 	if err := packet.Serialize(&buf); err != nil {
-		return nil, fmt.Errorf("error serializing PSBT: %v", err)
+		return nil, fmt.Errorf("error serializing PSBT: %w", err)
 	}
 
 	resp, err := r.walletClient.SignPsbt(
@@ -1172,7 +1173,7 @@ func (r *RPCKeyRing) remoteSign(tx *wire.MsgTx, signDesc *input.SignDescriptor,
 		bytes.NewReader(resp.SignedPsbt), false,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing signed PSBT: %v", err)
+		return nil, fmt.Errorf("error parsing signed PSBT: %w", err)
 	}
 
 	// We expect a signature in the input now.
@@ -1258,9 +1259,9 @@ func extractSignature(in *psbt.PInput,
 func connectRPC(hostPort, tlsCertPath, macaroonPath string,
 	timeout time.Duration) (*grpc.ClientConn, error) {
 
-	certBytes, err := ioutil.ReadFile(tlsCertPath)
+	certBytes, err := os.ReadFile(tlsCertPath)
 	if err != nil {
-		return nil, fmt.Errorf("error reading TLS cert file %v: %v",
+		return nil, fmt.Errorf("error reading TLS cert file %v: %w",
 			tlsCertPath, err)
 	}
 
@@ -1270,19 +1271,19 @@ func connectRPC(hostPort, tlsCertPath, macaroonPath string,
 			"certificate")
 	}
 
-	macBytes, err := ioutil.ReadFile(macaroonPath)
+	macBytes, err := os.ReadFile(macaroonPath)
 	if err != nil {
-		return nil, fmt.Errorf("error reading macaroon file %v: %v",
+		return nil, fmt.Errorf("error reading macaroon file %v: %w",
 			macaroonPath, err)
 	}
 	mac := &macaroon.Macaroon{}
 	if err := mac.UnmarshalBinary(macBytes); err != nil {
-		return nil, fmt.Errorf("error decoding macaroon: %v", err)
+		return nil, fmt.Errorf("error decoding macaroon: %w", err)
 	}
 
 	macCred, err := macaroons.NewMacaroonCredential(mac)
 	if err != nil {
-		return nil, fmt.Errorf("error creating creds: %v", err)
+		return nil, fmt.Errorf("error creating creds: %w", err)
 	}
 
 	opts := []grpc.DialOption{
@@ -1296,7 +1297,7 @@ func connectRPC(hostPort, tlsCertPath, macaroonPath string,
 	defer cancel()
 	conn, err := grpc.DialContext(ctxt, hostPort, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("unable to connect to RPC server: %v",
+		return nil, fmt.Errorf("unable to connect to RPC server: %w",
 			err)
 	}
 

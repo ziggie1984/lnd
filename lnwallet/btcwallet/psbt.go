@@ -3,17 +3,21 @@ package btcwallet
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wallet"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -30,6 +34,22 @@ var (
 	// the key before signing the input. The value d0 is leet speak for
 	// "do", short for "double".
 	PsbtKeyTypeInputSignatureTweakDouble = []byte{0xd0}
+
+	// ErrInputMissingUTXOInfo is returned if a PSBT input is supplied that
+	// does not specify the witness UTXO info.
+	ErrInputMissingUTXOInfo = errors.New(
+		"input doesn't specify any UTXO info",
+	)
+
+	// ErrScriptSpendFeeEstimationUnsupported is returned if a PSBT input is
+	// of a script spend type.
+	ErrScriptSpendFeeEstimationUnsupported = errors.New(
+		"cannot estimate fee for script spend inputs",
+	)
+
+	// ErrUnsupportedScript is returned if a supplied pk script is not
+	// known or supported.
+	ErrUnsupportedScript = errors.New("unsupported or unknown pk script")
 )
 
 // FundPsbt creates a fully populated PSBT packet that contains enough inputs to
@@ -41,6 +61,9 @@ var (
 // imported public keys. For custom account, no key scope should be provided
 // as the coin selection key scope will always be used to generate the change
 // address.
+// The function argument `allowUtxo` specifies a filter function for utxos
+// during coin selection. It should return true for utxos that can be used and
+// false for those that should be excluded.
 //
 // NOTE: If the packet doesn't contain any inputs, coin selection is performed
 // automatically. The account parameter must be non-empty as it determines which
@@ -54,7 +77,9 @@ var (
 // This is a part of the WalletController interface.
 func (b *BtcWallet) FundPsbt(packet *psbt.Packet, minConfs int32,
 	feeRate chainfee.SatPerKWeight, accountName string,
-	changeScope *waddrmgr.KeyScope) (int32, error) {
+	changeScope *waddrmgr.KeyScope,
+	strategy wallet.CoinSelectionStrategy,
+	allowUtxo func(wtxmgr.Credit) bool) (int32, error) {
 
 	// The fee rate is passed in using units of sat/kw, so we'll convert
 	// this to sat/KB as the CreateSimpleTx method requires this unit.
@@ -67,7 +92,7 @@ func (b *BtcWallet) FundPsbt(packet *psbt.Packet, minConfs int32,
 
 	switch accountName {
 	// For default accounts and single imported public keys, we'll provide a
-	// nil key scope to FundPsbt, allowing it to select nputs from all
+	// nil key scope to FundPsbt, allowing it to select inputs from all
 	// scopes (NP2WKH, P2WKH, P2TR). By default, the change key scope for
 	// these accounts will be P2WKH.
 	case lnwallet.DefaultAccountName:
@@ -110,12 +135,15 @@ func (b *BtcWallet) FundPsbt(packet *psbt.Packet, minConfs int32,
 	if changeScope != nil {
 		opts = append(opts, wallet.WithCustomChangeScope(changeScope))
 	}
+	if allowUtxo != nil {
+		opts = append(opts, wallet.WithUtxoFilter(allowUtxo))
+	}
 
 	// Let the wallet handle coin selection and/or fee estimation based on
 	// the partial TX information in the packet.
 	return b.wallet.FundPsbt(
 		packet, keyScope, minConfs, accountNum, feeSatPerKB,
-		b.cfg.CoinSelectionStrategy, opts...,
+		strategy, opts...,
 	)
 }
 
@@ -352,6 +380,62 @@ func validateSigningMethod(in *psbt.PInput) (input.SignMethod, error) {
 	}
 }
 
+// EstimateInputWeight estimates the weight of a PSBT input and adds it to the
+// passed in TxWeightEstimator. It returns an error if the input type is
+// unknown or unsupported. Only inputs that have a known witness size are
+// supported, which is P2WKH, NP2WKH and P2TR (key spend path).
+func EstimateInputWeight(in *psbt.PInput, w *input.TxWeightEstimator) error {
+	if in.WitnessUtxo == nil {
+		return ErrInputMissingUTXOInfo
+	}
+
+	pkScript := in.WitnessUtxo.PkScript
+	switch {
+	case txscript.IsPayToScriptHash(pkScript):
+		w.AddNestedP2WKHInput()
+
+	case txscript.IsPayToWitnessPubKeyHash(pkScript):
+		w.AddP2WKHInput()
+
+	case txscript.IsPayToWitnessScriptHash(pkScript):
+		return fmt.Errorf("P2WSH inputs are not supported, cannot "+
+			"estimate witness size for script spend: %w",
+			ErrScriptSpendFeeEstimationUnsupported)
+
+	case txscript.IsPayToTaproot(pkScript):
+		signMethod, err := validateSigningMethod(in)
+		if err != nil {
+			return fmt.Errorf("error determining p2tr signing "+
+				"method: %w", err)
+		}
+
+		switch signMethod {
+		// For p2tr key spend paths.
+		case input.TaprootKeySpendBIP0086SignMethod,
+			input.TaprootKeySpendSignMethod:
+
+			w.AddTaprootKeySpendInput(in.SighashType)
+
+		// For p2tr script spend path.
+		case input.TaprootScriptSpendSignMethod:
+			return fmt.Errorf("P2TR inputs are not supported, "+
+				"cannot estimate witness size for script "+
+				"spend: %w",
+				ErrScriptSpendFeeEstimationUnsupported)
+
+		default:
+			return fmt.Errorf("unsupported signing method for "+
+				"PSBT signing: %v", signMethod)
+		}
+
+	default:
+		return fmt.Errorf("unknown input type for script %x: %w",
+			pkScript, ErrUnsupportedScript)
+	}
+
+	return nil
+}
+
 // SignSegWitV0 attempts to generate a signature for a SegWit version 0 input
 // and stores it in the PartialSigs (and FinalScriptSig for np2wkh addresses)
 // field.
@@ -374,7 +458,7 @@ func signSegWitV0(in *psbt.PInput, tx *wire.MsgTx,
 		in.SighashType, privKey,
 	)
 	if err != nil {
-		return fmt.Errorf("error signing input %d: %v", idx, err)
+		return fmt.Errorf("error signing input %d: %w", idx, err)
 	}
 	in.PartialSigs = append(in.PartialSigs, &psbt.PartialSig{
 		PubKey:    pubKeyBytes,
@@ -396,7 +480,7 @@ func signSegWitV1KeySpend(in *psbt.PInput, tx *wire.MsgTx,
 		privKey,
 	)
 	if err != nil {
-		return fmt.Errorf("error signing taproot input %d: %v", idx,
+		return fmt.Errorf("error signing taproot input %d: %w", idx,
 			err)
 	}
 
@@ -416,7 +500,7 @@ func signSegWitV1ScriptSpend(in *psbt.PInput, tx *wire.MsgTx,
 		in.WitnessUtxo.PkScript, leaf, in.SighashType, privKey,
 	)
 	if err != nil {
-		return fmt.Errorf("error signing taproot script input %d: %v",
+		return fmt.Errorf("error signing taproot script input %d: %w",
 			idx, err)
 	}
 
@@ -523,6 +607,18 @@ func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet, accountName string) error 
 	return b.wallet.FinalizePsbt(keyScope, accountNum, packet)
 }
 
+// DecorateInputs fetches the UTXO information of all inputs it can identify and
+// adds the required information to the package's inputs. The failOnUnknown
+// boolean controls whether the method should return an error if it cannot
+// identify an input or if it should just skip it.
+//
+// This is a part of the WalletController interface.
+func (b *BtcWallet) DecorateInputs(packet *psbt.Packet,
+	failOnUnknown bool) error {
+
+	return b.wallet.DecorateInputs(packet, failOnUnknown)
+}
+
 // lookupFirstCustomAccount returns the first custom account found. In theory,
 // there should be only one custom account for the given name. However, due to a
 // lack of check, users could have created custom accounts with various key
@@ -554,4 +650,79 @@ func (b *BtcWallet) lookupFirstCustomAccount(
 	}
 
 	return keyScope, account.AccountNumber, nil
+}
+
+// Bip32DerivationFromKeyDesc returns the default and Taproot BIP-0032 key
+// derivation information from the given key descriptor information.
+func Bip32DerivationFromKeyDesc(keyDesc keychain.KeyDescriptor,
+	coinType uint32) (*psbt.Bip32Derivation, *psbt.TaprootBip32Derivation,
+	string) {
+
+	bip32Derivation := &psbt.Bip32Derivation{
+		PubKey: keyDesc.PubKey.SerializeCompressed(),
+		Bip32Path: []uint32{
+			keychain.BIP0043Purpose + hdkeychain.HardenedKeyStart,
+			coinType + hdkeychain.HardenedKeyStart,
+			uint32(keyDesc.Family) +
+				uint32(hdkeychain.HardenedKeyStart),
+			0,
+			keyDesc.Index,
+		},
+	}
+
+	derivationPath := fmt.Sprintf(
+		"m/%d'/%d'/%d'/%d/%d", keychain.BIP0043Purpose, coinType,
+		keyDesc.Family, 0, keyDesc.Index,
+	)
+
+	return bip32Derivation, &psbt.TaprootBip32Derivation{
+		XOnlyPubKey:          bip32Derivation.PubKey[1:],
+		MasterKeyFingerprint: bip32Derivation.MasterKeyFingerprint,
+		Bip32Path:            bip32Derivation.Bip32Path,
+		LeafHashes:           make([][]byte, 0),
+	}, derivationPath
+}
+
+// Bip32DerivationFromAddress returns the default and Taproot BIP-0032 key
+// derivation information from the given managed address.
+func Bip32DerivationFromAddress(
+	addr waddrmgr.ManagedAddress) (*psbt.Bip32Derivation,
+	*psbt.TaprootBip32Derivation, string, error) {
+
+	pubKeyAddr, ok := addr.(waddrmgr.ManagedPubKeyAddress)
+	if !ok {
+		return nil, nil, "", fmt.Errorf("address is not a pubkey " +
+			"address")
+	}
+
+	scope, derivationInfo, haveInfo := pubKeyAddr.DerivationInfo()
+	if !haveInfo {
+		return nil, nil, "", fmt.Errorf("address is an imported " +
+			"public key, can't derive BIP32 path")
+	}
+
+	bip32Derivation := &psbt.Bip32Derivation{
+		PubKey: pubKeyAddr.PubKey().SerializeCompressed(),
+		Bip32Path: []uint32{
+			scope.Purpose + hdkeychain.HardenedKeyStart,
+			scope.Coin + hdkeychain.HardenedKeyStart,
+			derivationInfo.InternalAccount +
+				hdkeychain.HardenedKeyStart,
+			derivationInfo.Branch,
+			derivationInfo.Index,
+		},
+	}
+
+	derivationPath := fmt.Sprintf(
+		"m/%d'/%d'/%d'/%d/%d", scope.Purpose, scope.Coin,
+		derivationInfo.InternalAccount, derivationInfo.Branch,
+		derivationInfo.Index,
+	)
+
+	return bip32Derivation, &psbt.TaprootBip32Derivation{
+		XOnlyPubKey:          bip32Derivation.PubKey[1:],
+		MasterKeyFingerprint: bip32Derivation.MasterKeyFingerprint,
+		Bip32Path:            bip32Derivation.Bip32Path,
+		LeafHashes:           make([][]byte, 0),
+	}, derivationPath, nil
 }

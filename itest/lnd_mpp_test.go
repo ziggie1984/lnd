@@ -248,8 +248,8 @@ type mppOpenChannelRequest struct {
 // openChannels is a helper to open channels that sets up a network topology
 // with three different paths Alice <-> Bob as following,
 //
-//		 _ Eve _
-//		/       \
+//		      _ Eve _
+//		     /       \
 //	 Alice -- Carol ---- Bob
 //		\              /
 //		 \__ Dave ____/
@@ -309,15 +309,6 @@ func (m *mppTestScenario) closeChannels() {
 		return
 	}
 
-	// TODO(yy): remove the sleep once the following bug is fixed. When the
-	// payment is reported as settled by Alice, it's expected the
-	// commitment dance is finished and all subsequent states have been
-	// updated. Yet we'd receive the error `cannot co-op close channel with
-	// active htlcs` or `link failed to shutdown` if we close the channel.
-	// We need to investigate the order of settling the payments and
-	// updating commitments to understand and fix .
-	time.Sleep(5 * time.Second)
-
 	// Close all channels without mining the closing transactions.
 	m.ht.CloseChannelAssertPending(m.alice, m.channelPoints[0], false)
 	m.ht.CloseChannelAssertPending(m.alice, m.channelPoints[1], false)
@@ -355,34 +346,4 @@ func (m *mppTestScenario) buildRoute(amt btcutil.Amount,
 	routeResp := sender.RPC.BuildRoute(req)
 
 	return routeResp.Route
-}
-
-// updatePolicy updates a Dave's global channel policy and returns the expected
-// policy for further check. It changes Dave's `FeeBaseMsat` from 1000 msat to
-// 500,000 msat, and `FeeProportionalMillonths` from 1 msat to 1000 msat.
-func (m *mppTestScenario) updateDaveGlobalPolicy() *lnrpc.RoutingPolicy {
-	const (
-		baseFeeMsat = 500_000
-		feeRate     = 0.001
-		maxHtlcMsat = 133_650_000
-	)
-
-	expectedPolicy := &lnrpc.RoutingPolicy{
-		FeeBaseMsat:      baseFeeMsat,
-		FeeRateMilliMsat: feeRate * testFeeBase,
-		TimeLockDelta:    40,
-		MinHtlc:          1000, // default value
-		MaxHtlcMsat:      maxHtlcMsat,
-	}
-
-	updateFeeReq := &lnrpc.PolicyUpdateRequest{
-		BaseFeeMsat:   baseFeeMsat,
-		FeeRate:       feeRate,
-		TimeLockDelta: 40,
-		Scope:         &lnrpc.PolicyUpdateRequest_Global{Global: true},
-		MaxHtlcMsat:   maxHtlcMsat,
-	}
-	m.dave.RPC.UpdateChannelPolicy(updateFeeReq)
-
-	return expectedPolicy
 }

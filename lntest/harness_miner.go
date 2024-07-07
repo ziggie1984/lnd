@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,7 +120,7 @@ func (h *HarnessMiner) saveLogs() {
 	// After shutting down the miner, we'll make a copy of the log files
 	// before deleting the temporary log dir.
 	path := fmt.Sprintf("%s/%s", h.logPath, harnessNetParams.Name)
-	files, err := ioutil.ReadDir(path)
+	files, err := os.ReadDir(path)
 	require.NoError(h, err, "unable to read log directory")
 
 	for _, file := range files {
@@ -323,10 +322,6 @@ func (h *HarnessMiner) AssertTxNotInMempool(txid chainhash.Hash) *wire.MsgTx {
 		// it as it's an unexpected behavior.
 		mempool := h.GetRawMempool()
 
-		if len(mempool) == 0 {
-			return fmt.Errorf("empty mempool")
-		}
-
 		for _, memTx := range mempool {
 			// Check the values are equal.
 			if txid.IsEqual(memTx) {
@@ -475,6 +470,30 @@ func (h *HarnessMiner) MineBlockWithTxes(txes []*btcutil.Tx) *wire.MsgBlock {
 
 	block, err := h.Client.GetBlock(b.Hash())
 	require.NoError(h, err, "unable to get block")
+
+	// Make sure the mempool has been updated.
+	for _, tx := range txes {
+		h.AssertTxNotInMempool(*tx.Hash())
+	}
+
+	return block
+}
+
+// MineBlocksWithTx mines a single block to include the specifies tx only.
+func (h *HarnessMiner) MineBlockWithTx(tx *wire.MsgTx) *wire.MsgBlock {
+	var emptyTime time.Time
+
+	txes := []*btcutil.Tx{btcutil.NewTx(tx)}
+
+	// Generate a block.
+	b, err := h.GenerateAndSubmitBlock(txes, -1, emptyTime)
+	require.NoError(h, err, "unable to mine block")
+
+	block, err := h.Client.GetBlock(b.Hash())
+	require.NoError(h, err, "unable to get block")
+
+	// Make sure the mempool has been updated.
+	h.AssertTxNotInMempool(tx.TxHash())
 
 	return block
 }

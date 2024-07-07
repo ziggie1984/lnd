@@ -1,8 +1,12 @@
 package chanfunding
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/wallet"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -11,12 +15,12 @@ import (
 type CoinSource interface {
 	// ListCoins returns all UTXOs from the source that have between
 	// minConfs and maxConfs number of confirmations.
-	ListCoins(minConfs, maxConfs int32) ([]Coin, error)
+	ListCoins(minConfs, maxConfs int32) ([]wallet.Coin, error)
 
 	// CoinFromOutPoint attempts to locate details pertaining to a coin
 	// based on its outpoint. If the coin isn't under the control of the
 	// backing CoinSource, then an error should be returned.
-	CoinFromOutPoint(wire.OutPoint) (*Coin, error)
+	CoinFromOutPoint(wire.OutPoint) (*wallet.Coin, error)
 }
 
 // CoinSelectionLocker is an interface that allows the caller to perform an
@@ -33,18 +37,18 @@ type CoinSelectionLocker interface {
 	WithCoinSelectLock(func() error) error
 }
 
-// OutpointLocker allows a caller to lock/unlock an outpoint. When locked, the
-// outpoints shouldn't be used for any sort of channel funding of coin
-// selection. Locked outpoints are not expected to be persisted between
-// restarts.
-type OutpointLocker interface {
-	// LockOutpoint locks a target outpoint, rendering it unusable for coin
+// OutputLeaser allows a caller to lease/release an output. When leased, the
+// outputs shouldn't be used for any sort of channel funding or coin selection.
+// Leased outputs are expected to be persisted between restarts.
+type OutputLeaser interface {
+	// LeaseOutput leases a target output, rendering it unusable for coin
 	// selection.
-	LockOutpoint(o wire.OutPoint)
+	LeaseOutput(i wtxmgr.LockID, o wire.OutPoint, d time.Duration) (
+		time.Time, []byte, btcutil.Amount, error)
 
-	// UnlockOutpoint unlocks a target outpoint, allowing it to be used for
+	// ReleaseOutput releases a target output, allowing it to be used for
 	// coin selection once again.
-	UnlockOutpoint(o wire.OutPoint)
+	ReleaseOutput(i wtxmgr.LockID, o wire.OutPoint) error
 }
 
 // Request is a new request for funding a channel. The items in the struct

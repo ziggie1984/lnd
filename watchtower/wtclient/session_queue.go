@@ -94,7 +94,7 @@ type sessionQueueConfig struct {
 // sessionQueue implements a reliable queue that will encrypt and send accepted
 // backups to the watchtower specified in the config's ClientSession. Calling
 // Stop will attempt to perform a clean shutdown replaying any un-committed
-// pending updates to the TowerClient's main task pipeline.
+// pending updates to the client's main task pipeline.
 type sessionQueue struct {
 	started sync.Once
 	stopped sync.Once
@@ -211,14 +211,13 @@ func (q *sessionQueue) Stop(final bool) error {
 					update.BackupID, err)
 				continue
 			}
+		}
 
-			err = q.cfg.DB.DeleteCommittedUpdate(
-				q.ID(), update.SeqNum,
-			)
+		if final {
+			err = q.cfg.DB.DeleteCommittedUpdates(q.ID())
 			if err != nil {
 				log.Errorf("could not delete committed "+
-					"update %d for session %s",
-					update.SeqNum, q.ID())
+					"updates for session %s", q.ID())
 			}
 		}
 
@@ -528,7 +527,7 @@ func (q *sessionQueue) nextStateUpdate() (*wtwire.StateUpdate, bool,
 		hint, encBlob, err := task.craftSessionPayload(q.cfg.Signer)
 		if err != nil {
 			// TODO(conner): mark will not send
-			err := fmt.Errorf("unable to craft session payload: %v",
+			err := fmt.Errorf("unable to craft session payload: %w",
 				err)
 			return nil, false, wtdb.BackupID{}, err
 		}
@@ -666,7 +665,7 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 	switch {
 	case err == wtdb.ErrUnallocatedLastApplied:
 		// TODO(conner): borked watchtower
-		err = fmt.Errorf("unable to ack seqnum=%d: %v",
+		err = fmt.Errorf("unable to ack seqnum=%d: %w",
 			stateUpdate.SeqNum, err)
 		q.log.Errorf("SessionQueue(%v) failed to ack update: %v",
 			q.ID(), err)
@@ -674,14 +673,14 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 
 	case err == wtdb.ErrLastAppliedReversion:
 		// TODO(conner): borked watchtower
-		err = fmt.Errorf("unable to ack seqnum=%d: %v",
+		err = fmt.Errorf("unable to ack seqnum=%d: %w",
 			stateUpdate.SeqNum, err)
 		q.log.Errorf("SessionQueue(%s) failed to ack update: %v",
 			q.ID(), err)
 		return err
 
 	case err != nil:
-		err = fmt.Errorf("unable to ack seqnum=%d: %v",
+		err = fmt.Errorf("unable to ack seqnum=%d: %w",
 			stateUpdate.SeqNum, err)
 		q.log.Errorf("SessionQueue(%s) failed to ack update: %v",
 			q.ID(), err)
@@ -766,7 +765,7 @@ func (s *sessionQueueSet) AddAndStart(sessionQueue *sessionQueue) {
 
 // StopAndRemove stops the given session queue and removes it from the
 // sessionQueueSet.
-func (s *sessionQueueSet) StopAndRemove(id wtdb.SessionID) error {
+func (s *sessionQueueSet) StopAndRemove(id wtdb.SessionID, final bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -777,7 +776,7 @@ func (s *sessionQueueSet) StopAndRemove(id wtdb.SessionID) error {
 
 	delete(s.queues, id)
 
-	return queue.Stop(true)
+	return queue.Stop(final)
 }
 
 // Get fetches and returns the sessionQueue with the given ID.

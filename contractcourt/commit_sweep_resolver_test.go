@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lntest/mock"
@@ -41,6 +42,12 @@ func newCommitSweepResolverTestContext(t *testing.T,
 		ChainArbitratorConfig: ChainArbitratorConfig{
 			Notifier: notifier,
 			Sweeper:  sweeper,
+			Budget:   *DefaultBudgetConfig(),
+			QueryIncomingCircuit: func(
+				circuit models.CircuitKey) *models.CircuitKey {
+
+				return nil
+			},
 		},
 		PutResolverReport: func(_ kvdb.RwTx,
 			_ *channeldb.ResolverReport) error {
@@ -75,7 +82,7 @@ func (i *commitSweepResolverTestContext) resolve() {
 	// Start resolver.
 	i.resolverResultChan = make(chan resolveResult, 1)
 	go func() {
-		nextResolver, err := i.resolver.Resolve()
+		nextResolver, err := i.resolver.Resolve(false)
 		i.resolverResultChan <- resolveResult{
 			nextResolver: nextResolver,
 			err:          err,
@@ -128,9 +135,9 @@ func (s *mockSweeper) SweepInput(input input.Input, params sweep.Params) (
 	s.sweptInputs <- input
 
 	// Update the deadlines used if it's set.
-	if params.Fee.ConfTarget != 0 {
-		s.deadlines = append(s.deadlines, int(params.Fee.ConfTarget))
-	}
+	params.DeadlineHeight.WhenSome(func(d int32) {
+		s.deadlines = append(s.deadlines, int(d))
+	})
 
 	result := make(chan sweep.Result, 1)
 	result <- sweep.Result{
@@ -140,20 +147,12 @@ func (s *mockSweeper) SweepInput(input input.Input, params sweep.Params) (
 	return result, nil
 }
 
-func (s *mockSweeper) CreateSweepTx(inputs []input.Input, feePref sweep.FeePreference,
-	currentBlockHeight uint32) (*wire.MsgTx, error) {
-
-	// We will wait for the test to supply the sweep tx to return.
-	sweepTx := <-s.createSweepTxChan
-	return sweepTx, nil
-}
-
 func (s *mockSweeper) RelayFeePerKW() chainfee.SatPerKWeight {
 	return 253
 }
 
 func (s *mockSweeper) UpdateParams(input wire.OutPoint,
-	params sweep.ParamsUpdate) (chan sweep.Result, error) {
+	params sweep.Params) (chan sweep.Result, error) {
 
 	s.updatedInputs <- input
 

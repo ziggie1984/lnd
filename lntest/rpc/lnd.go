@@ -70,7 +70,7 @@ func (h *HarnessRPC) DeleteAllPayments() {
 	ctxt, cancel := context.WithTimeout(h.runCtx, DefaultTimeout)
 	defer cancel()
 
-	req := &lnrpc.DeleteAllPaymentsRequest{}
+	req := &lnrpc.DeleteAllPaymentsRequest{AllPayments: true}
 	_, err := h.LN.DeleteAllPayments(ctxt, req)
 	h.NoError(err, "DeleteAllPayments")
 }
@@ -131,7 +131,9 @@ func (h *HarnessRPC) PendingChannels() *lnrpc.PendingChannelsResponse {
 	ctxt, cancel := context.WithTimeout(h.runCtx, DefaultTimeout)
 	defer cancel()
 
-	pendingChansRequest := &lnrpc.PendingChannelsRequest{}
+	pendingChansRequest := &lnrpc.PendingChannelsRequest{
+		IncludeRawTx: true,
+	}
 	resp, err := h.LN.PendingChannels(ctxt, pendingChansRequest)
 
 	// TODO(yy): We may get a `unable to find arbitrator` error from the

@@ -245,7 +245,7 @@ func (nw *nodeWatcher) WaitForChannelPolicyUpdate(
 		case <-timer:
 			expected, err := json.MarshalIndent(policy, "", "\t")
 			if err != nil {
-				return fmt.Errorf("encode policy err: %v", err)
+				return fmt.Errorf("encode policy err: %w", err)
 			}
 			policies, err := syncMapToJSON(
 				&nw.state.policyUpdates.Map,
@@ -274,7 +274,7 @@ func syncMapToJSON(state *sync.Map) ([]byte, error) {
 	})
 	policies, err := json.MarshalIndent(m, "", "\t")
 	if err != nil {
-		return nil, fmt.Errorf("encode polices err: %v", err)
+		return nil, fmt.Errorf("encode polices err: %w", err)
 	}
 
 	return policies, nil
@@ -680,6 +680,18 @@ func CheckChannelPolicy(policy, expectedPolicy *lnrpc.RoutingPolicy) error {
 	if policy.MaxHtlcMsat != expectedPolicy.MaxHtlcMsat {
 		return fmt.Errorf("expected max htlc %v, got %v",
 			expectedPolicy.MaxHtlcMsat, policy.MaxHtlcMsat)
+	}
+	if policy.InboundFeeBaseMsat != expectedPolicy.InboundFeeBaseMsat {
+		return fmt.Errorf("expected inbound base fee %v, got %v",
+			expectedPolicy.InboundFeeBaseMsat,
+			policy.InboundFeeBaseMsat)
+	}
+	if policy.InboundFeeRateMilliMsat !=
+		expectedPolicy.InboundFeeRateMilliMsat {
+
+		return fmt.Errorf("expected inbound fee rate %v, got %v",
+			expectedPolicy.InboundFeeRateMilliMsat,
+			policy.InboundFeeRateMilliMsat)
 	}
 	if policy.Disabled != expectedPolicy.Disabled {
 		return errors.New("edge should be disabled but isn't")

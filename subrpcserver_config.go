@@ -113,8 +113,7 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 	chanStateDB *channeldb.ChannelStateDB,
 	sweeper *sweep.UtxoSweeper,
 	tower *watchtower.Standalone,
-	towerClient wtclient.Client,
-	anchorTowerClient wtclient.Client,
+	towerClientMgr *wtclient.Manager,
 	tcpResolver lncfg.TCPResolver,
 	genInvoiceFeatures func() *lnwire.FeatureVector,
 	genAmpInvoiceFeatures func() *lnwire.FeatureVector,
@@ -198,6 +197,11 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 			subCfgValue.FieldByName("CurrentNumAnchorChans").Set(
 				reflect.ValueOf(cc.Wallet.CurrentNumAnchorChans),
 			)
+			subCfgValue.FieldByName("CoinSelectionStrategy").Set(
+				reflect.ValueOf(
+					cc.Wallet.Cfg.CoinSelectionStrategy,
+				),
+			)
 
 		case *autopilotrpc.Config:
 			subCfgValue := extractReflectValue(subCfg)
@@ -244,9 +248,6 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 				reflect.ValueOf(nodeSigner),
 			)
 			defaultDelta := cfg.Bitcoin.TimeLockDelta
-			if cfg.registeredChains.PrimaryChain() == chainreg.LitecoinChain {
-				defaultDelta = cfg.Litecoin.TimeLockDelta
-			}
 			subCfgValue.FieldByName("DefaultCLTVExpiry").Set(
 				reflect.ValueOf(defaultDelta),
 			)
@@ -290,15 +291,12 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 		case *wtclientrpc.Config:
 			subCfgValue := extractReflectValue(subCfg)
 
-			if towerClient != nil && anchorTowerClient != nil {
+			if towerClientMgr != nil {
 				subCfgValue.FieldByName("Active").Set(
-					reflect.ValueOf(towerClient != nil),
+					reflect.ValueOf(towerClientMgr != nil),
 				)
-				subCfgValue.FieldByName("Client").Set(
-					reflect.ValueOf(towerClient),
-				)
-				subCfgValue.FieldByName("AnchorClient").Set(
-					reflect.ValueOf(anchorTowerClient),
+				subCfgValue.FieldByName("ClientMgr").Set(
+					reflect.ValueOf(towerClientMgr),
 				)
 			}
 			subCfgValue.FieldByName("Resolver").Set(

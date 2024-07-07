@@ -1,27 +1,52 @@
 package sweep
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
 )
 
-const (
-	// defaultNumBlocksEstimate is the number of blocks that we fall back
-	// to issuing an estimate for if a fee pre fence doesn't specify an
-	// explicit conf target or fee rate.
-	defaultNumBlocksEstimate = 6
+var (
+	// ErrNoFeePreference is returned when we attempt to satisfy a sweep
+	// request from a client whom did not specify a fee preference.
+	ErrNoFeePreference = errors.New("no fee preference specified")
+
+	// ErrFeePreferenceConflict is returned when both a fee rate and a conf
+	// target is set for a fee preference.
+	ErrFeePreferenceConflict = errors.New("fee preference conflict")
 )
 
-// FeePreference allows callers to express their time value for inclusion of a
-// transaction into a block via either a confirmation target, or a fee rate.
-type FeePreference struct {
+// FeePreference defines an interface that allows the caller to specify how the
+// fee rate should be handled. Depending on the implementation, the fee rate
+// can either be specified directly, or via a conf target which relies on the
+// chain backend(`bitcoind`) to give a fee estimation, or a customized fee
+// function which handles fee calculation based on the specified
+// urgency(deadline).
+type FeePreference interface {
+	// String returns a human-readable string of the fee preference.
+	String() string
+
+	// Estimate takes a fee estimator and a max allowed fee rate and
+	// returns a fee rate for the given fee preference. It ensures that the
+	// fee rate respects the bounds of the relay fee and the specified max
+	// fee rates.
+	Estimate(chainfee.Estimator,
+		chainfee.SatPerKWeight) (chainfee.SatPerKWeight, error)
+}
+
+// FeeEstimateInfo allows callers to express their time value for inclusion of
+// a transaction into a block via either a confirmation target, or a fee rate.
+type FeeEstimateInfo struct {
 	// ConfTarget if non-zero, signals a fee preference expressed in the
 	// number of desired blocks between first broadcast, and confirmation.
 	ConfTarget uint32
@@ -31,84 +56,91 @@ type FeePreference struct {
 	FeeRate chainfee.SatPerKWeight
 }
 
+// Compile-time constraint to ensure FeeEstimateInfo implements FeePreference.
+var _ FeePreference = (*FeeEstimateInfo)(nil)
+
 // String returns a human-readable string of the fee preference.
-func (p FeePreference) String() string {
-	if p.ConfTarget != 0 {
-		return fmt.Sprintf("%v blocks", p.ConfTarget)
+func (f FeeEstimateInfo) String() string {
+	if f.ConfTarget != 0 {
+		return fmt.Sprintf("%v blocks", f.ConfTarget)
 	}
-	return p.FeeRate.String()
+
+	return f.FeeRate.String()
 }
 
-// DetermineFeePerKw will determine the fee in sat/kw that should be paid given
-// an estimator, a confirmation target, and a manual value for sat/byte. A
-// value is chosen based on the two free parameters as one, or both of them can
-// be zero.
-func DetermineFeePerKw(feeEstimator chainfee.Estimator,
-	feePref FeePreference) (chainfee.SatPerKWeight, error) {
+// Estimate returns a fee rate for the given fee preference. It ensures that
+// the fee rate respects the bounds of the relay fee and the max fee rates, if
+// specified.
+func (f FeeEstimateInfo) Estimate(estimator chainfee.Estimator,
+	maxFeeRate chainfee.SatPerKWeight) (chainfee.SatPerKWeight, error) {
+
+	var (
+		feeRate chainfee.SatPerKWeight
+		err     error
+	)
 
 	switch {
+	// Ensure a type of fee preference is specified to prevent using a
+	// default below.
+	case f.FeeRate == 0 && f.ConfTarget == 0:
+		return 0, ErrNoFeePreference
+
 	// If both values are set, then we'll return an error as we require a
 	// strict directive.
-	case feePref.FeeRate != 0 && feePref.ConfTarget != 0:
-		return 0, fmt.Errorf("only FeeRate or ConfTarget should " +
-			"be set for FeePreferences")
+	case f.FeeRate != 0 && f.ConfTarget != 0:
+		return 0, ErrFeePreferenceConflict
 
 	// If the target number of confirmations is set, then we'll use that to
 	// consult our fee estimator for an adequate fee.
-	case feePref.ConfTarget != 0:
-		feePerKw, err := feeEstimator.EstimateFeePerKW(
-			uint32(feePref.ConfTarget),
-		)
+	case f.ConfTarget != 0:
+		feeRate, err = estimator.EstimateFeePerKW((f.ConfTarget))
 		if err != nil {
 			return 0, fmt.Errorf("unable to query fee "+
-				"estimator: %v", err)
+				"estimator: %w", err)
 		}
 
-		return feePerKw, nil
-
-	// If a manual sat/byte fee rate is set, then we'll use that directly.
+	// If a manual sat/kw fee rate is set, then we'll use that directly.
 	// We'll need to convert it to sat/kw as this is what we use
 	// internally.
-	case feePref.FeeRate != 0:
-		feePerKW := feePref.FeeRate
+	case f.FeeRate != 0:
+		feeRate = f.FeeRate
 
 		// Because the user can specify 1 sat/vByte on the RPC
 		// interface, which corresponds to 250 sat/kw, we need to bump
 		// that to the minimum "safe" fee rate which is 253 sat/kw.
-		if feePerKW == chainfee.AbsoluteFeePerKwFloor {
+		if feeRate == chainfee.AbsoluteFeePerKwFloor {
 			log.Infof("Manual fee rate input of %d sat/kw is "+
-				"too low, using %d sat/kw instead", feePerKW,
+				"too low, using %d sat/kw instead", feeRate,
 				chainfee.FeePerKwFloor)
-			feePerKW = chainfee.FeePerKwFloor
+
+			feeRate = chainfee.FeePerKwFloor
 		}
-
-		// If that bumped fee rate of at least 253 sat/kw is still lower
-		// than the relay fee rate, we return an error to let the user
-		// know. Note that "Relay fee rate" may mean slightly different
-		// things depending on the backend. For bitcoind, it is
-		// effectively max(relay fee, min mempool fee).
-		minFeePerKW := feeEstimator.RelayFeePerKW()
-		if feePerKW < minFeePerKW {
-			return 0, fmt.Errorf("manual fee rate input of %d "+
-				"sat/kw is too low to be accepted into the "+
-				"mempool or relayed to the network", feePerKW)
-		}
-
-		return feePerKW, nil
-
-	// Otherwise, we'll attempt a relaxed confirmation target for the
-	// transaction
-	default:
-		feePerKw, err := feeEstimator.EstimateFeePerKW(
-			defaultNumBlocksEstimate,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("unable to query fee estimator: "+
-				"%v", err)
-		}
-
-		return feePerKw, nil
 	}
+
+	// Get the relay fee as the min fee rate.
+	minFeeRate := estimator.RelayFeePerKW()
+
+	// If that bumped fee rate of at least 253 sat/kw is still lower than
+	// the relay fee rate, we return an error to let the user know. Note
+	// that "Relay fee rate" may mean slightly different things depending
+	// on the backend. For bitcoind, it is effectively max(relay fee, min
+	// mempool fee).
+	if feeRate < minFeeRate {
+		return 0, fmt.Errorf("%w: got %v, minimum is %v",
+			ErrFeePreferenceTooLow, feeRate, minFeeRate)
+	}
+
+	// If a maxFeeRate is specified and the estimated fee rate is above the
+	// maximum allowed fee rate, default to the max fee rate.
+	if maxFeeRate != 0 && feeRate > maxFeeRate {
+		log.Warnf("Estimated fee rate %v exceeds max allowed fee "+
+			"rate %v, using max fee rate instead", feeRate,
+			maxFeeRate)
+
+		return maxFeeRate, nil
+	}
+
+	return feeRate, nil
 }
 
 // UtxoSource is an interface that allows a caller to access a source of UTXOs
@@ -134,17 +166,18 @@ type CoinSelectionLocker interface {
 	WithCoinSelectLock(func() error) error
 }
 
-// OutpointLocker allows a caller to lock/unlock an outpoint. When locked, the
-// outpoints shouldn't be used for any sort of channel funding of coin
-// selection. Locked outpoints are not expected to be persisted between restarts.
-type OutpointLocker interface {
-	// LockOutpoint locks a target outpoint, rendering it unusable for coin
+// OutputLeaser allows a caller to lease/release an output. When leased, the
+// outputs shouldn't be used for any sort of channel funding or coin selection.
+// Leased outputs are expected to be persisted between restarts.
+type OutputLeaser interface {
+	// LeaseOutput leases a target output, rendering it unusable for coin
 	// selection.
-	LockOutpoint(o wire.OutPoint)
+	LeaseOutput(i wtxmgr.LockID, o wire.OutPoint, d time.Duration) (
+		time.Time, []byte, btcutil.Amount, error)
 
-	// UnlockOutpoint unlocks a target outpoint, allowing it to be used for
+	// ReleaseOutput releases a target output, allowing it to be used for
 	// coin selection once again.
-	UnlockOutpoint(o wire.OutPoint)
+	ReleaseOutput(i wtxmgr.LockID, o wire.OutPoint) error
 }
 
 // WalletSweepPackage is a package that gives the caller the ability to sweep
@@ -179,11 +212,11 @@ type DeliveryAddr struct {
 // leftover amount after these outputs and transaction fee, is sent to a single
 // output, as specified by the change address. The sweep transaction will be
 // crafted with the target fee rate, and will use the utxoSource and
-// outpointLocker as sources for wallet funds.
-func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
-	deliveryAddrs []DeliveryAddr, changeAddr btcutil.Address,
-	coinSelectLocker CoinSelectionLocker, utxoSource UtxoSource,
-	outpointLocker OutpointLocker, feeEstimator chainfee.Estimator,
+// outputLeaser as sources for wallet funds.
+func CraftSweepAllTx(feeRate, maxFeeRate chainfee.SatPerKWeight,
+	blockHeight uint32, deliveryAddrs []DeliveryAddr,
+	changeAddr btcutil.Address, coinSelectLocker CoinSelectionLocker,
+	utxoSource UtxoSource, outputLeaser OutputLeaser,
 	signer input.Signer, minConfs int32) (*WalletSweepPackage, error) {
 
 	// TODO(roasbeef): turn off ATPL as well when available?
@@ -196,7 +229,15 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 	// can actually craft a sweeping transaction.
 	unlockOutputs := func() {
 		for _, utxo := range allOutputs {
-			outpointLocker.UnlockOutpoint(utxo.OutPoint)
+			// Log the error but continue since we're already
+			// handling an error.
+			err := outputLeaser.ReleaseOutput(
+				chanfunding.LndInternalLockID, utxo.OutPoint,
+			)
+			if err != nil {
+				log.Warnf("Failed to release UTXO %s (%v))",
+					utxo.OutPoint, err)
+			}
 		}
 	}
 
@@ -219,7 +260,13 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 		// attempt to use these UTXOs in transactions while we're
 		// crafting out sweep all transaction.
 		for _, utxo := range utxos {
-			outpointLocker.LockOutpoint(utxo.OutPoint)
+			_, _, _, err = outputLeaser.LeaseOutput(
+				chanfunding.LndInternalLockID, utxo.OutPoint,
+				chanfunding.DefaultLockDuration,
+			)
+			if err != nil {
+				return err
+			}
 		}
 
 		allOutputs = append(allOutputs, utxos...)
@@ -319,9 +366,9 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 
 	// Finally, we'll ask the sweeper to craft a sweep transaction which
 	// respects our fee preference and targets all the UTXOs of the wallet.
-	sweepTx, err := createSweepTx(
-		inputsToSweep, txOuts, changePkScript, blockHeight, feeRate,
-		signer,
+	sweepTx, _, err := createSweepTx(
+		inputsToSweep, txOuts, changePkScript, blockHeight,
+		feeRate, maxFeeRate, signer,
 	)
 	if err != nil {
 		unlockOutputs()

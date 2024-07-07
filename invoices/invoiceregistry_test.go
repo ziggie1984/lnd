@@ -1,35 +1,203 @@
 package invoices_test
 
 import (
+	"context"
 	"crypto/rand"
+	"database/sql"
+	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"testing/quick"
 	"time"
 
 	"github.com/lightningnetwork/lnd/amp"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
 	invpkg "github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
+	"github.com/lightningnetwork/lnd/sqldb"
 	"github.com/stretchr/testify/require"
 )
 
-// TestSettleInvoice tests settling of an invoice and related notifications.
-func TestSettleInvoice(t *testing.T) {
+// sqliteConstructorMu is used to ensure that only one thread can call the
+// sqldb.NewTestSqliteDB constructor at a time. This is a temporary workaround
+// that can be removed once this race condition in the sqlite repo is resolved:
+// https://gitlab.com/cznic/sqlite/-/issues/180
+var sqliteConstructorMu sync.Mutex
+
+// TestInvoiceRegistry is a master test which encompasses all tests using an
+// InvoiceDB instance. The purpose of this test is to be able to run all tests
+// with a custom DB instance, so that we can test the same logic with different
+// DB implementations.
+func TestInvoiceRegistry(t *testing.T) {
+	testList := []struct {
+		name string
+		test func(t *testing.T,
+			makeDB func(t *testing.T) (
+				invpkg.InvoiceDB, *clock.TestClock))
+	}{
+		{
+			name: "SettleInvoice",
+			test: testSettleInvoice,
+		},
+		{
+			name: "CancelInvoice",
+			test: testCancelInvoice,
+		},
+		{
+			name: "SettleHoldInvoice",
+			test: testSettleHoldInvoice,
+		},
+		{
+			name: "CancelHoldInvoice",
+			test: testCancelHoldInvoice,
+		},
+		{
+			name: "UnknownInvoice",
+			test: testUnknownInvoice,
+		},
+		{
+			name: "KeySend",
+			test: testKeySend,
+		},
+		{
+			name: "HoldKeysend",
+			test: testHoldKeysend,
+		},
+		{
+			name: "MppPayment",
+			test: testMppPayment,
+		},
+		{
+			name: "MppPaymentWithOverpayment",
+			test: testMppPaymentWithOverpayment,
+		},
+		{
+			name: "InvoiceExpiryWithRegistry",
+			test: testInvoiceExpiryWithRegistry,
+		},
+		{
+			name: "OldInvoiceRemovalOnStart",
+			test: testOldInvoiceRemovalOnStart,
+		},
+		{
+			name: "HeightExpiryWithRegistry",
+			test: testHeightExpiryWithRegistry,
+		},
+		{
+			name: "MultipleSetHeightExpiry",
+			test: testMultipleSetHeightExpiry,
+		},
+		{
+			name: "SettleInvoicePaymentAddrRequired",
+			test: testSettleInvoicePaymentAddrRequired,
+		},
+		{
+			name: "SettleInvoicePaymentAddrRequiredOptionalGrace",
+			test: testSettleInvoicePaymentAddrRequiredOptionalGrace,
+		},
+		{
+			name: "AMPWithoutMPPPayload",
+			test: testAMPWithoutMPPPayload,
+		},
+		{
+			name: "SpontaneousAmpPayment",
+			test: testSpontaneousAmpPayment,
+		},
+	}
+
+	makeKeyValueDB := func(t *testing.T) (invpkg.InvoiceDB,
+		*clock.TestClock) {
+
+		testClock := clock.NewTestClock(testNow)
+		db, err := channeldb.MakeTestInvoiceDB(
+			t, channeldb.OptionClock(testClock),
+		)
+		require.NoError(t, err, "unable to make test db")
+
+		return db, testClock
+	}
+
+	// First create a shared Postgres instance so we don't spawn a new
+	// docker container for each test.
+	pgFixture := sqldb.NewTestPgFixture(
+		t, sqldb.DefaultPostgresFixtureLifetime,
+	)
+	t.Cleanup(func() {
+		pgFixture.TearDown(t)
+	})
+
+	makeSQLDB := func(t *testing.T, sqlite bool) (invpkg.InvoiceDB,
+		*clock.TestClock) {
+
+		var db *sqldb.BaseDB
+		if sqlite {
+			sqliteConstructorMu.Lock()
+			db = sqldb.NewTestSqliteDB(t).BaseDB
+			sqliteConstructorMu.Unlock()
+		} else {
+			db = sqldb.NewTestPostgresDB(t, pgFixture).BaseDB
+		}
+
+		executor := sqldb.NewTransactionExecutor(
+			db, func(tx *sql.Tx) invpkg.SQLInvoiceQueries {
+				return db.WithTx(tx)
+			},
+		)
+
+		testClock := clock.NewTestClock(testNow)
+
+		return invpkg.NewSQLStore(executor, testClock), testClock
+	}
+
+	for _, test := range testList {
+		test := test
+
+		t.Run(test.name+"_KV", func(t *testing.T) {
+			test.test(t, makeKeyValueDB)
+		})
+
+		t.Run(test.name+"_SQLite", func(t *testing.T) {
+			test.test(t,
+				func(t *testing.T) (
+					invpkg.InvoiceDB, *clock.TestClock) {
+
+					return makeSQLDB(t, true)
+				})
+		})
+
+		t.Run(test.name+"_Postgres", func(t *testing.T) {
+			test.test(t,
+				func(t *testing.T) (
+					invpkg.InvoiceDB, *clock.TestClock) {
+
+					return makeSQLDB(t, false)
+				})
+		})
+	}
+}
+
+// testSettleInvoice tests settling of an invoice and related notifications.
+func testSettleInvoice(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
-	ctx := newTestContext(t, nil)
+	ctx := newTestContext(t, nil, makeDB)
 
-	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	ctxb := context.Background()
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(ctxb, 0, 0)
 	require.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
 	subscription, err := ctx.registry.SubscribeSingleInvoice(
-		testInvoicePaymentHash,
+		ctxb, testInvoicePaymentHash,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +209,7 @@ func TestSettleInvoice(t *testing.T) {
 	// Add the invoice.
 	testInvoice := newInvoice(t, false)
 	addIdx, err := ctx.registry.AddInvoice(
-		testInvoice, testInvoicePaymentHash,
+		ctxb, testInvoice, testInvoicePaymentHash,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +342,7 @@ func TestSettleInvoice(t *testing.T) {
 
 	// Check that settled amount is equal to the sum of values of the htlcs
 	// 0 and 1.
-	inv, err := ctx.registry.LookupInvoice(testInvoicePaymentHash)
+	inv, err := ctx.registry.LookupInvoice(ctxb, testInvoicePaymentHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +352,7 @@ func TestSettleInvoice(t *testing.T) {
 	}
 
 	// Try to cancel.
-	err = ctx.registry.CancelInvoice(testInvoicePaymentHash)
+	err = ctx.registry.CancelInvoice(ctxb, testInvoicePaymentHash)
 	require.ErrorIs(t, err, invpkg.ErrInvoiceAlreadySettled)
 
 	// As this is a direct settle, we expect nothing on the hodl chan.
@@ -195,7 +363,9 @@ func TestSettleInvoice(t *testing.T) {
 	}
 }
 
-func testCancelInvoice(t *testing.T, gc bool) {
+func testCancelInvoiceImpl(t *testing.T, gc bool,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
 	cfg := defaultRegistryConfig()
@@ -203,33 +373,32 @@ func testCancelInvoice(t *testing.T, gc bool) {
 	// If set to true, then also delete the invoice from the DB after
 	// cancellation.
 	cfg.GcCanceledInvoicesOnTheFly = gc
-	ctx := newTestContext(t, &cfg)
+	ctx := newTestContext(t, &cfg, makeDB)
 
-	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	ctxb := context.Background()
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(ctxb, 0, 0)
 	require.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Try to cancel the not yet existing invoice. This should fail.
-	err = ctx.registry.CancelInvoice(testInvoicePaymentHash)
+	err = ctx.registry.CancelInvoice(ctxb, testInvoicePaymentHash)
 	require.ErrorIs(t, err, invpkg.ErrInvoiceNotFound)
 
 	// Subscribe to the not yet existing invoice.
 	subscription, err := ctx.registry.SubscribeSingleInvoice(
-		testInvoicePaymentHash,
+		ctxb, testInvoicePaymentHash,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer subscription.Cancel()
 
 	require.Equal(t, subscription.PayHash(), &testInvoicePaymentHash)
 
 	// Add the invoice.
 	testInvoice := newInvoice(t, false)
-	_, err = ctx.registry.AddInvoice(testInvoice, testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, err = ctx.registry.AddInvoice(
+		ctxb, testInvoice, testInvoicePaymentHash,
+	)
+	require.NoError(t, err)
 
 	// We expect the open state to be sent to the single invoice subscriber.
 	select {
@@ -258,10 +427,8 @@ func testCancelInvoice(t *testing.T, gc bool) {
 	}
 
 	// Cancel invoice.
-	err = ctx.registry.CancelInvoice(testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal(err)
-	}
+	err = ctx.registry.CancelInvoice(ctxb, testInvoicePaymentHash)
+	require.NoError(t, err)
 
 	// We expect the canceled state to be sent to the single invoice
 	// subscriber.
@@ -280,7 +447,7 @@ func testCancelInvoice(t *testing.T, gc bool) {
 	if gc {
 		// Check that the invoice has been deleted from the db.
 		_, err = ctx.idb.LookupInvoice(
-			invpkg.InvoiceRefByHash(testInvoicePaymentHash),
+			ctxb, invpkg.InvoiceRefByHash(testInvoicePaymentHash),
 		)
 		require.Error(t, err)
 	}
@@ -291,7 +458,7 @@ func testCancelInvoice(t *testing.T, gc bool) {
 	// Try to cancel again. Expect that we report ErrInvoiceNotFound if the
 	// invoice has been garbage collected (since the invoice has been
 	// deleted when it was canceled), and no error otherwise.
-	err = ctx.registry.CancelInvoice(testInvoicePaymentHash)
+	err = ctx.registry.CancelInvoice(ctxb, testInvoicePaymentHash)
 
 	if gc {
 		require.Error(t, err, invpkg.ErrInvoiceNotFound)
@@ -328,36 +495,37 @@ func testCancelInvoice(t *testing.T, gc bool) {
 	require.Equal(t, testCurrentHeight, failResolution.AcceptHeight)
 }
 
-// TestCancelInvoice tests cancellation of an invoice and related notifications.
-func TestCancelInvoice(t *testing.T) {
+// testCancelInvoice tests cancellation of an invoice and related notifications.
+func testCancelInvoice(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
 	// Test cancellation both with garbage collection (meaning that canceled
 	// invoice will be deleted) and without (meaning it'll be kept).
 	t.Run("garbage collect", func(t *testing.T) {
-		testCancelInvoice(t, true)
+		testCancelInvoiceImpl(t, true, makeDB)
 	})
 
 	t.Run("no garbage collect", func(t *testing.T) {
-		testCancelInvoice(t, false)
+		testCancelInvoiceImpl(t, false, makeDB)
 	})
 }
 
-// TestSettleHoldInvoice tests settling of a hold invoice and related
+// testSettleHoldInvoice tests settling of a hold invoice and related
 // notifications.
-func TestSettleHoldInvoice(t *testing.T) {
+func testSettleHoldInvoice(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
-	idb, err := newTestChannelDB(t, clock.NewTestClock(time.Time{}))
-	if err != nil {
-		t.Fatal(err)
-	}
+	idb, clock := makeDB(t)
 
 	// Instantiate and start the invoice ctx.registry.
 	cfg := invpkg.RegistryConfig{
 		FinalCltvRejectDelta: testFinalCltvRejectDelta,
-		Clock:                clock.NewTestClock(testTime),
+		Clock:                clock,
 	}
 
 	expiryWatcher := invpkg.NewInvoiceExpiryWatcher(
@@ -365,33 +533,28 @@ func TestSettleHoldInvoice(t *testing.T) {
 	)
 	registry := invpkg.NewRegistry(idb, expiryWatcher, &cfg)
 
-	err = registry.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
+	err := registry.Start()
+	require.NoError(t, err)
 	defer registry.Stop()
 
-	allSubscriptions, err := registry.SubscribeNotifications(0, 0)
+	ctxb := context.Background()
+	allSubscriptions, err := registry.SubscribeNotifications(ctxb, 0, 0)
 	require.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
 	subscription, err := registry.SubscribeSingleInvoice(
-		testInvoicePaymentHash,
+		ctxb, testInvoicePaymentHash,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer subscription.Cancel()
 
 	require.Equal(t, subscription.PayHash(), &testInvoicePaymentHash)
 
 	// Add the invoice.
 	invoice := newInvoice(t, true)
-	_, err = registry.AddInvoice(invoice, testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, err = registry.AddInvoice(ctxb, invoice, testInvoicePaymentHash)
+	require.NoError(t, err)
 
 	// We expect the open state to be sent to the single invoice subscriber.
 	update := <-subscription.Updates
@@ -475,10 +638,8 @@ func TestSettleHoldInvoice(t *testing.T) {
 	}
 
 	// Settling with preimage should succeed.
-	err = registry.SettleHodlInvoice(testInvoicePreimage)
-	if err != nil {
-		t.Fatal("expected set preimage to succeed")
-	}
+	err = registry.SettleHodlInvoice(ctxb, testInvoicePreimage)
+	require.NoError(t, err, "expected set preimage to succeed")
 
 	htlcResolution, _ := (<-hodlChan).(invpkg.HtlcResolution)
 	require.NotNil(t, htlcResolution)
@@ -507,25 +668,25 @@ func TestSettleHoldInvoice(t *testing.T) {
 	}
 
 	// Idempotency.
-	err = registry.SettleHodlInvoice(testInvoicePreimage)
+	err = registry.SettleHodlInvoice(ctxb, testInvoicePreimage)
 	require.ErrorIs(t, err, invpkg.ErrInvoiceAlreadySettled)
 
 	// Try to cancel.
-	err = registry.CancelInvoice(testInvoicePaymentHash)
-	if err == nil {
-		t.Fatal("expected cancellation of a settled invoice to fail")
-	}
+	err = registry.CancelInvoice(ctxb, testInvoicePaymentHash)
+	require.Error(
+		t, err, "expected cancellation of a settled invoice to fail",
+	)
 }
 
-// TestCancelHoldInvoice tests canceling of a hold invoice and related
+// testCancelHoldInvoice tests canceling of a hold invoice and related
 // notifications.
-func TestCancelHoldInvoice(t *testing.T) {
+func testCancelHoldInvoice(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
-	testClock := clock.NewTestClock(testTime)
-	idb, err := newTestChannelDB(t, testClock)
-	require.NoError(t, err)
+	idb, testClock := makeDB(t)
 
 	// Instantiate and start the invoice ctx.registry.
 	cfg := invpkg.RegistryConfig{
@@ -537,7 +698,7 @@ func TestCancelHoldInvoice(t *testing.T) {
 	)
 	registry := invpkg.NewRegistry(idb, expiryWatcher, &cfg)
 
-	err = registry.Start()
+	err := registry.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,12 +706,12 @@ func TestCancelHoldInvoice(t *testing.T) {
 		require.NoError(t, registry.Stop())
 	})
 
+	ctxb := context.Background()
+
 	// Add the invoice.
 	invoice := newInvoice(t, true)
-	_, err = registry.AddInvoice(invoice, testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, err = registry.AddInvoice(ctxb, invoice, testInvoicePaymentHash)
+	require.NoError(t, err)
 
 	amtPaid := lnwire.MilliSatoshi(100000)
 	hodlChan := make(chan interface{}, 1)
@@ -569,10 +730,8 @@ func TestCancelHoldInvoice(t *testing.T) {
 	}
 
 	// Cancel invoice.
-	err = registry.CancelInvoice(testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal("cancel invoice failed")
-	}
+	err = registry.CancelInvoice(ctxb, testInvoicePaymentHash)
+	require.NoError(t, err, "cancel invoice failed")
 
 	htlcResolution, _ := (<-hodlChan).(invpkg.HtlcResolution)
 	require.NotNil(t, htlcResolution)
@@ -595,14 +754,16 @@ func TestCancelHoldInvoice(t *testing.T) {
 	require.Equal(t, testCurrentHeight, failResolution.AcceptHeight)
 }
 
-// TestUnknownInvoice tests that invoice registry returns an error when the
+// testUnknownInvoice tests that invoice registry returns an error when the
 // invoice is unknown. This is to guard against returning a cancel htlc
 // resolution for forwarded htlcs. In the link, NotifyExitHopHtlc is only called
 // if we are the exit hop, but in htlcIncomingContestResolver it is called with
 // forwarded htlc hashes as well.
-func TestUnknownInvoice(t *testing.T) {
+func testUnknownInvoice(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
-	ctx := newTestContext(t, nil)
+	ctx := newTestContext(t, nil, makeDB)
 
 	// Notify arrival of a new htlc paying to this invoice. This should
 	// succeed.
@@ -619,31 +780,37 @@ func TestUnknownInvoice(t *testing.T) {
 	checkFailResolution(t, resolution, invpkg.ResultInvoiceNotFound)
 }
 
-// TestKeySend tests receiving a spontaneous payment with and without keysend
+// testKeySend tests receiving a spontaneous payment with and without keysend
 // enabled.
-func TestKeySend(t *testing.T) {
+func testKeySend(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
 	t.Run("enabled", func(t *testing.T) {
-		testKeySend(t, true)
+		testKeySendImpl(t, true, makeDB)
 	})
 	t.Run("disabled", func(t *testing.T) {
-		testKeySend(t, false)
+		testKeySendImpl(t, false, makeDB)
 	})
 }
 
-// testKeySend is the inner test function that tests keysend for a particular
-// enabled state on the receiver end.
-func testKeySend(t *testing.T, keySendEnabled bool) {
+// testKeySendImpl is the inner test function that tests keysend for a
+// particular enabled state on the receiver end.
+func testKeySendImpl(t *testing.T, keySendEnabled bool,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
 	cfg := defaultRegistryConfig()
 	cfg.AcceptKeySend = keySendEnabled
-	ctx := newTestContext(t, &cfg)
+	ctx := newTestContext(t, &cfg, makeDB)
 
-	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
-	require.Nil(t, err)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(
+		context.Background(), 0, 0,
+	)
+	require.NoError(t, err)
 	defer allSubscriptions.Cancel()
 
 	hodlChan := make(chan interface{}, 1)
@@ -748,20 +915,24 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 	checkSubscription()
 }
 
-// TestHoldKeysend tests receiving a spontaneous payment that is held.
-func TestHoldKeysend(t *testing.T) {
+// testHoldKeysend tests receiving a spontaneous payment that is held.
+func testHoldKeysend(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
 	t.Run("settle", func(t *testing.T) {
-		testHoldKeysend(t, false)
+		testHoldKeysendImpl(t, false, makeDB)
 	})
 	t.Run("timeout", func(t *testing.T) {
-		testHoldKeysend(t, true)
+		testHoldKeysendImpl(t, true, makeDB)
 	})
 }
 
-// testHoldKeysend is the inner test function that tests hold-keysend.
-func testHoldKeysend(t *testing.T, timeoutKeysend bool) {
+// testHoldKeysendImpl is the inner test function that tests hold-keysend.
+func testHoldKeysendImpl(t *testing.T, timeoutKeysend bool,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
@@ -770,10 +941,11 @@ func testHoldKeysend(t *testing.T, timeoutKeysend bool) {
 	cfg := defaultRegistryConfig()
 	cfg.AcceptKeySend = true
 	cfg.KeysendHoldTime = holdDuration
-	ctx := newTestContext(t, &cfg)
+	ctx := newTestContext(t, &cfg, makeDB)
 
-	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
-	require.Nil(t, err)
+	ctxb := context.Background()
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(ctxb, 0, 0)
+	require.NoError(t, err)
 	defer allSubscriptions.Cancel()
 
 	hodlChan := make(chan interface{}, 1)
@@ -840,8 +1012,8 @@ func testHoldKeysend(t *testing.T, timeoutKeysend bool) {
 	}
 
 	// Settle keysend payment manually.
-	require.Nil(t, ctx.registry.SettleHodlInvoice(
-		*newInvoice.Terms.PaymentPreimage,
+	require.NoError(t, ctx.registry.SettleHodlInvoice(
+		ctxb, *newInvoice.Terms.PaymentPreimage,
 	))
 
 	// We expect a settled notification to be sent out.
@@ -849,21 +1021,24 @@ func testHoldKeysend(t *testing.T, timeoutKeysend bool) {
 	require.Equal(t, settledInvoice.State, invpkg.ContractSettled)
 }
 
-// TestMppPayment tests settling of an invoice with multiple partial payments.
+// testMppPayment tests settling of an invoice with multiple partial payments.
 // It covers the case where there is a mpp timeout before the whole invoice is
 // paid and the case where the invoice is settled in time.
-func TestMppPayment(t *testing.T) {
+func testMppPayment(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
-	ctx := newTestContext(t, nil)
+	ctx := newTestContext(t, nil, makeDB)
+	ctxb := context.Background()
 
 	// Add the invoice.
 	testInvoice := newInvoice(t, false)
-	_, err := ctx.registry.AddInvoice(testInvoice, testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, err := ctx.registry.AddInvoice(
+		ctxb, testInvoice, testInvoicePaymentHash,
+	)
+	require.NoError(t, err)
 
 	mppPayload := &mockPayload{
 		mpp: record.NewMPP(testInvoiceAmount, [32]byte{}),
@@ -933,10 +1108,8 @@ func TestMppPayment(t *testing.T) {
 
 	// Check that settled amount is equal to the sum of values of the htlcs
 	// 2 and 3.
-	inv, err := ctx.registry.LookupInvoice(testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal(err)
-	}
+	inv, err := ctx.registry.LookupInvoice(ctxb, testInvoicePaymentHash)
+	require.NoError(t, err)
 	if inv.State != invpkg.ContractSettled {
 		t.Fatal("expected invoice to be settled")
 	}
@@ -946,23 +1119,24 @@ func TestMppPayment(t *testing.T) {
 	}
 }
 
-// TestMppPaymentWithOverpayment tests settling of an invoice with multiple
+// testMppPaymentWithOverpayment tests settling of an invoice with multiple
 // partial payments. It covers the case where the mpp overpays what is in the
 // invoice.
-func TestMppPaymentWithOverpayment(t *testing.T) {
+func testMppPaymentWithOverpayment(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
+	ctxb := context.Background()
 	f := func(overpaymentRand uint64) bool {
-		ctx := newTestContext(t, nil)
+		ctx := newTestContext(t, nil, makeDB)
 
 		// Add the invoice.
 		testInvoice := newInvoice(t, false)
 		_, err := ctx.registry.AddInvoice(
-			testInvoice, testInvoicePaymentHash,
+			ctxb, testInvoice, testInvoicePaymentHash,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 
 		mppPayload := &mockPayload{
 			mpp: record.NewMPP(testInvoiceAmount, [32]byte{}),
@@ -1009,10 +1183,10 @@ func TestMppPaymentWithOverpayment(t *testing.T) {
 
 		// Check that settled amount is equal to the sum of values of
 		// the htlcs 1 and 2.
-		inv, err := ctx.registry.LookupInvoice(testInvoicePaymentHash)
-		if err != nil {
-			t.Fatal(err)
-		}
+		inv, err := ctx.registry.LookupInvoice(
+			ctxb, testInvoicePaymentHash,
+		)
+		require.NoError(t, err)
 		if inv.State != invpkg.ContractSettled {
 			t.Fatal("expected invoice to be settled")
 		}
@@ -1024,13 +1198,13 @@ func TestMppPaymentWithOverpayment(t *testing.T) {
 	}
 }
 
-// Tests that invoices are canceled after expiration.
-func TestInvoiceExpiryWithRegistry(t *testing.T) {
-	t.Parallel()
+// testInvoiceExpiryWithRegistry tests that invoices are canceled after
+// expiration.
+func testInvoiceExpiryWithRegistry(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
 
-	testClock := clock.NewTestClock(testTime)
-	idb, err := newTestChannelDB(t, testClock)
-	require.NoError(t, err)
+	t.Parallel()
+	idb, testClock := makeDB(t)
 
 	cfg := invpkg.RegistryConfig{
 		FinalCltvRejectDelta: testFinalCltvRejectDelta,
@@ -1050,10 +1224,12 @@ func TestInvoiceExpiryWithRegistry(t *testing.T) {
 		t, testTime, 0, numExpired, numPending,
 	)
 
+	ctxb := context.Background()
+
 	var expectedCancellations []lntypes.Hash
 	expiredInvoices := existingInvoices.expiredInvoices
 	for paymentHash, expiredInvoice := range expiredInvoices {
-		_, err := idb.AddInvoice(expiredInvoice, paymentHash)
+		_, err := idb.AddInvoice(ctxb, expiredInvoice, paymentHash)
 		require.NoError(t, err)
 		expectedCancellations = append(
 			expectedCancellations, paymentHash,
@@ -1062,13 +1238,11 @@ func TestInvoiceExpiryWithRegistry(t *testing.T) {
 
 	pendingInvoices := existingInvoices.pendingInvoices
 	for paymentHash, pendingInvoice := range pendingInvoices {
-		_, err := idb.AddInvoice(pendingInvoice, paymentHash)
+		_, err := idb.AddInvoice(ctxb, pendingInvoice, paymentHash)
 		require.NoError(t, err)
 	}
 
-	if err := registry.Start(); err != nil {
-		t.Fatalf("cannot start registry: %v", err)
-	}
+	require.NoError(t, registry.Start(), "cannot start registry")
 
 	// Now generate pending and invoices and add them to the registry while
 	// it is up and running. We'll manipulate the clock to let them expire.
@@ -1078,28 +1252,22 @@ func TestInvoiceExpiryWithRegistry(t *testing.T) {
 
 	var invoicesThatWillCancel []lntypes.Hash
 	for paymentHash, pendingInvoice := range newInvoices.pendingInvoices {
-		_, err := registry.AddInvoice(pendingInvoice, paymentHash)
+		_, err := registry.AddInvoice(ctxb, pendingInvoice, paymentHash)
+		require.NoError(t, err)
 		invoicesThatWillCancel = append(
 			invoicesThatWillCancel, paymentHash,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
 	}
 
 	// Check that they are really not canceled until before the clock is
 	// advanced.
 	for i := range invoicesThatWillCancel {
 		invoice, err := registry.LookupInvoice(
-			invoicesThatWillCancel[i],
+			ctxb, invoicesThatWillCancel[i],
 		)
-		if err != nil {
-			t.Fatalf("cannot find invoice: %v", err)
-		}
-
-		if invoice.State == invpkg.ContractCanceled {
-			t.Fatalf("expected pending invoice, got canceled")
-		}
+		require.NoError(t, err, "cannot find invoice")
+		require.NotEqual(t, invpkg.ContractCanceled, invoice.State,
+			"expected pending invoice, got canceled")
 	}
 
 	// Fwd time 1 day.
@@ -1112,37 +1280,40 @@ func TestInvoiceExpiryWithRegistry(t *testing.T) {
 
 	// canceled returns a bool to indicate whether all the invoices are
 	// canceled.
-	canceled := func() bool {
+	canceled := func() error {
 		for i := range expectedCancellations {
 			invoice, err := registry.LookupInvoice(
-				expectedCancellations[i],
+				ctxb, expectedCancellations[i],
 			)
-			require.NoError(t, err)
+			if err != nil {
+				return err
+			}
 
 			if invoice.State != invpkg.ContractCanceled {
-				return false
+				return fmt.Errorf("expected state %v, got %v",
+					invpkg.ContractCanceled, invoice.State)
 			}
 		}
 
-		return true
+		return nil
 	}
 
 	// Retrospectively check that all invoices that were expected to be
 	// canceled are indeed canceled.
-	require.Eventually(t, canceled, testTimeout, 10*time.Millisecond)
+	err := wait.NoError(canceled, testTimeout)
+	require.NoError(t, err, "timeout checking invoice state")
 
 	// Finally stop the registry.
 	require.NoError(t, registry.Stop(), "failed to stop invoice registry")
 }
 
-// TestOldInvoiceRemovalOnStart tests that we'll attempt to remove old canceled
+// testOldInvoiceRemovalOnStart tests that we'll attempt to remove old canceled
 // invoices upon start while keeping all settled ones.
-func TestOldInvoiceRemovalOnStart(t *testing.T) {
-	t.Parallel()
+func testOldInvoiceRemovalOnStart(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
 
-	testClock := clock.NewTestClock(testTime)
-	idb, err := newTestChannelDB(t, testClock)
-	require.NoError(t, err)
+	t.Parallel()
+	idb, testClock := makeDB(t)
 
 	cfg := invpkg.RegistryConfig{
 		FinalCltvRejectDelta:        testFinalCltvRejectDelta,
@@ -1162,6 +1333,8 @@ func TestOldInvoiceRemovalOnStart(t *testing.T) {
 		t, testTime, 0, numExpired, numPending,
 	)
 
+	ctxb := context.Background()
+
 	i := 0
 	for paymentHash, invoice := range existingInvoices.expiredInvoices {
 		// Mark half of the invoices as settled, the other half as
@@ -1172,7 +1345,7 @@ func TestOldInvoiceRemovalOnStart(t *testing.T) {
 			invoice.State = invpkg.ContractCanceled
 		}
 
-		_, err := idb.AddInvoice(invoice, paymentHash)
+		_, err := idb.AddInvoice(ctxb, invoice, paymentHash)
 		require.NoError(t, err)
 		i++
 	}
@@ -1186,7 +1359,7 @@ func TestOldInvoiceRemovalOnStart(t *testing.T) {
 		NumMaxInvoices: math.MaxUint64,
 	}
 
-	response, err := idb.QueryInvoices(query)
+	response, err := idb.QueryInvoices(ctxb, query)
 	require.NoError(t, err)
 
 	// Save all settled invoices for our expectation set.
@@ -1202,7 +1375,7 @@ func TestOldInvoiceRemovalOnStart(t *testing.T) {
 	require.NoError(t, err, "cannot start the registry")
 
 	// Perform a scan query to collect all invoices.
-	response, err = idb.QueryInvoices(query)
+	response, err = idb.QueryInvoices(ctxb, query)
 	require.NoError(t, err)
 
 	// Check that we really only kept the settled invoices after the
@@ -1210,35 +1383,39 @@ func TestOldInvoiceRemovalOnStart(t *testing.T) {
 	require.Equal(t, expected, response.Invoices)
 }
 
-// TestHeightExpiryWithRegistry tests our height-based invoice expiry for
+// testHeightExpiryWithRegistry tests our height-based invoice expiry for
 // invoices paid with single and multiple htlcs, testing the case where the
 // invoice is settled before expiry (and thus not canceled), and the case
 // where the invoice is expired.
-func TestHeightExpiryWithRegistry(t *testing.T) {
+func testHeightExpiryWithRegistry(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
 	t.Run("single shot settled before expiry", func(t *testing.T) {
-		testHeightExpiryWithRegistry(t, 1, true)
+		testHeightExpiryWithRegistryImpl(t, 1, true, makeDB)
 	})
 
 	t.Run("single shot expires", func(t *testing.T) {
-		testHeightExpiryWithRegistry(t, 1, false)
+		testHeightExpiryWithRegistryImpl(t, 1, false, makeDB)
 	})
 
 	t.Run("mpp settled before expiry", func(t *testing.T) {
-		testHeightExpiryWithRegistry(t, 2, true)
+		testHeightExpiryWithRegistryImpl(t, 2, true, makeDB)
 	})
 
 	t.Run("mpp expires", func(t *testing.T) {
-		testHeightExpiryWithRegistry(t, 2, false)
+		testHeightExpiryWithRegistryImpl(t, 2, false, makeDB)
 	})
 }
 
-func testHeightExpiryWithRegistry(t *testing.T, numParts int, settle bool) {
+func testHeightExpiryWithRegistryImpl(t *testing.T, numParts int, settle bool,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
-	ctx := newTestContext(t, nil)
+	ctx := newTestContext(t, nil, makeDB)
 
 	require.Greater(t, numParts, 0, "test requires at least one part")
 
@@ -1248,7 +1425,10 @@ func testHeightExpiryWithRegistry(t *testing.T, numParts int, settle bool) {
 	testInvoice.HodlInvoice = true
 	testInvoice.PaymentRequest = []byte{1, 2, 3}
 
-	_, err := ctx.registry.AddInvoice(testInvoice, testInvoicePaymentHash)
+	ctxb := context.Background()
+	_, err := ctx.registry.AddInvoice(
+		ctxb, testInvoice, testInvoicePaymentHash,
+	)
 	require.NoError(t, err)
 
 	payLoad := testPayload
@@ -1275,7 +1455,9 @@ func testHeightExpiryWithRegistry(t *testing.T, numParts int, settle bool) {
 	}
 
 	require.Eventually(t, func() bool {
-		inv, err := ctx.registry.LookupInvoice(testInvoicePaymentHash)
+		inv, err := ctx.registry.LookupInvoice(
+			ctxb, testInvoicePaymentHash,
+		)
 		require.NoError(t, err)
 
 		return inv.State == invpkg.ContractAccepted
@@ -1299,7 +1481,7 @@ func testHeightExpiryWithRegistry(t *testing.T, numParts int, settle bool) {
 
 	// If we want to settle our invoice in this test, we do so now.
 	if settle {
-		err = ctx.registry.SettleHodlInvoice(testInvoicePreimage)
+		err = ctx.registry.SettleHodlInvoice(ctxb, testInvoicePreimage)
 		require.NoError(t, err)
 
 		for i := 0; i < numParts; i++ {
@@ -1333,26 +1515,31 @@ func testHeightExpiryWithRegistry(t *testing.T, numParts int, settle bool) {
 
 	// Finally, lookup the invoice and assert that we have the state we
 	// expect.
-	inv, err := ctx.registry.LookupInvoice(testInvoicePaymentHash)
+	inv, err := ctx.registry.LookupInvoice(ctxb, testInvoicePaymentHash)
 	require.NoError(t, err)
 	require.Equal(t, expectedState, inv.State, "expected "+
 		"hold invoice: %v, got: %v", expectedState, inv.State)
 }
 
-// TestMultipleSetHeightExpiry pays a hold invoice with two mpp sets, testing
+// testMultipleSetHeightExpiry pays a hold invoice with two mpp sets, testing
 // that the invoice expiry watcher only uses the expiry height of the second,
 // successful set to cancel the invoice, and does not cancel early using the
 // expiry height of the first set that was canceled back due to mpp timeout.
-func TestMultipleSetHeightExpiry(t *testing.T) {
+func testMultipleSetHeightExpiry(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
-	ctx := newTestContext(t, nil)
+	ctx := newTestContext(t, nil, makeDB)
 
 	// Add a hold invoice.
 	testInvoice := newInvoice(t, true)
 
-	_, err := ctx.registry.AddInvoice(testInvoice, testInvoicePaymentHash)
+	ctxb := context.Background()
+	_, err := ctx.registry.AddInvoice(
+		ctxb, testInvoice, testInvoicePaymentHash,
+	)
 	require.NoError(t, err)
 
 	mppPayload := &mockPayload{
@@ -1409,7 +1596,7 @@ func TestMultipleSetHeightExpiry(t *testing.T) {
 
 	// Assert that we've reached an accepted state because the invoice has
 	// been paid with a complete set.
-	inv, err := ctx.registry.LookupInvoice(testInvoicePaymentHash)
+	inv, err := ctx.registry.LookupInvoice(ctxb, testInvoicePaymentHash)
 	require.NoError(t, err)
 	require.Equal(t, invpkg.ContractAccepted, inv.State, "expected "+
 		"hold invoice accepted")
@@ -1421,28 +1608,33 @@ func TestMultipleSetHeightExpiry(t *testing.T) {
 	}
 
 	require.Eventuallyf(t, func() bool {
-		inv, err := ctx.registry.LookupInvoice(testInvoicePaymentHash)
+		inv, err := ctx.registry.LookupInvoice(
+			ctxb, testInvoicePaymentHash,
+		)
 		require.NoError(t, err)
 
 		return inv.State == invpkg.ContractCanceled
 	}, testTimeout, time.Millisecond*100, "invoice not canceled")
 }
 
-// TestSettleInvoicePaymentAddrRequired tests that if an incoming payment has
+// testSettleInvoicePaymentAddrRequired tests that if an incoming payment has
 // an invoice that requires the payment addr bit to be set, and the incoming
 // payment doesn't include an mpp payload, then the payment is rejected.
-func TestSettleInvoicePaymentAddrRequired(t *testing.T) {
+func testSettleInvoicePaymentAddrRequired(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
-	ctx := newTestContext(t, nil)
+	ctx := newTestContext(t, nil, makeDB)
+	ctxb := context.Background()
 
-	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
-	require.Nil(t, err)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(ctxb, 0, 0)
+	require.NoError(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
 	subscription, err := ctx.registry.SubscribeSingleInvoice(
-		testInvoicePaymentHash,
+		ctxb, testInvoicePaymentHash,
 	)
 	require.NoError(t, err)
 	defer subscription.Cancel()
@@ -1456,7 +1648,7 @@ func TestSettleInvoicePaymentAddrRequired(t *testing.T) {
 			Expiry:          time.Hour,
 			Features: lnwire.NewFeatureVector(
 				lnwire.NewRawFeatureVector(
-					lnwire.TLVOnionPayloadOptional,
+					lnwire.TLVOnionPayloadRequired,
 					lnwire.PaymentAddrRequired,
 				),
 				lnwire.Features,
@@ -1467,7 +1659,7 @@ func TestSettleInvoicePaymentAddrRequired(t *testing.T) {
 	// Add the invoice, which requires the MPP payload to always be
 	// included due to its set of feature bits.
 	addIdx, err := ctx.registry.AddInvoice(
-		invoice, testInvoicePaymentHash,
+		ctxb, invoice, testInvoicePaymentHash,
 	)
 	require.NoError(t, err)
 	require.Equal(t, int(addIdx), 1)
@@ -1515,22 +1707,25 @@ func TestSettleInvoicePaymentAddrRequired(t *testing.T) {
 	require.Equal(t, failResolution.Outcome, invpkg.ResultAddressMismatch)
 }
 
-// TestSettleInvoicePaymentAddrRequiredOptionalGrace tests that if an invoice
+// testSettleInvoicePaymentAddrRequiredOptionalGrace tests that if an invoice
 // in the database has an optional payment addr required bit set, then we'll
 // still allow it to be paid by an incoming HTLC that doesn't include the MPP
 // payload. This ensures we don't break payment for any invoices in the wild.
-func TestSettleInvoicePaymentAddrRequiredOptionalGrace(t *testing.T) {
+func testSettleInvoicePaymentAddrRequiredOptionalGrace(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
-	ctx := newTestContext(t, nil)
+	ctx := newTestContext(t, nil, makeDB)
+	ctxb := context.Background()
 
-	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
-	require.Nil(t, err)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(ctxb, 0, 0)
+	require.NoError(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
 	subscription, err := ctx.registry.SubscribeSingleInvoice(
-		testInvoicePaymentHash,
+		ctxb, testInvoicePaymentHash,
 	)
 	require.NoError(t, err)
 	defer subscription.Cancel()
@@ -1544,7 +1739,7 @@ func TestSettleInvoicePaymentAddrRequiredOptionalGrace(t *testing.T) {
 			Expiry:          time.Hour,
 			Features: lnwire.NewFeatureVector(
 				lnwire.NewRawFeatureVector(
-					lnwire.TLVOnionPayloadOptional,
+					lnwire.TLVOnionPayloadRequired,
 					lnwire.PaymentAddrOptional,
 				),
 				lnwire.Features,
@@ -1556,7 +1751,7 @@ func TestSettleInvoicePaymentAddrRequiredOptionalGrace(t *testing.T) {
 	// Add the invoice, which does not require the MPP payload to always be
 	// included due to its set of feature bits.
 	addIdx, err := ctx.registry.AddInvoice(
-		invoice, testInvoicePaymentHash,
+		ctxb, invoice, testInvoicePaymentHash,
 	)
 	require.NoError(t, err)
 	require.Equal(t, int(addIdx), 1)
@@ -1628,15 +1823,17 @@ func TestSettleInvoicePaymentAddrRequiredOptionalGrace(t *testing.T) {
 	}
 }
 
-// TestAMPWithoutMPPPayload asserts that we correctly reject an AMP HTLC that
+// testAMPWithoutMPPPayload asserts that we correctly reject an AMP HTLC that
 // does not include an MPP record.
-func TestAMPWithoutMPPPayload(t *testing.T) {
+func testAMPWithoutMPPPayload(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 	defer timeout()()
 
 	cfg := defaultRegistryConfig()
 	cfg.AcceptAMP = true
-	ctx := newTestContext(t, &cfg)
+	ctx := newTestContext(t, &cfg, makeDB)
 
 	const (
 		shardAmt = lnwire.MilliSatoshi(10)
@@ -1661,9 +1858,11 @@ func TestAMPWithoutMPPPayload(t *testing.T) {
 	checkFailResolution(t, resolution, invpkg.ResultAmpError)
 }
 
-// TestSpontaneousAmpPayment tests receiving a spontaneous AMP payment with both
+// testSpontaneousAmpPayment tests receiving a spontaneous AMP payment with both
 // valid and invalid reconstructions.
-func TestSpontaneousAmpPayment(t *testing.T) {
+func testSpontaneousAmpPayment(t *testing.T,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
+
 	t.Parallel()
 
 	tests := []struct {
@@ -1707,26 +1906,28 @@ func TestSpontaneousAmpPayment(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			testSpontaneousAmpPayment(
+			testSpontaneousAmpPaymentImpl(
 				t, test.ampEnabled, test.failReconstruction,
-				test.numShards,
+				test.numShards, makeDB,
 			)
 		})
 	}
 }
 
 // testSpontaneousAmpPayment runs a specific spontaneous AMP test case.
-func testSpontaneousAmpPayment(
-	t *testing.T, ampEnabled, failReconstruction bool, numShards int) {
+func testSpontaneousAmpPaymentImpl(
+	t *testing.T, ampEnabled, failReconstruction bool, numShards int,
+	makeDB func(t *testing.T) (invpkg.InvoiceDB, *clock.TestClock)) {
 
 	t.Parallel()
 	defer timeout()()
 
 	cfg := defaultRegistryConfig()
 	cfg.AcceptAMP = ampEnabled
-	ctx := newTestContext(t, &cfg)
+	ctx := newTestContext(t, &cfg, makeDB)
+	ctxb := context.Background()
 
-	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(ctxb, 0, 0)
 	require.Nil(t, err)
 	defer allSubscriptions.Cancel()
 

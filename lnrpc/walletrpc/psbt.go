@@ -6,22 +6,16 @@ package walletrpc
 import (
 	"fmt"
 	"math"
-	"time"
 
-	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
 )
 
 const (
 	defaultMaxConf = math.MaxInt32
-)
-
-var (
-	// DefaultLockDuration is the default duration used to lock outputs.
-	DefaultLockDuration = 10 * time.Minute
 )
 
 // verifyInputsUnspent checks that all inputs are contained in the list of
@@ -49,21 +43,22 @@ func verifyInputsUnspent(inputs []*wire.TxIn, utxos []*lnwallet.Utxo) error {
 // lockInputs requests a lock lease for all inputs specified in a PSBT packet
 // by using the internal, static lock ID of lnd's wallet.
 func lockInputs(w lnwallet.WalletController,
-	packet *psbt.Packet) ([]*base.ListLeasedOutputResult, error) {
+	outpoints []wire.OutPoint) ([]*base.ListLeasedOutputResult, error) {
 
 	locks := make(
-		[]*base.ListLeasedOutputResult, len(packet.UnsignedTx.TxIn),
+		[]*base.ListLeasedOutputResult, len(outpoints),
 	)
-	for idx, rawInput := range packet.UnsignedTx.TxIn {
+	for idx := range outpoints {
 		lock := &base.ListLeasedOutputResult{
 			LockedOutput: &wtxmgr.LockedOutput{
-				LockID:   LndInternalLockID,
-				Outpoint: rawInput.PreviousOutPoint,
+				LockID:   chanfunding.LndInternalLockID,
+				Outpoint: outpoints[idx],
 			},
 		}
 
 		expiration, pkScript, value, err := w.LeaseOutput(
-			lock.LockID, lock.Outpoint, DefaultLockDuration,
+			lock.LockID, lock.Outpoint,
+			chanfunding.DefaultLockDuration,
 		)
 		if err != nil {
 			// If we run into a problem with locking one output, we
@@ -73,7 +68,7 @@ func lockInputs(w lnwallet.WalletController,
 			for i := 0; i < idx; i++ {
 				op := locks[i].Outpoint
 				if err := w.ReleaseOutput(
-					LndInternalLockID, op,
+					chanfunding.LndInternalLockID, op,
 				); err != nil {
 					log.Errorf("could not release the "+
 						"lock on %v: %v", op, err)

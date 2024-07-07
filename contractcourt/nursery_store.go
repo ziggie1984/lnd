@@ -75,7 +75,7 @@ import (
 // graduated height and finalized txes. This also prevents people downgrading
 // and surprising the downgraded nursery with missing data.
 
-// NurseryStore abstracts the persistent storage layer for the utxo nursery.
+// NurseryStorer abstracts the persistent storage layer for the utxo nursery.
 // Concretely, it stores commitment and htlc outputs until any time-bounded
 // constraints have fully matured. The store exposes methods for enumerating its
 // contents, and persisting state transitions detected by the utxo nursery.
@@ -212,7 +212,7 @@ func prefixChainKey(sysPrefix []byte, hash *chainhash.Hash) ([]byte, error) {
 // outpoint with the provided state prefix. The returned bytes will be of the
 // form <prefix><outpoint>.
 func prefixOutputKey(statePrefix []byte,
-	outpoint *wire.OutPoint) ([]byte, error) {
+	outpoint wire.OutPoint) ([]byte, error) {
 
 	// Create a buffer to which we will first write the state prefix,
 	// followed by the outpoint.
@@ -221,7 +221,7 @@ func prefixOutputKey(statePrefix []byte,
 		return nil, err
 	}
 
-	err := writeOutpoint(&pfxOutputBuffer, outpoint)
+	err := writeOutpoint(&pfxOutputBuffer, &outpoint)
 	if err != nil {
 		return nil, err
 	}

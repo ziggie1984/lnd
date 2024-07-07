@@ -2,7 +2,9 @@ DEV_TAGS = dev
 RPC_TAGS = autopilotrpc chainrpc invoicesrpc neutrinorpc peersrpc routerrpc signrpc verrpc walletrpc watchtowerrpc wtclientrpc
 LOG_TAGS =
 TEST_FLAGS =
-ITEST_FLAGS = 
+ITEST_FLAGS =
+ITEST_COVERAGE =
+COLLECT_ITEST_COVERAGE =
 EXEC_SUFFIX =
 COVER_PKG = $$(go list -deps -tags="$(DEV_TAGS)" ./... | grep '$(PKG)' | grep -v lnrpc)
 NUM_ITEST_TRANCHES = 4
@@ -60,15 +62,27 @@ DEV_TAGS += kvdb_etcd
 endif
 
 ifeq ($(dbbackend),postgres)
+ifneq ($(nativesql),)
+ITEST_FLAGS += -nativesql
+endif
 DEV_TAGS += kvdb_postgres
 endif
 
 ifeq ($(dbbackend),sqlite)
+ifneq ($(nativesql),)
+ITEST_FLAGS += -nativesql
+endif
 DEV_TAGS += kvdb_sqlite
 endif
 
 ifneq ($(tags),)
 DEV_TAGS += ${tags}
+endif
+
+# Enable integration test coverage (requires Go >= 1.20.0).
+ifneq ($(cover),)
+ITEST_COVERAGE = -cover
+COLLECT_ITEST_COVERAGE = go tool covdata textfmt -i=itest/cover -o coverage.txt
 endif
 
 # Define the log tags that will be applied only when running unit tests. If none
@@ -87,6 +101,14 @@ else
 TEST_FLAGS += -test.timeout=180m
 endif
 
+ifneq ($(verbose),)
+TEST_FLAGS += -test.v
+endif
+
+ifneq ($(nocache),)
+TEST_FLAGS += -test.count=1
+endif
+
 GOLIST := go list -tags="$(DEV_TAGS)" -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
 GOLISTCOVER := $(shell go list -tags="$(DEV_TAGS)" -deps -f '{{.ImportPath}}' ./... | grep '$(PKG)' | sed -e 's/^$(ESCPKG)/./')
 
@@ -97,19 +119,19 @@ UNIT_TARGETED ?= no
 # If a specific package/test case was requested, run the unit test for the
 # targeted case. Otherwise, default to running all tests.
 ifeq ($(UNIT_TARGETED), yes)
-UNIT := $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(UNITPKG)
-UNIT_DEBUG := $(GOTEST) -v -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(UNITPKG)
-UNIT_RACE := $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS) lowscrypt" $(TEST_FLAGS) -race $(UNITPKG)
+UNIT := $(GOTEST) -tags="$(DEV_TAGS) $(RPC_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(UNITPKG)
+UNIT_DEBUG := $(GOTEST) -v -tags="$(DEV_TAGS) $(RPC_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(UNITPKG)
+UNIT_RACE := $(GOTEST) -tags="$(DEV_TAGS) $(RPC_TAGS) $(LOG_TAGS) lowscrypt" $(TEST_FLAGS) -race $(UNITPKG)
 # NONE is a special value which selects no other tests but only executes the benchmark tests here.
 UNIT_BENCH := $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" -test.bench=. -test.run=NONE $(UNITPKG)
 endif
 
 ifeq ($(UNIT_TARGETED), no)
-UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
-UNIT_DEBUG := $(GOLIST) | $(XARGS) env $(GOTEST) -v -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
+UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(RPC_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
+UNIT_DEBUG := $(GOLIST) | $(XARGS) env $(GOTEST) -v -tags="$(DEV_TAGS) $(RPC_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
 UNIT_RACE := $(UNIT) -race
 # NONE is a special value which selects no other tests but only executes the benchmark tests here.
-UNIT_BENCH := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" -test.bench=. -test.run=NONE
+UNIT_BENCH := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(RPC_TAGS) $(LOG_TAGS)" -test.bench=. -test.run=NONE
 endif
 
 

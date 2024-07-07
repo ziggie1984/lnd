@@ -17,24 +17,34 @@ import (
 )
 
 const (
-	// maxBlockTarget is the highest number of blocks confirmations that
+	// MaxBlockTarget is the highest number of blocks confirmations that
 	// a WebAPIEstimator will cache fees for. This number is chosen
 	// because it's the highest number of confs bitcoind will return a fee
 	// estimate for.
-	maxBlockTarget uint32 = 1008
+	MaxBlockTarget uint32 = 1008
 
 	// minBlockTarget is the lowest number of blocks confirmations that
 	// a WebAPIEstimator will cache fees for. Requesting an estimate for
 	// less than this will result in an error.
 	minBlockTarget uint32 = 1
 
-	// minFeeUpdateTimeout represents the minimum interval in which a
-	// WebAPIEstimator will request fresh fees from its API.
-	minFeeUpdateTimeout = 5 * time.Minute
+	// WebAPIConnectionTimeout specifies the timeout value for connecting
+	// to the api source.
+	WebAPIConnectionTimeout = 5 * time.Second
 
-	// maxFeeUpdateTimeout represents the maximum interval in which a
-	// WebAPIEstimator will request fresh fees from its API.
-	maxFeeUpdateTimeout = 20 * time.Minute
+	// WebAPIResponseTimeout specifies the timeout value for receiving a
+	// fee response from the api source.
+	WebAPIResponseTimeout = 10 * time.Second
+
+	// economicalFeeMode is a mode that bitcoind uses to serve
+	// non-conservative fee estimates. These fee estimates are less
+	// resistant to shocks.
+	economicalFeeMode = "ECONOMICAL"
+
+	// filterCapConfTarget is the conf target that will be used to cap our
+	// minimum feerate if we used the median of our peers' feefilter
+	// values.
+	filterCapConfTarget = uint32(1)
 )
 
 var (
@@ -142,6 +152,11 @@ type BtcdEstimator struct {
 	minFeeManager *minFeeManager
 
 	btcdConn *rpcclient.Client
+
+	// filterManager uses our peer's feefilter values to determine a
+	// suitable feerate to use that will allow successful transaction
+	// propagation.
+	filterManager *filterManager
 }
 
 // NewBtcdEstimator creates a new BtcdEstimator given a fully populated
@@ -159,9 +174,14 @@ func NewBtcdEstimator(rpcConfig rpcclient.ConnConfig,
 		return nil, err
 	}
 
+	fetchCb := func() ([]SatPerKWeight, error) {
+		return fetchBtcdFilters(chainConn)
+	}
+
 	return &BtcdEstimator{
 		fallbackFeePerKW: fallBackFeeRate,
 		btcdConn:         chainConn,
+		filterManager:    newFilterManager(fetchCb),
 	}, nil
 }
 
@@ -184,6 +204,8 @@ func (b *BtcdEstimator) Start() error {
 		return err
 	}
 	b.minFeeManager = minRelayFeeManager
+
+	b.filterManager.Start()
 
 	return nil
 }
@@ -211,6 +233,8 @@ func (b *BtcdEstimator) fetchMinRelayFee() (SatPerKWeight, error) {
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BtcdEstimator) Stop() error {
+	b.filterManager.Stop()
+
 	b.btcdConn.Shutdown()
 
 	return nil
@@ -242,12 +266,47 @@ func (b *BtcdEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, error
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BtcdEstimator) RelayFeePerKW() SatPerKWeight {
-	return b.minFeeManager.fetchMinFee()
+	// Get a suitable minimum feerate to use. This may optionally use the
+	// median of our peers' feefilter values.
+	feeCapClosure := func() (SatPerKWeight, error) {
+		return b.fetchEstimateInner(filterCapConfTarget)
+	}
+
+	return chooseMinFee(
+		b.minFeeManager.fetchMinFee, b.filterManager.FetchMedianFilter,
+		feeCapClosure,
+	)
 }
 
 // fetchEstimate returns a fee estimate for a transaction to be confirmed in
 // confTarget blocks. The estimate is returned in sat/kw.
 func (b *BtcdEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, error) {
+	satPerKw, err := b.fetchEstimateInner(confTarget)
+	if err != nil {
+		return 0, err
+	}
+
+	// Finally, we'll enforce our fee floor by choosing the higher of the
+	// minimum relay fee and the feerate returned by the filterManager.
+	absoluteMinFee := b.RelayFeePerKW()
+
+	if satPerKw < absoluteMinFee {
+		log.Debugf("Estimated fee rate of %v sat/kw is too low, "+
+			"using fee floor of %v sat/kw instead", satPerKw,
+			absoluteMinFee)
+
+		satPerKw = absoluteMinFee
+	}
+
+	log.Debugf("Returning %v sat/kw for conf target of %v",
+		int64(satPerKw), confTarget)
+
+	return satPerKw, nil
+}
+
+func (b *BtcdEstimator) fetchEstimateInner(confTarget uint32) (SatPerKWeight,
+	error) {
+
 	// First, we'll fetch the estimate for our confirmation target.
 	btcPerKB, err := b.btcdConn.EstimateFee(int64(confTarget))
 	if err != nil {
@@ -263,20 +322,7 @@ func (b *BtcdEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, error) 
 
 	// Since we use fee rates in sat/kw internally, we'll convert the
 	// estimated fee rate from its sat/kb representation to sat/kw.
-	satPerKw := SatPerKVByte(satPerKB).FeePerKWeight()
-
-	// Finally, we'll enforce our fee floor.
-	if satPerKw < b.minFeeManager.fetchMinFee() {
-		log.Debugf("Estimated fee rate of %v sat/kw is too low, "+
-			"using fee floor of %v sat/kw instead", satPerKw,
-			b.minFeeManager)
-		satPerKw = b.minFeeManager.fetchMinFee()
-	}
-
-	log.Debugf("Returning %v sat/kw for conf target of %v",
-		int64(satPerKw), confTarget)
-
-	return satPerKw, nil
+	return SatPerKVByte(satPerKB).FeePerKWeight(), nil
 }
 
 // A compile-time assertion to ensure that BtcdEstimator implements the
@@ -303,7 +349,14 @@ type BitcoindEstimator struct {
 	// to "CONSERVATIVE".
 	feeMode string
 
+	// TODO(ziggie): introduce an interface for the client to enhance
+	// testability of the estimator.
 	bitcoindConn *rpcclient.Client
+
+	// filterManager uses our peer's feefilter values to determine a
+	// suitable feerate to use that will allow successful transaction
+	// propagation.
+	filterManager *filterManager
 }
 
 // NewBitcoindEstimator creates a new BitcoindEstimator given a fully populated
@@ -323,10 +376,15 @@ func NewBitcoindEstimator(rpcConfig rpcclient.ConnConfig, feeMode string,
 		return nil, err
 	}
 
+	fetchCb := func() ([]SatPerKWeight, error) {
+		return fetchBitcoindFilters(chainConn)
+	}
+
 	return &BitcoindEstimator{
 		fallbackFeePerKW: fallBackFeeRate,
 		bitcoindConn:     chainConn,
 		feeMode:          feeMode,
+		filterManager:    newFilterManager(fetchCb),
 	}, nil
 }
 
@@ -346,6 +404,8 @@ func (b *BitcoindEstimator) Start() error {
 		return err
 	}
 	b.minFeeManager = relayFeeManager
+
+	b.filterManager.Start()
 
 	return nil
 }
@@ -384,6 +444,7 @@ func (b *BitcoindEstimator) fetchMinMempoolFee() (SatPerKWeight, error) {
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BitcoindEstimator) Stop() error {
+	b.filterManager.Stop()
 	return nil
 }
 
@@ -394,14 +455,14 @@ func (b *BitcoindEstimator) Stop() error {
 func (b *BitcoindEstimator) EstimateFeePerKW(
 	numBlocks uint32) (SatPerKWeight, error) {
 
-	if numBlocks > maxBlockTarget {
+	if numBlocks > MaxBlockTarget {
 		log.Debugf("conf target %d exceeds the max value, "+
-			"use %d instead.", numBlocks, maxBlockTarget,
+			"use %d instead.", numBlocks, MaxBlockTarget,
 		)
-		numBlocks = maxBlockTarget
+		numBlocks = MaxBlockTarget
 	}
 
-	feeEstimate, err := b.fetchEstimate(numBlocks)
+	feeEstimate, err := b.fetchEstimate(numBlocks, b.feeMode)
 	switch {
 	// If the estimator doesn't have enough data, or returns an error, then
 	// to return a proper value, then we'll return the default fall back
@@ -422,12 +483,51 @@ func (b *BitcoindEstimator) EstimateFeePerKW(
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BitcoindEstimator) RelayFeePerKW() SatPerKWeight {
-	return b.minFeeManager.fetchMinFee()
+	// Get a suitable minimum feerate to use. This may optionally use the
+	// median of our peers' feefilter values.
+	feeCapClosure := func() (SatPerKWeight, error) {
+		return b.fetchEstimateInner(
+			filterCapConfTarget, economicalFeeMode,
+		)
+	}
+
+	return chooseMinFee(
+		b.minFeeManager.fetchMinFee, b.filterManager.FetchMedianFilter,
+		feeCapClosure,
+	)
 }
 
 // fetchEstimate returns a fee estimate for a transaction to be confirmed in
 // confTarget blocks. The estimate is returned in sat/kw.
-func (b *BitcoindEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, error) {
+func (b *BitcoindEstimator) fetchEstimate(confTarget uint32, feeMode string) (
+	SatPerKWeight, error) {
+
+	satPerKw, err := b.fetchEstimateInner(confTarget, feeMode)
+	if err != nil {
+		return 0, err
+	}
+
+	// Finally, we'll enforce our fee floor by choosing the higher of the
+	// minimum relay fee and the feerate returned by the filterManager.
+	absoluteMinFee := b.RelayFeePerKW()
+
+	if satPerKw < absoluteMinFee {
+		log.Debugf("Estimated fee rate of %v sat/kw is too low, "+
+			"using fee floor of %v sat/kw instead", satPerKw,
+			absoluteMinFee)
+
+		satPerKw = absoluteMinFee
+	}
+
+	log.Debugf("Returning %v sat/kw for conf target of %v",
+		int64(satPerKw), confTarget)
+
+	return satPerKw, nil
+}
+
+func (b *BitcoindEstimator) fetchEstimateInner(confTarget uint32,
+	feeMode string) (SatPerKWeight, error) {
+
 	// First, we'll send an "estimatesmartfee" command as a raw request,
 	// since it isn't supported by btcd but is available in bitcoind.
 	target, err := json.Marshal(uint64(confTarget))
@@ -436,7 +536,7 @@ func (b *BitcoindEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, err
 	}
 
 	// The mode must be either ECONOMICAL or CONSERVATIVE.
-	mode, err := json.Marshal(b.feeMode)
+	mode, err := json.Marshal(feeMode)
 	if err != nil {
 		return 0, err
 	}
@@ -464,24 +564,59 @@ func (b *BitcoindEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, err
 		return 0, err
 	}
 
-	// Since we use fee rates in sat/kw internally, we'll convert the
-	// estimated fee rate from its sat/kb representation to sat/kw.
-	satPerKw := SatPerKVByte(satPerKB).FeePerKWeight()
-
-	// Finally, we'll enforce our fee floor.
-	minRelayFee := b.minFeeManager.fetchMinFee()
-	if satPerKw < minRelayFee {
-		log.Debugf("Estimated fee rate of %v sat/kw is too low, "+
-			"using fee floor of %v sat/kw instead", satPerKw,
-			minRelayFee)
-
-		satPerKw = minRelayFee
+	// Bitcoind will not report any fee estimation if it has not enough
+	// data available hence the fee will remain zero. We return an error
+	// here to make sure that we do not use the min relay fee instead.
+	if satPerKB == 0 {
+		return 0, fmt.Errorf("fee estimation data not available yet")
 	}
 
-	log.Debugf("Returning %v sat/kw for conf target of %v",
-		int64(satPerKw), confTarget)
+	// Since we use fee rates in sat/kw internally, we'll convert the
+	// estimated fee rate from its sat/kb representation to sat/kw.
+	return SatPerKVByte(satPerKB).FeePerKWeight(), nil
+}
 
-	return satPerKw, nil
+// chooseMinFee takes the minimum relay fee and the median of our peers'
+// feefilter values and takes the higher of the two. It then compares the value
+// against a maximum fee and caps it if the value is higher than the maximum
+// fee. This function is only called if we have data for our peers' feefilter.
+// The returned value will be used as the fee floor for calls to
+// RelayFeePerKW.
+func chooseMinFee(minRelayFeeFunc func() SatPerKWeight,
+	medianFilterFunc func() (SatPerKWeight, error),
+	feeCapFunc func() (SatPerKWeight, error)) SatPerKWeight {
+
+	minRelayFee := minRelayFeeFunc()
+
+	medianFilter, err := medianFilterFunc()
+	if err != nil {
+		// If we don't have feefilter data, we fallback to using our
+		// minimum relay fee.
+		return minRelayFee
+	}
+
+	feeCap, err := feeCapFunc()
+	if err != nil {
+		// If we encountered an error, don't use the medianFilter and
+		// instead fallback to using our minimum relay fee.
+		return minRelayFee
+	}
+
+	// If the median feefilter is higher than our minimum relay fee, use it
+	// instead.
+	if medianFilter > minRelayFee {
+		// Only apply the cap if the median filter was used. This is
+		// to prevent an adversary from taking up the majority of our
+		// outbound peer slots and forcing us to use a high median
+		// filter value.
+		if medianFilter > feeCap {
+			return feeCap
+		}
+
+		return medianFilter
+	}
+
+	return minRelayFee
 }
 
 // A compile-time assertion to ensure that BitcoindEstimator implements the
@@ -493,15 +628,9 @@ var _ Estimator = (*BitcoindEstimator)(nil)
 // implementation of this interface in order to allow the WebAPIEstimator to
 // be fully generic in its logic.
 type WebAPIFeeSource interface {
-	// GenQueryURL generates the full query URL. The value returned by this
-	// method should be able to be used directly as a path for an HTTP GET
-	// request.
-	GenQueryURL() string
-
-	// ParseResponse attempts to parse the body of the response generated
-	// by the above query URL. Typically this will be JSON, but the
-	// specifics are left to the WebAPIFeeSource implementation.
-	ParseResponse(r io.Reader) (map[uint32]uint32, error)
+	// GetFeeMap will query the web API, parse the response and return a
+	// map of confirmation targets to sat/kw fees.
+	GetFeeMap() (map[uint32]uint32, error)
 }
 
 // SparseConfFeeSource is an implementation of the WebAPIFeeSource that utilizes
@@ -513,21 +642,12 @@ type SparseConfFeeSource struct {
 	URL string
 }
 
-// GenQueryURL generates the full query URL. The value returned by this
-// method should be able to be used directly as a path for an HTTP GET
-// request.
-//
-// NOTE: Part of the WebAPIFeeSource interface.
-func (s SparseConfFeeSource) GenQueryURL() string {
-	return s.URL
-}
-
-// ParseResponse attempts to parse the body of the response generated by the
+// parseResponse attempts to parse the body of the response generated by the
 // above query URL. Typically this will be JSON, but the specifics are left to
 // the WebAPIFeeSource implementation.
-//
-// NOTE: Part of the WebAPIFeeSource interface.
-func (s SparseConfFeeSource) ParseResponse(r io.Reader) (map[uint32]uint32, error) {
+func (s SparseConfFeeSource) parseResponse(r io.Reader) (
+	map[uint32]uint32, error) {
+
 	type jsonResp struct {
 		FeeByBlockTarget map[uint32]uint32 `json:"fee_by_block_target"`
 	}
@@ -541,6 +661,47 @@ func (s SparseConfFeeSource) ParseResponse(r io.Reader) (map[uint32]uint32, erro
 	}
 
 	return resp.FeeByBlockTarget, nil
+}
+
+// GetFeeMap will query the web API, parse the response and return a map of
+// confirmation targets to sat/kw fees.
+func (s SparseConfFeeSource) GetFeeMap() (map[uint32]uint32, error) {
+	// Rather than use the default http.Client, we'll make a custom one
+	// which will allow us to control how long we'll wait to read the
+	// response from the service. This way, if the service is down or
+	// overloaded, we can exit early and use our default fee.
+	netTransport := &http.Transport{
+		Dial: (&net.Dialer{
+			Timeout: WebAPIConnectionTimeout,
+		}).Dial,
+		TLSHandshakeTimeout: WebAPIConnectionTimeout,
+	}
+	netClient := &http.Client{
+		Timeout:   WebAPIResponseTimeout,
+		Transport: netTransport,
+	}
+
+	// With the client created, we'll query the API source to fetch the URL
+	// that we should use to query for the fee estimation.
+	targetURL := s.URL
+	resp, err := netClient.Get(targetURL)
+	if err != nil {
+		log.Errorf("unable to query web api for fee response: %v",
+			err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Once we've obtained the response, we'll instruct the WebAPIFeeSource
+	// to parse out the body to obtain our final result.
+	feesByBlockTarget, err := s.parseResponse(resp.Body)
+	if err != nil {
+		log.Errorf("unable to parse fee api response: %v", err)
+
+		return nil, err
+	}
+
+	return feesByBlockTarget, nil
 }
 
 // A compile-time assertion to ensure that SparseConfFeeSource implements the
@@ -570,19 +731,43 @@ type WebAPIEstimator struct {
 	// estimates.
 	noCache bool
 
+	// minFeeUpdateTimeout represents the minimum interval in which the
+	// web estimator will request fresh fees from its API.
+	minFeeUpdateTimeout time.Duration
+
+	// minFeeUpdateTimeout represents the maximum interval in which the
+	// web estimator will request fresh fees from its API.
+	maxFeeUpdateTimeout time.Duration
+
 	quit chan struct{}
 	wg   sync.WaitGroup
 }
 
 // NewWebAPIEstimator creates a new WebAPIEstimator from a given URL and a
 // fallback default fee. The fees are updated whenever a new block is mined.
-func NewWebAPIEstimator(api WebAPIFeeSource, noCache bool) *WebAPIEstimator {
-	return &WebAPIEstimator{
-		apiSource:        api,
-		feeByBlockTarget: make(map[uint32]uint32),
-		noCache:          noCache,
-		quit:             make(chan struct{}),
+func NewWebAPIEstimator(api WebAPIFeeSource, noCache bool,
+	minFeeUpdateTimeout time.Duration,
+	maxFeeUpdateTimeout time.Duration) (*WebAPIEstimator, error) {
+
+	if minFeeUpdateTimeout == 0 || maxFeeUpdateTimeout == 0 {
+		return nil, fmt.Errorf("minFeeUpdateTimeout and " +
+			"maxFeeUpdateTimeout must be greater than 0")
 	}
+
+	if minFeeUpdateTimeout >= maxFeeUpdateTimeout {
+		return nil, fmt.Errorf("minFeeUpdateTimeout target of %v "+
+			"cannot be greater than maxFeeUpdateTimeout of %v",
+			minFeeUpdateTimeout, maxFeeUpdateTimeout)
+	}
+
+	return &WebAPIEstimator{
+		apiSource:           api,
+		feeByBlockTarget:    make(map[uint32]uint32),
+		noCache:             noCache,
+		quit:                make(chan struct{}),
+		minFeeUpdateTimeout: minFeeUpdateTimeout,
+		maxFeeUpdateTimeout: maxFeeUpdateTimeout,
+	}, nil
 }
 
 // EstimateFeePerKW takes in a target for the number of blocks until an initial
@@ -592,8 +777,8 @@ func NewWebAPIEstimator(api WebAPIFeeSource, noCache bool) *WebAPIEstimator {
 func (w *WebAPIEstimator) EstimateFeePerKW(numBlocks uint32) (
 	SatPerKWeight, error) {
 
-	if numBlocks > maxBlockTarget {
-		numBlocks = maxBlockTarget
+	if numBlocks > MaxBlockTarget {
+		numBlocks = MaxBlockTarget
 	} else if numBlocks < minBlockTarget {
 		return 0, fmt.Errorf("conf target of %v is too low, minimum "+
 			"accepted is %v", numBlocks, minBlockTarget)
@@ -640,7 +825,12 @@ func (w *WebAPIEstimator) Start() error {
 	w.started.Do(func() {
 		log.Infof("Starting web API fee estimator")
 
-		w.updateFeeTicker = time.NewTicker(w.randomFeeUpdateTimeout())
+		feeUpdateTimeout := w.randomFeeUpdateTimeout()
+
+		log.Infof("Web API fee estimator using update timeout of %v",
+			feeUpdateTimeout)
+
+		w.updateFeeTicker = time.NewTicker(feeUpdateTimeout)
 		w.updateFeeEstimates()
 
 		w.wg.Add(1)
@@ -683,9 +873,11 @@ func (w *WebAPIEstimator) RelayFeePerKW() SatPerKWeight {
 // and maxFeeUpdateTimeout that will be used to determine how often the Estimator
 // should retrieve fresh fees from its API.
 func (w *WebAPIEstimator) randomFeeUpdateTimeout() time.Duration {
-	lower := int64(minFeeUpdateTimeout)
-	upper := int64(maxFeeUpdateTimeout)
-	return time.Duration(prand.Int63n(upper-lower) + lower)
+	lower := int64(w.minFeeUpdateTimeout)
+	upper := int64(w.maxFeeUpdateTimeout)
+	return time.Duration(
+		prand.Int63n(upper-lower) + lower, //nolint:gosec
+	).Round(time.Second)
 }
 
 // getCachedFee takes a conf target and returns the cached fee rate. When the
@@ -762,38 +954,11 @@ func (w *WebAPIEstimator) getCachedFee(numBlocks uint32) (uint32, error) {
 
 // updateFeeEstimates re-queries the API for fresh fees and caches them.
 func (w *WebAPIEstimator) updateFeeEstimates() {
-	// Rather than use the default http.Client, we'll make a custom one
-	// which will allow us to control how long we'll wait to read the
-	// response from the service. This way, if the service is down or
-	// overloaded, we can exit early and use our default fee.
-	netTransport := &http.Transport{
-		Dial: (&net.Dialer{
-			Timeout: 5 * time.Second,
-		}).Dial,
-		TLSHandshakeTimeout: 5 * time.Second,
-	}
-	netClient := &http.Client{
-		Timeout:   time.Second * 10,
-		Transport: netTransport,
-	}
-
-	// With the client created, we'll query the API source to fetch the URL
-	// that we should use to query for the fee estimation.
-	targetURL := w.apiSource.GenQueryURL()
-	resp, err := netClient.Get(targetURL)
-	if err != nil {
-		log.Errorf("unable to query web api for fee response: %v",
-			err)
-		return
-	}
-	defer resp.Body.Close()
-
 	// Once we've obtained the response, we'll instruct the WebAPIFeeSource
 	// to parse out the body to obtain our final result.
-	feesByBlockTarget, err := w.apiSource.ParseResponse(resp.Body)
+	feesByBlockTarget, err := w.apiSource.GetFeeMap()
 	if err != nil {
-		log.Errorf("unable to query web api for fee response: %v",
-			err)
+		log.Errorf("unable to get fee response: %v", err)
 		return
 	}
 

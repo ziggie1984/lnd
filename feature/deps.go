@@ -79,6 +79,12 @@ var deps = depDesc{
 		lnwire.AnchorsZeroFeeHtlcTxOptional: {},
 		lnwire.ExplicitChannelTypeOptional:  {},
 	},
+	lnwire.RouteBlindingOptional: {
+		lnwire.TLVOnionPayloadOptional: {},
+	},
+	lnwire.RouteBlindingRequired: {
+		lnwire.TLVOnionPayloadRequired: {},
+	},
 }
 
 // ValidateDeps asserts that a feature vector sets all features and their
@@ -143,7 +149,7 @@ func initSupported(features featureSet) supportedFeatures {
 }
 
 // mapToOptional returns the optional variant of a given feature bit pair. Our
-// dependendency graph is described using only optional feature bits, which
+// dependency graph is described using only optional feature bits, which
 // reduces the number of constraints we need to express in the descriptor.
 func mapToOptional(bit lnwire.FeatureBit) lnwire.FeatureBit {
 	if bit.IsRequired() {

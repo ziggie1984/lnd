@@ -4,15 +4,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path"
 	"path/filepath"
-	"sync/atomic"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/integration/rpctest"
+	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/kvdb/etcd"
+	"github.com/lightningnetwork/lnd/lntest/port"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 )
 
@@ -24,18 +25,9 @@ const (
 	// DefaultCSV is the CSV delay (remotedelay) we will start our test
 	// nodes with.
 	DefaultCSV = 4
-
-	// defaultNodePort is the start of the range for listening ports of
-	// harness nodes. Ports are monotonically increasing starting from this
-	// number and are determined by the results of NextAvailablePort().
-	defaultNodePort = 5555
 )
 
 var (
-	// lastPort is the last port determined to be free for use by a new
-	// node. It should be used atomically.
-	lastPort uint32 = defaultNodePort
-
 	// logOutput is a flag that can be set to append the output from the
 	// seed nodes to log files.
 	logOutput = flag.Bool("logoutput", false,
@@ -118,6 +110,7 @@ type BaseNodeConfig struct {
 
 	DBBackend   DatabaseBackend
 	PostgresDsn string
+	NativeSQL   bool
 
 	// NodeID is a unique ID used to identify the node.
 	NodeID uint32
@@ -157,7 +150,7 @@ func (cfg BaseNodeConfig) DBPath() string {
 
 func (cfg BaseNodeConfig) ChanBackupPath() string {
 	return filepath.Join(
-		cfg.DataDir, "chain", "bitcoin",
+		cfg.DataDir, "chain", lnd.BitcoinChainName,
 		fmt.Sprintf(
 			"%v/%v", cfg.NetParams.Name,
 			chanbackup.DefaultBackupFileName,
@@ -169,16 +162,16 @@ func (cfg BaseNodeConfig) ChanBackupPath() string {
 // current lightning network test.
 func (cfg *BaseNodeConfig) GenerateListeningPorts() {
 	if cfg.P2PPort == 0 {
-		cfg.P2PPort = NextAvailablePort()
+		cfg.P2PPort = port.NextAvailablePort()
 	}
 	if cfg.RPCPort == 0 {
-		cfg.RPCPort = NextAvailablePort()
+		cfg.RPCPort = port.NextAvailablePort()
 	}
 	if cfg.RESTPort == 0 {
-		cfg.RESTPort = NextAvailablePort()
+		cfg.RESTPort = port.NextAvailablePort()
 	}
 	if cfg.ProfilePort == 0 {
-		cfg.ProfilePort = NextAvailablePort()
+		cfg.ProfilePort = port.NextAvailablePort()
 	}
 }
 
@@ -205,9 +198,8 @@ func (cfg *BaseNodeConfig) GenArgs() []string {
 	args = append(args, backendArgs...)
 
 	nodeArgs := []string{
-		"--bitcoin.active",
 		"--nobootstrap",
-		"--debuglevel=debug,DISC=trace",
+		"--debuglevel=debug",
 		"--bitcoin.defaultchanconfs=1",
 		"--accept-keysend",
 		"--keep-failed-payment-attempts",
@@ -225,10 +217,6 @@ func (cfg *BaseNodeConfig) GenArgs() []string {
 		fmt.Sprintf("--trickledelay=%v", trickleDelay),
 		fmt.Sprintf("--profile=%d", cfg.ProfilePort),
 
-		// Use a small batch window so we can broadcast our sweep
-		// transactions faster.
-		"--sweeper.batchwindowduration=5s",
-
 		// Use a small batch delay so we can broadcast the
 		// announcements quickly in the tests.
 		"--gossip.sub-batch-delay=5ms",
@@ -240,6 +228,9 @@ func (cfg *BaseNodeConfig) GenArgs() []string {
 		// Speed up the tests for bitcoind backend.
 		"--bitcoind.blockpollinginterval=100ms",
 		"--bitcoind.txpollinginterval=100ms",
+
+		// Allow unsafe disconnect in itest.
+		"--dev.unsafedisconnect",
 	}
 
 	args = append(args, nodeArgs...)
@@ -255,13 +246,13 @@ func (cfg *BaseNodeConfig) GenArgs() []string {
 		args = append(
 			args, fmt.Sprintf(
 				"--db.etcd.embedded_client_port=%v",
-				NextAvailablePort(),
+				port.NextAvailablePort(),
 			),
 		)
 		args = append(
 			args, fmt.Sprintf(
 				"--db.etcd.embedded_peer_port=%v",
-				NextAvailablePort(),
+				port.NextAvailablePort(),
 			),
 		)
 		args = append(
@@ -274,15 +265,21 @@ func (cfg *BaseNodeConfig) GenArgs() []string {
 	case BackendPostgres:
 		args = append(args, "--db.backend=postgres")
 		args = append(args, "--db.postgres.dsn="+cfg.PostgresDsn)
+		if cfg.NativeSQL {
+			args = append(args, "--db.use-native-sql")
+		}
 
 	case BackendSqlite:
 		args = append(args, "--db.backend=sqlite")
 		args = append(args, fmt.Sprintf("--db.sqlite.busytimeout=%v",
 			wait.SqliteBusyTimeout))
+		if cfg.NativeSQL {
+			args = append(args, "--db.use-native-sql")
+		}
 	}
 
 	if cfg.FeeURL != "" {
-		args = append(args, "--feeurl="+cfg.FeeURL)
+		args = append(args, "--fee.url="+cfg.FeeURL)
 	}
 
 	// Put extra args in the end so the args can be overwritten.
@@ -321,34 +318,6 @@ func ExtraArgsEtcd(etcdCfg *etcd.Config, name string, cluster bool,
 	}
 
 	return extraArgs
-}
-
-// NextAvailablePort returns the first port that is available for listening by
-// a new node. It panics if no port is found and the maximum available TCP port
-// is reached.
-func NextAvailablePort() int {
-	port := atomic.AddUint32(&lastPort, 1)
-	for port < 65535 {
-		// If there are no errors while attempting to listen on this
-		// port, close the socket and return it as available. While it
-		// could be the case that some other process picks up this port
-		// between the time the socket is closed and it's reopened in
-		// the harness node, in practice in CI servers this seems much
-		// less likely than simply some other process already being
-		// bound at the start of the tests.
-		addr := fmt.Sprintf(ListenerFormat, port)
-		l, err := net.Listen("tcp4", addr)
-		if err == nil {
-			err := l.Close()
-			if err == nil {
-				return int(port)
-			}
-		}
-		port = atomic.AddUint32(&lastPort, 1)
-	}
-
-	// No ports available? Must be a mistake.
-	panic("no ports available for listening")
 }
 
 // GetLogDir returns the passed --logdir flag or the default value if it wasn't
@@ -392,16 +361,10 @@ func GetBtcdBinary() string {
 	return ""
 }
 
-// GenerateBtcdListenerAddresses is a function that returns two listener
-// addresses with unique ports and should be used to overwrite rpctest's
-// default generator which is prone to use colliding ports.
-func GenerateBtcdListenerAddresses() (string, string) {
-	return fmt.Sprintf(ListenerFormat, NextAvailablePort()),
-		fmt.Sprintf(ListenerFormat, NextAvailablePort())
-}
-
-// ApplyPortOffset adds the given offset to the lastPort variable, making it
-// possible to run the tests in parallel without colliding on the same ports.
-func ApplyPortOffset(offset uint32) {
-	_ = atomic.AddUint32(&lastPort, offset)
+func init() {
+	// Before we start any node, we need to make sure that any btcd or
+	// bitcoind node that is started through the RPC harness uses a unique
+	// port as well to avoid any port collisions.
+	rpctest.ListenAddressGenerator =
+		port.GenerateSystemUniqueListenerAddresses
 }

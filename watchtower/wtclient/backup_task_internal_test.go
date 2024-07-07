@@ -1,7 +1,7 @@
 package wtclient
 
 import (
-	"bytes"
+	"encoding/binary"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -25,8 +25,7 @@ import (
 const csvDelay uint32 = 144
 
 var (
-	zeroPK  [33]byte
-	zeroSig [64]byte
+	zeroSig = makeSig(0)
 
 	revPrivBytes = []byte{
 		0x8f, 0x4b, 0x51, 0x83, 0xa9, 0x34, 0xbd, 0x5f,
@@ -65,6 +64,7 @@ type backupTaskTest struct {
 	expSweepScript   []byte
 	signer           input.Signer
 	chanType         channeldb.ChannelType
+	commitType       blob.CommitmentType
 }
 
 // genTaskTest creates a instance of a backupTaskTest using the passed
@@ -72,6 +72,7 @@ type backupTaskTest struct {
 // corresponding BreachInfo, as well as setting the wtpolicy.Policy of the given
 // session.
 func genTaskTest(
+	t *testing.T,
 	name string,
 	stateNum uint64,
 	toLocalAmt int64,
@@ -84,22 +85,21 @@ func genTaskTest(
 	bindErr error,
 	chanType channeldb.ChannelType) backupTaskTest {
 
-	// Set the anchor flag in the blob type if the session needs to support
-	// anchor channels.
-	if chanType.HasAnchors() {
+	// Set the anchor or taproot flag in the blob type if the session needs
+	// to support anchor or taproot channels.
+	if chanType.IsTaproot() {
+		blobType |= blob.Type(blob.FlagTaprootChannel)
+	} else if chanType.HasAnchors() {
 		blobType |= blob.Type(blob.FlagAnchorChannel)
 	}
 
 	// Parse the key pairs for all keys used in the test.
-	revSK, revPK := btcec.PrivKeyFromBytes(
-		revPrivBytes,
-	)
-	_, toLocalPK := btcec.PrivKeyFromBytes(
-		toLocalPrivBytes,
-	)
-	toRemoteSK, toRemotePK := btcec.PrivKeyFromBytes(
-		toRemotePrivBytes,
-	)
+	revSK, revPK := btcec.PrivKeyFromBytes(revPrivBytes)
+	_, toLocalPK := btcec.PrivKeyFromBytes(toLocalPrivBytes)
+	toRemoteSK, toRemotePK := btcec.PrivKeyFromBytes(toRemotePrivBytes)
+
+	commitType, err := blobType.CommitmentType(&chanType)
+	require.NoError(t, err)
 
 	// Create the signer, and add the revocation and to-remote privkeys.
 	signer := wtmock.NewMockSigner()
@@ -131,30 +131,112 @@ func genTaskTest(
 	// to that output as local, though relative to their commitment, it is
 	// paying to-the-remote party (which is us).
 	if toLocalAmt > 0 {
-		toLocalSignDesc := &input.SignDescriptor{
-			KeyDesc: keychain.KeyDescriptor{
-				KeyLocator: revKeyLoc,
-				PubKey:     revPK,
-			},
-			Output: &wire.TxOut{
-				Value: toLocalAmt,
-			},
-			HashType: txscript.SigHashAll,
+		var toLocalSignDesc *input.SignDescriptor
+
+		if chanType.IsTaproot() {
+			scriptTree, _ := input.NewLocalCommitScriptTree(
+				csvDelay, toLocalPK, revPK,
+			)
+
+			pkScript, _ := input.PayToTaprootScript(
+				scriptTree.TaprootKey,
+			)
+
+			revokeTapleafHash := txscript.NewBaseTapLeaf(
+				scriptTree.RevocationLeaf.Script,
+			).TapHash()
+
+			tapTree := scriptTree.TapscriptTree
+			revokeIdx := tapTree.LeafProofIndex[revokeTapleafHash]
+			revokeMerkleProof := tapTree.LeafMerkleProofs[revokeIdx]
+			revokeControlBlock := revokeMerkleProof.ToControlBlock(
+				&input.TaprootNUMSKey,
+			)
+			ctrlBytes, _ := revokeControlBlock.ToBytes()
+
+			toLocalSignDesc = &input.SignDescriptor{
+				KeyDesc: keychain.KeyDescriptor{
+					KeyLocator: revKeyLoc,
+					PubKey:     revPK,
+				},
+				Output: &wire.TxOut{
+					Value:    toLocalAmt,
+					PkScript: pkScript,
+				},
+				WitnessScript: scriptTree.RevocationLeaf.Script,
+				SignMethod:    input.TaprootScriptSpendSignMethod, //nolint:lll
+				HashType:      txscript.SigHashDefault,
+				ControlBlock:  ctrlBytes,
+			}
+		} else {
+			toLocalSignDesc = &input.SignDescriptor{
+				KeyDesc: keychain.KeyDescriptor{
+					KeyLocator: revKeyLoc,
+					PubKey:     revPK,
+				},
+				Output: &wire.TxOut{
+					Value: toLocalAmt,
+				},
+				HashType: txscript.SigHashAll,
+			}
 		}
+
 		breachInfo.RemoteOutputSignDesc = toLocalSignDesc
 		breachTxn.AddTxOut(toLocalSignDesc.Output)
 	}
 	if toRemoteAmt > 0 {
-		toRemoteSignDesc := &input.SignDescriptor{
-			KeyDesc: keychain.KeyDescriptor{
-				KeyLocator: toRemoteKeyLoc,
-				PubKey:     toRemotePK,
-			},
-			Output: &wire.TxOut{
-				Value: toRemoteAmt,
-			},
-			HashType: txscript.SigHashAll,
+		var toRemoteSignDesc *input.SignDescriptor
+
+		if chanType.IsTaproot() {
+			scriptTree, _ := input.NewRemoteCommitScriptTree(
+				toRemotePK,
+			)
+
+			pkScript, _ := input.PayToTaprootScript(
+				scriptTree.TaprootKey,
+			)
+
+			revokeTapleafHash := txscript.NewBaseTapLeaf(
+				scriptTree.SettleLeaf.Script,
+			).TapHash()
+
+			tapTree := scriptTree.TapscriptTree
+			revokeIdx := tapTree.LeafProofIndex[revokeTapleafHash]
+			revokeMerkleProof := tapTree.LeafMerkleProofs[revokeIdx]
+			revokeControlBlock := revokeMerkleProof.ToControlBlock(
+				&input.TaprootNUMSKey,
+			)
+
+			ctrlBytes, _ := revokeControlBlock.ToBytes()
+
+			toRemoteSignDesc = &input.SignDescriptor{
+				KeyDesc: keychain.KeyDescriptor{
+					KeyLocator: toRemoteKeyLoc,
+					PubKey:     toRemotePK,
+				},
+				WitnessScript: scriptTree.SettleLeaf.Script,
+				SignMethod:    input.TaprootScriptSpendSignMethod, //nolint:lll
+				Output: &wire.TxOut{
+					Value:    toRemoteAmt,
+					PkScript: pkScript,
+				},
+				HashType:     txscript.SigHashDefault,
+				InputIndex:   1,
+				ControlBlock: ctrlBytes,
+			}
+		} else {
+			toRemoteSignDesc = &input.SignDescriptor{
+				KeyDesc: keychain.KeyDescriptor{
+					KeyLocator: toRemoteKeyLoc,
+					PubKey:     toRemotePK,
+				},
+				Output: &wire.TxOut{
+					Value: toRemoteAmt,
+				},
+				HashType: txscript.SigHashAll,
+			}
 		}
+
 		breachInfo.LocalOutputSignDesc = toRemoteSignDesc
 		breachTxn.AddTxOut(toRemoteSignDesc.Output)
 	}
@@ -174,12 +256,9 @@ func genTaskTest(
 			Hash:  txid,
 			Index: index,
 		}
-		toLocalInput = input.NewBaseInput(
-			&breachInfo.RemoteOutpoint,
-			input.CommitmentRevoke,
-			breachInfo.RemoteOutputSignDesc,
-			0,
-		)
+		toLocalInput, err = commitType.ToLocalInput(breachInfo)
+		require.NoError(t, err)
+
 		index++
 	}
 	if toRemoteAmt > 0 {
@@ -188,31 +267,8 @@ func genTaskTest(
 			Index: index,
 		}
 
-		var witnessType input.WitnessType
-		switch {
-		case chanType.HasAnchors():
-			witnessType = input.CommitmentToRemoteConfirmed
-		case chanType.IsTweakless():
-			witnessType = input.CommitSpendNoDelayTweakless
-		default:
-			witnessType = input.CommitmentNoDelay
-		}
-
-		if chanType.HasAnchors() {
-			toRemoteInput = input.NewCsvInput(
-				&breachInfo.LocalOutpoint,
-				witnessType,
-				breachInfo.LocalOutputSignDesc,
-				0, 1,
-			)
-		} else {
-			toRemoteInput = input.NewBaseInput(
-				&breachInfo.LocalOutpoint,
-				witnessType,
-				breachInfo.LocalOutputSignDesc,
-				0,
-			)
-		}
+		toRemoteInput, err = commitType.ToRemoteInput(breachInfo)
+		require.NoError(t, err)
 	}
 
 	return backupTaskTest{
@@ -238,6 +294,7 @@ func genTaskTest(
 		expSweepScript: sweepAddr,
 		signer:         signer,
 		chanType:       chanType,
+		commitType:     commitType,
 	}
 }
 
@@ -275,6 +332,7 @@ func TestBackupTask(t *testing.T) {
 		channeldb.SingleFunderBit,
 		channeldb.SingleFunderTweaklessBit,
 		channeldb.AnchorOutputsBit,
+		channeldb.SimpleTaprootFeatureBit,
 	}
 
 	var backupTaskTests []backupTaskTest
@@ -299,7 +357,16 @@ func TestBackupTask(t *testing.T) {
 			sweepFeeRateNoRewardRemoteDust chainfee.SatPerKWeight = 227500
 			sweepFeeRateRewardRemoteDust   chainfee.SatPerKWeight = 175350
 		)
-		if chanType.HasAnchors() {
+		if chanType.IsTaproot() {
+			expSweepCommitNoRewardBoth = 299165
+			expSweepCommitNoRewardLocal = 199468
+			expSweepCommitNoRewardRemote = 99531
+			sweepFeeRateNoRewardRemoteDust = 213200
+			expSweepCommitRewardBoth = 295993
+			expSweepCommitRewardLocal = 197296
+			expSweepCommitRewardRemote = 98359
+			sweepFeeRateRewardRemoteDust = 167000
+		} else if chanType.HasAnchors() {
 			expSweepCommitNoRewardBoth = 299236
 			expSweepCommitNoRewardLocal = 199513
 			expSweepCommitNoRewardRemote = 99557
@@ -312,6 +379,7 @@ func TestBackupTask(t *testing.T) {
 
 		backupTaskTests = append(backupTaskTests, []backupTaskTest{
 			genTaskTest(
+				t,
 				"commit no-reward, both outputs",
 				100,                        // stateNum
 				200000,                     // toLocalAmt
@@ -325,6 +393,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit no-reward, to-local output only",
 				1000,                        // stateNum
 				200000,                      // toLocalAmt
@@ -338,6 +407,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit no-reward, to-remote output only",
 				1,                            // stateNum
 				0,                            // toLocalAmt
@@ -351,6 +421,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit no-reward, to-remote output only, creates dust",
 				1,                              // stateNum
 				0,                              // toLocalAmt
@@ -364,6 +435,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit no-reward, no outputs, fee rate exceeds inputs",
 				300,                          // stateNum
 				0,                            // toLocalAmt
@@ -377,6 +449,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit no-reward, no outputs, fee rate of 0 creates dust",
 				300,                     // stateNum
 				0,                       // toLocalAmt
@@ -390,6 +463,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit reward, both outputs",
 				100,                      // stateNum
 				200000,                   // toLocalAmt
@@ -403,6 +477,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit reward, to-local output only",
 				1000,                      // stateNum
 				200000,                    // toLocalAmt
@@ -416,6 +491,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit reward, to-remote output only",
 				1,                          // stateNum
 				0,                          // toLocalAmt
@@ -429,6 +505,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit reward, to-remote output only, creates dust",
 				1,                            // stateNum
 				0,                            // toLocalAmt
@@ -442,6 +519,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit reward, no outputs, fee rate exceeds inputs",
 				300,                          // stateNum
 				0,                            // toLocalAmt
@@ -455,6 +533,7 @@ func TestBackupTask(t *testing.T) {
 				chanType,
 			),
 			genTaskTest(
+				t,
 				"commit reward, no outputs, fee rate of 0 creates dust",
 				300,                     // stateNum
 				0,                       // toLocalAmt
@@ -501,10 +580,10 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	// task's inputs() method.
 	expInputs := make(map[wire.OutPoint]input.Input)
 	if task.toLocalInput != nil {
-		expInputs[*task.toLocalInput.OutPoint()] = task.toLocalInput
+		expInputs[task.toLocalInput.OutPoint()] = task.toLocalInput
 	}
 	if task.toRemoteInput != nil {
-		expInputs[*task.toRemoteInput.OutPoint()] = task.toRemoteInput
+		expInputs[task.toRemoteInput.OutPoint()] = task.toRemoteInput
 	}
 
 	// Assert that the inputs method returns the correct slice of
@@ -583,60 +662,35 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	require.NoError(t, err, "unable to decrypt blob")
 
 	keyRing := test.breachInfo.KeyRing
-	expToLocalPK := keyRing.ToLocalKey.SerializeCompressed()
-	expRevPK := keyRing.RevocationKey.SerializeCompressed()
-	expToRemotePK := keyRing.ToRemoteKey.SerializeCompressed()
+	expToLocalPK := keyRing.ToLocalKey
+	expRevPK := keyRing.RevocationKey
+	expToRemotePK := keyRing.ToRemoteKey
 
-	// Assert that the blob contained the serialized revocation and to-local
-	// pubkeys.
-	require.Equal(t, expRevPK, jKit.RevocationPubKey[:])
-	require.Equal(t, expToLocalPK, jKit.LocalDelayPubKey[:])
-
-	// Determine if the breach transaction has a to-remote output and/or
-	// to-local output to spend from. Note the seemingly-reversed
-	// nomenclature.
-	hasToRemote := test.breachInfo.LocalOutputSignDesc != nil
-	hasToLocal := test.breachInfo.RemoteOutputSignDesc != nil
-
-	// If the to-remote output is present, assert that the to-remote public
-	// key was included in the blob. Otherwise assert that a blank public
-	// key was inserted.
-	if hasToRemote {
-		require.Equal(t, expToRemotePK, jKit.CommitToRemotePubKey[:])
-	} else {
-		require.Equal(t, zeroPK[:], jKit.CommitToRemotePubKey[:])
+	breachInfo := &lnwallet.BreachRetribution{
+		RemoteDelay: csvDelay,
+		KeyRing: &lnwallet.CommitmentKeyRing{
+			ToLocalKey:    expToLocalPK,
+			RevocationKey: expRevPK,
+			ToRemoteKey:   expToRemotePK,
+		},
 	}
 
-	// Assert that the CSV is encoded in the blob.
-	require.Equal(t, test.breachInfo.RemoteDelay, jKit.CSVDelay)
-
-	// Assert that the sweep pkscript is included.
-	require.Equal(t, test.expSweepScript, jKit.SweepAddress)
-
-	// Finally, verify that the signatures are encoded in the justice kit.
-	// We don't validate the actual signatures produced here, since at the
-	// moment, it is tested indirectly by other packages and integration
-	// tests.
-	// TODO(conner): include signature validation checks
-	emptyToLocalSig := bytes.Equal(
-		jKit.CommitToLocalSig.RawBytes(), zeroSig[:],
+	expectedKit, err := test.commitType.NewJusticeKit(
+		test.expSweepScript, breachInfo, test.expToRemoteInput != nil,
 	)
-	if hasToLocal {
-		require.False(t, emptyToLocalSig, "to-local signature should "+
-			"not be empty")
-	} else {
-		require.True(t, emptyToLocalSig, "to-local signature should "+
-			"be empty")
-	}
+	require.NoError(t, err)
 
-	emptyToRemoteSig := bytes.Equal(
-		jKit.CommitToRemoteSig.RawBytes(), zeroSig[:],
-	)
-	if hasToRemote {
-		require.False(t, emptyToRemoteSig, "to-remote signature "+
-			"should not be empty")
-	} else {
-		require.True(t, emptyToRemoteSig, "to-remote signature "+
-			"should be empty")
-	}
+	jKit.AddToLocalSig(zeroSig)
+	jKit.AddToRemoteSig(zeroSig)
+
+	require.Equal(t, expectedKit, jKit)
+}
+
+func makeSig(i int) lnwire.Sig {
+	var sigBytes [64]byte
+	binary.BigEndian.PutUint64(sigBytes[:8], uint64(i))
+
+	sig, _ := lnwire.NewSigFromWireECDSA(sigBytes[:])
+
+	return sig
 }

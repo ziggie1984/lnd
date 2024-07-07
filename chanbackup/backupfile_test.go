@@ -3,7 +3,6 @@ package chanbackup
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -16,7 +15,7 @@ import (
 func makeFakePackedMulti() (PackedMulti, error) {
 	newPackedMulti := make([]byte, 50)
 	if _, err := rand.Read(newPackedMulti[:]); err != nil {
-		return nil, fmt.Errorf("unable to make test backup: %v", err)
+		return nil, fmt.Errorf("unable to make test backup: %w", err)
 	}
 
 	return PackedMulti(newPackedMulti), nil
@@ -27,7 +26,7 @@ func assertBackupMatches(t *testing.T, filePath string,
 
 	t.Helper()
 
-	packedBackup, err := ioutil.ReadFile(filePath)
+	packedBackup, err := os.ReadFile(filePath)
 	require.NoError(t, err, "unable to test file")
 
 	if !bytes.Equal(packedBackup, currentBackup) {

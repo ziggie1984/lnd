@@ -15,6 +15,8 @@ import (
 	"syscall"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -97,7 +99,7 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 	// created from the global options in the CLI context.
 	profile, err := getGlobalOptions(ctx, skipMacaroons)
 	if err != nil {
-		fatal(fmt.Errorf("could not load global options: %v", err))
+		fatal(fmt.Errorf("could not load global options: %w", err))
 	}
 
 	// Create a dial options array.
@@ -116,7 +118,7 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 		// Load the specified TLS certificate.
 		certPool, err := profile.cert()
 		if err != nil {
-			fatal(fmt.Errorf("could not create cert pool: %v", err))
+			fatal(fmt.Errorf("could not create cert pool: %w", err))
 		}
 
 		// Build transport credentials from the certificate pool. If
@@ -162,7 +164,7 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 		// don't need to ask for it every time.
 		mac, err := macEntry.loadMacaroon(readPassword)
 		if err != nil {
-			fatal(fmt.Errorf("could not load macaroon: %v", err))
+			fatal(fmt.Errorf("could not load macaroon: %w", err))
 		}
 
 		macConstraints := []macaroons.Constraint{
@@ -197,7 +199,7 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 		// Now we append the macaroon credentials to the dial options.
 		cred, err := macaroons.NewMacaroonCredential(constrainedMac)
 		if err != nil {
-			fatal(fmt.Errorf("error cloning mac: %v", err))
+			fatal(fmt.Errorf("error cloning mac: %w", err))
 		}
 		opts = append(opts, grpc.WithPerRPCCredentials(cred))
 	}
@@ -226,7 +228,7 @@ func getClientConn(ctx *cli.Context, skipMacaroons bool) *grpc.ClientConn {
 
 	conn, err := grpc.Dial(profile.RPCServer, opts...)
 	if err != nil {
-		fatal(fmt.Errorf("unable to connect to RPC server: %v", err))
+		fatal(fmt.Errorf("unable to connect to RPC server: %w", err))
 	}
 
 	return conn
@@ -278,16 +280,6 @@ func contextWithMetadata(ctx context.Context,
 // extractPathArgs parses the TLS certificate and macaroon paths from the
 // command.
 func extractPathArgs(ctx *cli.Context) (string, string, error) {
-	// We'll start off by parsing the active chain and network. These are
-	// needed to determine the correct path to the macaroon when not
-	// specified.
-	chain := strings.ToLower(ctx.GlobalString("chain"))
-	switch chain {
-	case "bitcoin", "litecoin":
-	default:
-		return "", "", fmt.Errorf("unknown chain: %v", chain)
-	}
-
 	network := strings.ToLower(ctx.GlobalString("network"))
 	switch network {
 	case "mainnet", "testnet", "regtest", "simnet", "signet":
@@ -311,8 +303,8 @@ func extractPathArgs(ctx *cli.Context) (string, string, error) {
 		// lnddir/data/chain/<chain>/<network> in order to fetch the
 		// macaroon that we need.
 		macPath = filepath.Join(
-			lndDir, defaultDataDir, defaultChainSubDir, chain,
-			network, defaultMacaroonFilename,
+			lndDir, defaultDataDir, defaultChainSubDir,
+			lnd.BitcoinChainName, network, defaultMacaroonFilename,
 		)
 	}
 
@@ -468,6 +460,9 @@ func main() {
 		walletBalanceCommand,
 		channelBalanceCommand,
 		getInfoCommand,
+		getDebugInfoCommand,
+		encryptDebugPackageCommand,
+		decryptDebugPackageCommand,
 		getRecoveryInfoCommand,
 		pendingChannelsCommand,
 		sendPaymentCommand,
@@ -512,6 +507,8 @@ func main() {
 		subscribeCustomCommand,
 		fishCompletionCommand,
 		listAliasesCommand,
+		estimateRouteFeeCommand,
+		generateManPageCommand,
 	}
 
 	// Add any extra commands determined by build flags.
@@ -542,4 +539,56 @@ func readPassword(text string) ([]byte, error) {
 	pw, err := term.ReadPassword(int(syscall.Stdin)) // nolint:unconvert
 	fmt.Println()
 	return pw, err
+}
+
+// networkParams parses the global network flag into a chaincfg.Params.
+func networkParams(ctx *cli.Context) (*chaincfg.Params, error) {
+	network := strings.ToLower(ctx.GlobalString("network"))
+	switch network {
+	case "mainnet":
+		return &chaincfg.MainNetParams, nil
+
+	case "testnet":
+		return &chaincfg.TestNet3Params, nil
+
+	case "regtest":
+		return &chaincfg.RegressionNetParams, nil
+
+	case "simnet":
+		return &chaincfg.SimNetParams, nil
+
+	case "signet":
+		return &chaincfg.SigNetParams, nil
+
+	default:
+		return nil, fmt.Errorf("unknown network: %v", network)
+	}
+}
+
+// parseCoinSelectionStrategy parses a coin selection strategy string
+// from the CLI to its lnrpc.CoinSelectionStrategy counterpart proto type.
+func parseCoinSelectionStrategy(ctx *cli.Context) (
+	lnrpc.CoinSelectionStrategy, error) {
+
+	strategy := ctx.String(coinSelectionStrategyFlag.Name)
+	if !ctx.IsSet(coinSelectionStrategyFlag.Name) {
+		return lnrpc.CoinSelectionStrategy_STRATEGY_USE_GLOBAL_CONFIG,
+			nil
+	}
+
+	switch strategy {
+	case "global-config":
+		return lnrpc.CoinSelectionStrategy_STRATEGY_USE_GLOBAL_CONFIG,
+			nil
+
+	case "largest":
+		return lnrpc.CoinSelectionStrategy_STRATEGY_LARGEST, nil
+
+	case "random":
+		return lnrpc.CoinSelectionStrategy_STRATEGY_RANDOM, nil
+
+	default:
+		return 0, fmt.Errorf("unknown coin selection strategy "+
+			"%v", strategy)
+	}
 }

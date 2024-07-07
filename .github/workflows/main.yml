@@ -21,7 +21,7 @@ defaults:
     shell: bash
 
 env:
-  BITCOIN_VERSION: "23.0"
+  BITCOIN_VERSION: "27"
 
   # If you change this value, please change it in the following files as well:
   # /.travis.yml
@@ -29,7 +29,7 @@ env:
   # /dev.Dockerfile
   # /make/builder.Dockerfile
   # /.github/workflows/release.yml
-  GO_VERSION: 1.21.0
+  GO_VERSION: 1.22.3
 
 jobs:
   ########################
@@ -134,6 +134,9 @@ jobs:
       - name: check go modules tidiness 
         run: make tidy-module-check
 
+      - name: lint proto files
+        run: make protolint
+
       - name: lint
         run: GOGC=50 make lint
 
@@ -151,6 +154,7 @@ jobs:
         uses: ./.github/actions/setup-go
         with:
           go-version: '${{ env.GO_VERSION }}'
+          key-prefix: cross-compile
 
       - name: build release for all architectures
         run: make release
@@ -208,9 +212,10 @@ jobs:
         uses: ./.github/actions/setup-go
         with:
           go-version: '${{ env.GO_VERSION }}'
+          key-prefix: unit-test
 
       - name: install bitcoind
-        run: ./scripts/install_bitcoind.sh
+        run: ./scripts/install_bitcoind.sh $BITCOIN_VERSION
 
       - name: run ${{ matrix.unit_type }}
         run: make ${{ matrix.unit_type }}
@@ -220,6 +225,7 @@ jobs:
         if: matrix.unit_type == 'btcd unit-cover'
         with:
           path-to-profile: coverage.txt
+          flag-name: 'unit'
           parallel: true
 
 
@@ -236,21 +242,25 @@ jobs:
       matrix:
         include:
           - name: btcd
-            args: backend=btcd
+            args: backend=btcd cover=1
           - name: bitcoind
-            args: backend=bitcoind
+            args: backend=bitcoind cover=1
           - name: bitcoind-notxindex
             args: backend="bitcoind notxindex"
           - name: bitcoind-rpcpolling
-            args: backend="bitcoind rpcpolling"
+            args: backend="bitcoind rpcpolling" cover=1
           - name: bitcoind-etcd
             args: backend=bitcoind dbbackend=etcd
           - name: bitcoind-postgres
             args: backend=bitcoind dbbackend=postgres
           - name: bitcoind-sqlite
             args: backend=bitcoind dbbackend=sqlite
+          - name: bitcoind-postgres-nativesql
+            args: backend=bitcoind dbbackend=postgres nativesql=true
+          - name: bitcoind-sqlite-nativesql
+            args: backend=bitcoind dbbackend=sqlite nativesql=true
           - name: neutrino
-            args: backend=neutrino
+            args: backend=neutrino cover=1
     steps:
       - name: git checkout
         uses: actions/checkout@v3
@@ -259,12 +269,21 @@ jobs:
         uses: ./.github/actions/setup-go
         with:
           go-version: '${{ env.GO_VERSION }}'
+          key-prefix: integration-test
 
       - name: install bitcoind
-        run: ./scripts/install_bitcoind.sh
+        run: ./scripts/install_bitcoind.sh $BITCOIN_VERSION
 
       - name: run ${{ matrix.name }}
         run: make itest-parallel ${{ matrix.args }}
+
+      - name: Send coverage
+        if: ${{ contains(matrix.args, 'cover=1') }}
+        uses: shogo82148/actions-goveralls@v1
+        with:
+          path-to-profile: coverage.txt
+          flag-name: 'itest-${{ matrix.name }}'
+          parallel: true
 
       - name: Zip log files on failure
         if: ${{ failure() }}
@@ -295,9 +314,15 @@ jobs:
         uses: ./.github/actions/setup-go
         with:
           go-version: '${{ env.GO_VERSION }}'
+          key-prefix: integration-test
 
       - name: run itest
         run: make itest-parallel windows=1
+        
+      - name: kill any remaining lnd processes
+        if: ${{ failure() }}
+        shell: powershell
+        run: taskkill /IM lnd-itest.exe /T /F
 
       - name: Zip log files on failure
         if: ${{ failure() }}
@@ -312,6 +337,44 @@ jobs:
           path: logs-itest-windows.zip
           retention-days: 5
 
+  ########################
+  # run macOS integration test
+  ########################
+  macos-integration-test:
+    name: run macOS itest
+    runs-on: macos-14
+    if: '!contains(github.event.pull_request.labels.*.name, ''no-itest'')'
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v3
+
+      - name: setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: integration-test
+
+      - name: install bitcoind
+        run: |
+          wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}.0/bitcoin-${BITCOIN_VERSION}.0-arm64-apple-darwin.tar.gz
+          tar zxvf bitcoin-${BITCOIN_VERSION}.0-arm64-apple-darwin.tar.gz
+          mv bitcoin-${BITCOIN_VERSION}.0 /tmp/bitcoin
+
+      - name: run itest
+        run: PATH=$PATH:/tmp/bitcoin/bin make itest-parallel backend=bitcoind
+
+      - name: Zip log files on failure
+        if: ${{ failure() }}
+        timeout-minutes: 5 # timeout after 5 minute
+        run: 7z a logs-itest-macos.zip itest/**/*.log
+
+      - name: Upload log files on failure
+        uses: actions/upload-artifact@v3
+        if: ${{ failure() }}
+        with:
+          name: logs-itest-macos
+          path: logs-itest-macos.zip
+          retention-days: 5
 
   ########################
   # check pinned dependencies
@@ -324,7 +387,7 @@ jobs:
       fail-fast: false
       matrix:
         pinned_dep:
-          - google.golang.org/grpc v1.56.3
+          - google.golang.org/grpc v1.59.0
           - github.com/golang/protobuf v1.5.3
 
     steps:
@@ -347,3 +410,13 @@ jobs:
 
       - name: release notes check
         run: scripts/check-release-notes.sh
+  
+  # Notify about the completion of all coverage collecting jobs.
+  finish:
+    if: ${{ always() }}
+    needs: [unit-test, ubuntu-integration-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: shogo82148/actions-goveralls@v1
+        with:
+          parallel-finished: true

@@ -18,7 +18,7 @@
   "paths": {
     "/v2/invoices/cancel": {
       "post": {
-        "summary": "CancelInvoice cancels a currently open invoice. If the invoice is already\ncanceled, this call will succeed. If the invoice is already settled, it will\nfail.",
+        "summary": "lncli: `cancelinvoice`\nCancelInvoice cancels a currently open invoice. If the invoice is already\ncanceled, this call will succeed. If the invoice is already settled, it will\nfail.",
         "operationId": "Invoices_CancelInvoice",
         "responses": {
           "200": {
@@ -51,7 +51,7 @@
     },
     "/v2/invoices/hodl": {
       "post": {
-        "summary": "AddHoldInvoice creates a hold invoice. It ties the invoice to the hash\nsupplied in the request.",
+        "summary": "lncli: `addholdinvoice`\nAddHoldInvoice creates a hold invoice. It ties the invoice to the hash\nsupplied in the request.",
         "operationId": "Invoices_AddHoldInvoice",
         "responses": {
           "200": {
@@ -144,7 +144,7 @@
     },
     "/v2/invoices/settle": {
       "post": {
-        "summary": "SettleInvoice settles an accepted invoice. If the invoice is already\nsettled, this call will succeed.",
+        "summary": "lncli: `settleinvoice`\nSettleInvoice settles an accepted invoice. If the invoice is already\nsettled, this call will succeed.",
         "operationId": "Invoices_SettleInvoice",
         "responses": {
           "200": {
@@ -300,7 +300,7 @@
         "payment_addr": {
           "type": "string",
           "format": "byte",
-          "description": "The payment address of the generated invoice. This value should be used\nin all payments for this invoice as we require it for end to end\nsecurity."
+          "description": "The payment address of the generated invoice. This is also called\nthe payment secret in specifications (e.g. BOLT 11). This value should\nbe used in all payments for this invoice as we require it for end to end\nsecurity."
         }
       }
     },
@@ -565,7 +565,7 @@
         "payment_addr": {
           "type": "string",
           "format": "byte",
-          "description": "The payment address of this invoice. This value will be used in MPP\npayments, and also for newer invoices that always require the MPP payload\nfor added end-to-end security.\nNote: Output only, don't specify for creating an invoice."
+          "description": "The payment address of this invoice. This is also called payment secret in\nspecifications (e.g. BOLT 11). This value will be used in MPP payments, and\nalso for newer invoices that always require the MPP payload for added\nend-to-end security.\nNote: Output only, don't specify for creating an invoice."
         },
         "is_amp": {
           "type": "boolean",

@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -229,7 +229,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 
 		var testCases []testCase
 
-		jsonText, err := ioutil.ReadFile(set.jsonFile)
+		jsonText, err := os.ReadFile(set.jsonFile)
 		require.NoError(t, err)
 
 		err = json.Unmarshal(jsonText, &testCases)
@@ -269,7 +269,7 @@ func addTestHtlcs(t *testing.T, remote, local *LightningChannel,
 		hash160map[hash160] = preimage
 
 		// Add htlc to the channel.
-		chanID := lnwire.NewChanIDFromOutPoint(remote.ChanPoint)
+		chanID := lnwire.NewChanIDFromOutPoint(remote.ChannelPoint())
 
 		msg := &lnwire.UpdateAddHTLC{
 			Amount:      htlc.amount,
@@ -278,14 +278,14 @@ func addTestHtlcs(t *testing.T, remote, local *LightningChannel,
 			PaymentHash: hash,
 		}
 		if htlc.incoming {
-			htlcID, err := remote.AddHTLC(msg, nil)
+			htlcID, err := remote.addHTLC(msg, nil, NoBuffer)
 			require.NoError(t, err, "unable to add htlc")
 
 			msg.ID = htlcID
 			_, err = local.ReceiveHTLC(msg)
 			require.NoError(t, err, "unable to recv htlc")
 		} else {
-			htlcID, err := local.AddHTLC(msg, nil)
+			htlcID, err := local.addHTLC(msg, nil, NoBuffer)
 			require.NoError(t, err, "unable to add htlc")
 
 			msg.ID = htlcID
@@ -913,7 +913,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 
 	// Create the initial commitment transactions for the channel.
 	feePerKw := chainfee.SatPerKWeight(feeRate)
-	commitWeight := int64(input.CommitWeight)
+	commitWeight := lntypes.WeightUnit(input.CommitWeight)
 	if chanType.HasAnchors() {
 		commitWeight = input.AnchorCommitWeight
 	}

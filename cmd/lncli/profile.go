@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 	"strings"
 
@@ -27,7 +27,6 @@ type profileEntry struct {
 	Name        string            `json:"name"`
 	RPCServer   string            `json:"rpcserver"`
 	LndDir      string            `json:"lnddir"`
-	Chain       string            `json:"chain"`
 	Network     string            `json:"network"`
 	NoMacaroons bool              `json:"no-macaroons,omitempty"` // nolint:tagliatelle
 	TLSCert     string            `json:"tlscert"`
@@ -130,7 +129,7 @@ func profileFromContext(ctx *cli.Context, store, skipMacaroons bool) (
 	var tlsCert []byte
 	if tlsCertPath != "" && !insecure {
 		var err error
-		tlsCert, err = ioutil.ReadFile(tlsCertPath)
+		tlsCert, err = os.ReadFile(tlsCertPath)
 		if err != nil {
 			return nil, fmt.Errorf("could not load TLS cert "+
 				"file: %v", err)
@@ -153,7 +152,6 @@ func profileFromContext(ctx *cli.Context, store, skipMacaroons bool) (
 		LndDir: lncfg.CleanAndExpandPath(
 			ctx.GlobalString("lnddir"),
 		),
-		Chain:       ctx.GlobalString("chain"),
 		Network:     ctx.GlobalString("network"),
 		NoMacaroons: ctx.GlobalBool("no-macaroons"),
 		TLSCert:     string(tlsCert),
@@ -169,14 +167,14 @@ func profileFromContext(ctx *cli.Context, store, skipMacaroons bool) (
 	}
 
 	// Now load and possibly encrypt the macaroon file.
-	macBytes, err := ioutil.ReadFile(macPath)
+	macBytes, err := os.ReadFile(macPath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read macaroon path (check "+
 			"the network setting!): %v", err)
 	}
 	mac := &macaroon.Macaroon{}
 	if err = mac.UnmarshalBinary(macBytes); err != nil {
-		return nil, fmt.Errorf("unable to decode macaroon: %v", err)
+		return nil, fmt.Errorf("unable to decode macaroon: %w", err)
 	}
 
 	var pw []byte
@@ -195,7 +193,7 @@ func profileFromContext(ctx *cli.Context, store, skipMacaroons bool) (
 	}
 	macEntry := &macaroonEntry{}
 	if err = macEntry.storeMacaroon(mac, pw); err != nil {
-		return nil, fmt.Errorf("unable to store macaroon: %v", err)
+		return nil, fmt.Errorf("unable to store macaroon: %w", err)
 	}
 
 	// We determine the name of the macaroon from the file itself but cut
@@ -224,9 +222,9 @@ func loadProfileFile(file string) (*profileFile, error) {
 		return nil, errNoProfileFile
 	}
 
-	content, err := ioutil.ReadFile(file)
+	content, err := os.ReadFile(file)
 	if err != nil {
-		return nil, fmt.Errorf("could not load profile file %s: %v",
+		return nil, fmt.Errorf("could not load profile file %s: %w",
 			file, err)
 	}
 	f := &profileFile{}
@@ -243,9 +241,10 @@ func loadProfileFile(file string) (*profileFile, error) {
 func saveProfileFile(file string, f *profileFile) error {
 	content, err := f.marshalJSON()
 	if err != nil {
-		return fmt.Errorf("could not marshal profile: %v", err)
+		return fmt.Errorf("could not marshal profile: %w", err)
 	}
-	return ioutil.WriteFile(file, content, 0644)
+
+	return os.WriteFile(file, content, 0644)
 }
 
 // profileFile is a struct that represents the whole content of a profile file.
@@ -264,14 +263,14 @@ func (f *profileFile) unmarshalJSON(content []byte) error {
 func (f *profileFile) marshalJSON() ([]byte, error) {
 	b, err := json.Marshal(f)
 	if err != nil {
-		return nil, fmt.Errorf("error JSON marshalling profile: %v",
+		return nil, fmt.Errorf("error JSON marshalling profile: %w",
 			err)
 	}
 
 	var out bytes.Buffer
 	err = json.Indent(&out, b, "", "  ")
 	if err != nil {
-		return nil, fmt.Errorf("error indenting profile JSON: %v", err)
+		return nil, fmt.Errorf("error indenting profile JSON: %w", err)
 	}
 	out.WriteString("\n")
 	return out.Bytes(), nil

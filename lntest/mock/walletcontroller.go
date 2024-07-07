@@ -141,14 +141,16 @@ func (w *WalletController) ImportTaprootScript(waddrmgr.KeyScope,
 
 // SendOutputs currently returns dummy values.
 func (w *WalletController) SendOutputs([]*wire.TxOut,
-	chainfee.SatPerKWeight, int32, string) (*wire.MsgTx, error) {
+	chainfee.SatPerKWeight, int32, string,
+	base.CoinSelectionStrategy) (*wire.MsgTx, error) {
 
 	return nil, nil
 }
 
 // CreateSimpleTx currently returns dummy values.
 func (w *WalletController) CreateSimpleTx([]*wire.TxOut,
-	chainfee.SatPerKWeight, int32, bool) (*txauthor.AuthoredTx, error) {
+	chainfee.SatPerKWeight, int32, base.CoinSelectionStrategy,
+	bool) (*txauthor.AuthoredTx, error) {
 
 	return nil, nil
 }
@@ -186,12 +188,6 @@ func (w *WalletController) ListTransactionDetails(int32, int32,
 	return nil, nil
 }
 
-// LockOutpoint currently does nothing.
-func (w *WalletController) LockOutpoint(o wire.OutPoint) {}
-
-// UnlockOutpoint currently does nothing.
-func (w *WalletController) UnlockOutpoint(o wire.OutPoint) {}
-
 // LeaseOutput returns the current time and a nil error.
 func (w *WalletController) LeaseOutput(wtxmgr.LockID, wire.OutPoint,
 	time.Duration) (time.Time, []byte, btcutil.Amount, error) {
@@ -212,7 +208,8 @@ func (w *WalletController) ListLeasedOutputs() ([]*base.ListLeasedOutputResult,
 
 // FundPsbt currently does nothing.
 func (w *WalletController) FundPsbt(*psbt.Packet, int32, chainfee.SatPerKWeight,
-	string, *waddrmgr.KeyScope) (int32, error) {
+	string, *waddrmgr.KeyScope, base.CoinSelectionStrategy,
+	func(utxo wtxmgr.Credit) bool) (int32, error) {
 
 	return 0, nil
 }
@@ -227,10 +224,22 @@ func (w *WalletController) FinalizePsbt(_ *psbt.Packet, _ string) error {
 	return nil
 }
 
+// DecorateInputs currently does nothing.
+func (w *WalletController) DecorateInputs(*psbt.Packet, bool) error {
+	return nil
+}
+
 // PublishTransaction sends a transaction to the PublishedTransactions chan.
 func (w *WalletController) PublishTransaction(tx *wire.MsgTx, _ string) error {
 	w.PublishedTransactions <- tx
 	return nil
+}
+
+// GetTransactionDetails currently does nothing.
+func (w *WalletController) GetTransactionDetails(
+	txHash *chainhash.Hash) (*lnwallet.TransactionDetail, error) {
+
+	return nil, nil
 }
 
 // LabelTransaction currently does nothing.
@@ -272,5 +281,9 @@ func (w *WalletController) FetchTx(chainhash.Hash) (*wire.MsgTx, error) {
 }
 
 func (w *WalletController) RemoveDescendants(*wire.MsgTx) error {
+	return nil
+}
+
+func (w *WalletController) CheckMempoolAcceptance(tx *wire.MsgTx) error {
 	return nil
 }

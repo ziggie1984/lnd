@@ -8,6 +8,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
@@ -144,13 +145,13 @@ type PaymentSession interface {
 	// a boolean to indicate whether the update has been applied without
 	// error.
 	UpdateAdditionalEdge(msg *lnwire.ChannelUpdate, pubKey *btcec.PublicKey,
-		policy *channeldb.CachedEdgePolicy) bool
+		policy *models.CachedEdgePolicy) bool
 
 	// GetAdditionalEdgePolicy uses the public key and channel ID to query
 	// the ephemeral channel edge policy for additional edges. Returns a nil
 	// if nothing found.
 	GetAdditionalEdgePolicy(pubKey *btcec.PublicKey,
-		channelID uint64) *channeldb.CachedEdgePolicy
+		channelID uint64) *models.CachedEdgePolicy
 }
 
 // paymentSession is used during an HTLC routings session to prune the local
@@ -162,7 +163,7 @@ type PaymentSession interface {
 // loop if payment attempts take long enough. An additional set of edges can
 // also be provided to assist in reaching the payment's destination.
 type paymentSession struct {
-	additionalEdges map[route.Vertex][]*channeldb.CachedEdgePolicy
+	additionalEdges map[route.Vertex][]AdditionalEdge
 
 	getBandwidthHints func(routingGraph) (bandwidthHints, error)
 
@@ -175,7 +176,7 @@ type paymentSession struct {
 	getRoutingGraph func() (routingGraph, func(), error)
 
 	// pathFindingConfig defines global parameters that control the
-	// trade-off in path finding between fees and probabiity.
+	// trade-off in path finding between fees and probability.
 	pathFindingConfig PathFindingConfig
 
 	missionControl MissionController
@@ -257,6 +258,7 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 		DestCustomRecords:  p.payment.DestCustomRecords,
 		DestFeatures:       p.payment.DestFeatures,
 		PaymentAddr:        p.payment.PaymentAddr,
+		Amp:                p.payment.amp,
 		Metadata:           p.payment.Metadata,
 	}
 
@@ -390,7 +392,7 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 				records:     p.payment.DestCustomRecords,
 				paymentAddr: p.payment.PaymentAddr,
 				metadata:    p.payment.Metadata,
-			},
+			}, nil,
 		)
 		if err != nil {
 			return nil, err
@@ -405,7 +407,7 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 // updates to the supplied policy. It returns a boolean to indicate whether
 // there's an error when applying the updates.
 func (p *paymentSession) UpdateAdditionalEdge(msg *lnwire.ChannelUpdate,
-	pubKey *btcec.PublicKey, policy *channeldb.CachedEdgePolicy) bool {
+	pubKey *btcec.PublicKey, policy *models.CachedEdgePolicy) bool {
 
 	// Validate the message signature.
 	if err := VerifyChannelUpdateSignature(msg, pubKey); err != nil {
@@ -430,7 +432,7 @@ func (p *paymentSession) UpdateAdditionalEdge(msg *lnwire.ChannelUpdate,
 // ephemeral channel edge policy for additional edges. Returns a nil if nothing
 // found.
 func (p *paymentSession) GetAdditionalEdgePolicy(pubKey *btcec.PublicKey,
-	channelID uint64) *channeldb.CachedEdgePolicy {
+	channelID uint64) *models.CachedEdgePolicy {
 
 	target := route.NewVertex(pubKey)
 
@@ -440,11 +442,12 @@ func (p *paymentSession) GetAdditionalEdgePolicy(pubKey *btcec.PublicKey,
 	}
 
 	for _, edge := range edges {
-		if edge.ChannelID != channelID {
+		policy := edge.EdgePolicy()
+		if policy.ChannelID != channelID {
 			continue
 		}
 
-		return edge
+		return policy
 	}
 
 	return nil

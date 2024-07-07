@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -298,50 +299,20 @@ func fetchPayment(bucket kvdb.RBucket) (*MPPayment, error) {
 		failureReason = &reason
 	}
 
-	// Go through all HTLCs for this payment, noting whether we have any
-	// settled HTLC, and any still in-flight.
-	var inflight, settled bool
-	for _, h := range htlcs {
-		if h.Failure != nil {
-			continue
-		}
-
-		if h.Settle != nil {
-			settled = true
-			continue
-		}
-
-		// If any of the HTLCs are not failed nor settled, we
-		// still have inflight HTLCs.
-		inflight = true
-	}
-
-	// Use the DB state to determine the status of the payment.
-	var paymentStatus PaymentStatus
-
-	switch {
-	// If any of the the HTLCs did succeed and there are no HTLCs in
-	// flight, the payment succeeded.
-	case !inflight && settled:
-		paymentStatus = StatusSucceeded
-
-	// If we have no in-flight HTLCs, and the payment failure is set, the
-	// payment is considered failed.
-	case !inflight && failureReason != nil:
-		paymentStatus = StatusFailed
-
-	// Otherwise it is still in flight.
-	default:
-		paymentStatus = StatusInFlight
-	}
-
-	return &MPPayment{
+	// Create a new payment.
+	payment := &MPPayment{
 		SequenceNum:   sequenceNum,
 		Info:          creationInfo,
 		HTLCs:         htlcs,
 		FailureReason: failureReason,
-		Status:        paymentStatus,
-	}, nil
+	}
+
+	// Set its state and status.
+	if err := payment.setState(); err != nil {
+		return nil, err
+	}
+
+	return payment, nil
 }
 
 // fetchHtlcAttempts retrieves all htlc attempts made for the payment found in
@@ -500,13 +471,13 @@ type PaymentsQuery struct {
 	// payment index (complete and incomplete) should be counted.
 	CountTotal bool
 
-	// CreationDateStart, if set, filters out all payments with a creation
-	// date greater than or euqal to it.
-	CreationDateStart time.Time
+	// CreationDateStart, expressed in Unix seconds, if set, filters out
+	// all payments with a creation date greater than or equal to it.
+	CreationDateStart int64
 
-	// CreationDateEnd, if set, filters out all payments with a creation
-	// date less than or euqal to it.
-	CreationDateEnd time.Time
+	// CreationDateEnd, expressed in Unix seconds, if set, filters out all
+	// payments with a creation date less than or equal to it.
+	CreationDateEnd int64
 }
 
 // PaymentsResponse contains the result of a query to the payments database.
@@ -541,11 +512,7 @@ type PaymentsResponse struct {
 // to a subset of payments by the payments query, containing an offset
 // index and a maximum number of returned payments.
 func (d *DB) QueryPayments(query PaymentsQuery) (PaymentsResponse, error) {
-	var (
-		resp         PaymentsResponse
-		startDateSet = !query.CreationDateStart.IsZero()
-		endDateSet   = !query.CreationDateEnd.IsZero()
-	)
+	var resp PaymentsResponse
 
 	if err := kvdb.View(d, func(tx kvdb.RTx) error {
 		// Get the root payments bucket.
@@ -590,20 +557,20 @@ func (d *DB) QueryPayments(query PaymentsQuery) (PaymentsResponse, error) {
 				return false, err
 			}
 
+			// Get the creation time in Unix seconds, this always
+			// rounds down the nanoseconds to full seconds.
+			createTime := payment.Info.CreationTime.Unix()
+
 			// Skip any payments that were created before the
 			// specified time.
-			if startDateSet && payment.Info.CreationTime.Before(
-				query.CreationDateStart,
-			) {
-
+			if createTime < query.CreationDateStart {
 				return false, nil
 			}
 
 			// Skip any payments that were created after the
 			// specified time.
-			if endDateSet && payment.Info.CreationTime.After(
-				query.CreationDateEnd,
-			) {
+			if query.CreationDateEnd != 0 &&
+				createTime > query.CreationDateEnd {
 
 				return false, nil
 			}
@@ -648,7 +615,7 @@ func (d *DB) QueryPayments(query PaymentsQuery) (PaymentsResponse, error) {
 				err = indexes.ForEach(countFn)
 			}
 			if err != nil {
-				return fmt.Errorf("error counting payments: %v",
+				return fmt.Errorf("error counting payments: %w",
 					err)
 			}
 
@@ -783,12 +750,12 @@ func (d *DB) DeletePayment(paymentHash lntypes.Hash,
 			return err
 		}
 
-		// If the status is InFlight, we cannot safely delete
+		// If the payment has inflight HTLCs, we cannot safely delete
 		// the payment information, so we return an error.
-		if paymentStatus == StatusInFlight {
-			return fmt.Errorf("payment '%v' has status InFlight "+
-				"and therefore cannot be deleted",
-				paymentHash.String())
+		if err := paymentStatus.removable(); err != nil {
+			return fmt.Errorf("payment '%v' has inflight HTLCs"+
+				"and therefore cannot be deleted: %w",
+				paymentHash.String(), err)
 		}
 
 		// Delete the failed HTLC attempts we found.
@@ -888,9 +855,10 @@ func (d *DB) DeletePayments(failedOnly, failedHtlcsOnly bool) error {
 				return err
 			}
 
-			// If the status is InFlight, we cannot safely delete
-			// the payment information, so we return early.
-			if paymentStatus == StatusInFlight {
+			// If the payment has inflight HTLCs, we cannot safely
+			// delete the payment information, so we return an nil
+			// to skip it.
+			if err := paymentStatus.removable(); err != nil {
 				return nil
 			}
 
@@ -1172,8 +1140,32 @@ func serializeHop(w io.Writer, h *route.Hop) error {
 		records = append(records, h.MPP.Record())
 	}
 
+	// Add blinding point and encrypted data if present.
+	if h.EncryptedData != nil {
+		records = append(records, record.NewEncryptedDataRecord(
+			&h.EncryptedData,
+		))
+	}
+
+	if h.BlindingPoint != nil {
+		records = append(records, record.NewBlindingPointRecord(
+			&h.BlindingPoint,
+		))
+	}
+
+	if h.AMP != nil {
+		records = append(records, h.AMP.Record())
+	}
+
 	if h.Metadata != nil {
 		records = append(records, record.NewMetadataRecord(&h.Metadata))
+	}
+
+	if h.TotalAmtMsat != 0 {
+		totalMsatInt := uint64(h.TotalAmtMsat)
+		records = append(
+			records, record.NewTotalAmtMsatBlinded(&totalMsatInt),
+		)
 	}
 
 	// Final sanity check to absolutely rule out custom records that are not
@@ -1290,11 +1282,68 @@ func deserializeHop(r io.Reader) (*route.Hop, error) {
 		h.MPP = mpp
 	}
 
+	// If encrypted data or blinding key are present, remove them from
+	// the TLV map and parse into proper types.
+	encryptedDataType := uint64(record.EncryptedDataOnionType)
+	if data, ok := tlvMap[encryptedDataType]; ok {
+		delete(tlvMap, encryptedDataType)
+		h.EncryptedData = data
+	}
+
+	blindingType := uint64(record.BlindingPointOnionType)
+	if blindingPoint, ok := tlvMap[blindingType]; ok {
+		delete(tlvMap, blindingType)
+
+		h.BlindingPoint, err = btcec.ParsePubKey(blindingPoint)
+		if err != nil {
+			return nil, fmt.Errorf("invalid blinding point: %w",
+				err)
+		}
+	}
+
+	ampType := uint64(record.AMPOnionType)
+	if ampBytes, ok := tlvMap[ampType]; ok {
+		delete(tlvMap, ampType)
+
+		var (
+			amp    = &record.AMP{}
+			ampRec = amp.Record()
+			r      = bytes.NewReader(ampBytes)
+		)
+		err := ampRec.Decode(r, uint64(len(ampBytes)))
+		if err != nil {
+			return nil, err
+		}
+		h.AMP = amp
+	}
+
+	// If the metadata type is present, remove it from the tlv map and
+	// populate directly on the hop.
 	metadataType := uint64(record.MetadataOnionType)
 	if metadata, ok := tlvMap[metadataType]; ok {
 		delete(tlvMap, metadataType)
 
 		h.Metadata = metadata
+	}
+
+	totalAmtMsatType := uint64(record.TotalAmtMsatBlindedType)
+	if totalAmtMsat, ok := tlvMap[totalAmtMsatType]; ok {
+		delete(tlvMap, totalAmtMsatType)
+
+		var (
+			totalAmtMsatInt uint64
+			buf             [8]byte
+		)
+		if err := tlv.DTUint64(
+			bytes.NewReader(totalAmtMsat),
+			&totalAmtMsatInt,
+			&buf,
+			uint64(len(totalAmtMsat)),
+		); err != nil {
+			return nil, err
+		}
+
+		h.TotalAmtMsat = lnwire.MilliSatoshi(totalAmtMsatInt)
 	}
 
 	h.CustomRecords = tlvMap

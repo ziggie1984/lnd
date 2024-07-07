@@ -6,7 +6,6 @@ package lntest
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/lightningnetwork/lnd/lntest/node"
+	"github.com/lightningnetwork/lnd/lntest/port"
 )
 
 // logDirPattern is the pattern of the name of the temporary log directory.
@@ -104,18 +104,17 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string,
 		return nil, nil, err
 	}
 
-	tempBitcoindDir, err := ioutil.TempDir("", "bitcoind")
+	tempBitcoindDir, err := os.MkdirTemp("", "bitcoind")
 	if err != nil {
 		return nil, nil,
-			fmt.Errorf("unable to create temp directory: %v", err)
+			fmt.Errorf("unable to create temp directory: %w", err)
 	}
 
 	zmqBlockAddr := fmt.Sprintf("tcp://127.0.0.1:%d",
-		node.NextAvailablePort())
-	zmqTxAddr := fmt.Sprintf("tcp://127.0.0.1:%d",
-		node.NextAvailablePort())
-	rpcPort := node.NextAvailablePort()
-	p2pPort := node.NextAvailablePort()
+		port.NextAvailablePort())
+	zmqTxAddr := fmt.Sprintf("tcp://127.0.0.1:%d", port.NextAvailablePort())
+	rpcPort := port.NextAvailablePort()
+	p2pPort := port.NextAvailablePort()
 
 	cmdArgs := []string{
 		"-datadir=" + tempBitcoindDir,
@@ -138,7 +137,7 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string,
 			fmt.Printf("unable to remote temp dir %v: %v",
 				tempBitcoindDir, err)
 		}
-		return nil, nil, fmt.Errorf("couldn't start bitcoind: %v", err)
+		return nil, nil, fmt.Errorf("couldn't start bitcoind: %w", err)
 	}
 
 	cleanUp := func() error {
@@ -192,7 +191,7 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string,
 	client, err := rpcclient.New(&rpcCfg, nil)
 	if err != nil {
 		_ = cleanUp()
-		return nil, nil, fmt.Errorf("unable to create rpc client: %v",
+		return nil, nil, fmt.Errorf("unable to create rpc client: %w",
 			err)
 	}
 

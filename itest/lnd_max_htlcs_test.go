@@ -20,6 +20,17 @@ func testMaxHtlcPathfind(ht *lntest.HarnessTest) {
 	maxHtlcs := 5
 
 	alice, bob := ht.Alice, ht.Bob
+
+	// Restart nodes with the new flag so they understand the new payment
+	// status.
+	ht.RestartNodeWithExtraArgs(alice, []string{
+		"--routerrpc.usestatusinitiated",
+	})
+	ht.RestartNodeWithExtraArgs(bob, []string{
+		"--routerrpc.usestatusinitiated",
+	})
+
+	ht.EnsureConnected(alice, bob)
 	chanPoint := ht.OpenChannel(
 		alice, bob, lntest.OpenChannelParams{
 			Amt:            1000000,
@@ -122,8 +133,7 @@ func acceptHoldInvoice(ht *lntest.HarnessTest, idx int, sender,
 	invoice := receiver.RPC.AddHoldInvoice(req)
 
 	invStream := receiver.RPC.SubscribeSingleInvoice(hash[:])
-	inv := ht.ReceiveSingleInvoice(invStream)
-	require.Equal(ht, lnrpc.Invoice_OPEN, inv.State, "expect open")
+	ht.AssertInvoiceState(invStream, lnrpc.Invoice_OPEN)
 
 	sendReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: invoice.PaymentRequest,
@@ -136,7 +146,7 @@ func acceptHoldInvoice(ht *lntest.HarnessTest, idx int, sender,
 	// the payer to get one update for the creation of the payment, and
 	// another when a htlc is dispatched.
 	payment := ht.AssertPaymentStatusFromStream(
-		payStream, lnrpc.Payment_IN_FLIGHT,
+		payStream, lnrpc.Payment_INITIATED,
 	)
 	require.Empty(ht, payment.Htlcs)
 
@@ -145,9 +155,7 @@ func acceptHoldInvoice(ht *lntest.HarnessTest, idx int, sender,
 	)
 	require.Len(ht, payment.Htlcs, 1)
 
-	inv = ht.ReceiveSingleInvoice(invStream)
-	require.Equal(ht, lnrpc.Invoice_ACCEPTED, inv.State,
-		"expected accepted")
+	ht.AssertInvoiceState(invStream, lnrpc.Invoice_ACCEPTED)
 
 	return &holdSubscription{
 		recipient:           receiver,

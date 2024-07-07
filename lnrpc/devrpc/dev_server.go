@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -180,12 +181,12 @@ func parseOutPoint(s string) (*wire.OutPoint, error) {
 
 	index, err := strconv.ParseInt(split[1], 10, 32)
 	if err != nil {
-		return nil, fmt.Errorf("unable to decode output index: %v", err)
+		return nil, fmt.Errorf("unable to decode output index: %w", err)
 	}
 
 	txid, err := chainhash.NewHashFromStr(split[0])
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse hex string: %v", err)
+		return nil, fmt.Errorf("unable to parse hex string: %w", err)
 	}
 
 	return &wire.OutPoint{
@@ -251,7 +252,7 @@ func (s *Server) ImportGraph(ctx context.Context,
 		}
 
 		if err := graphDB.AddLightningNode(node); err != nil {
-			return nil, fmt.Errorf("unable to add node %v: %v",
+			return nil, fmt.Errorf("unable to add node %v: %w",
 				rpcNode.PubKey, err)
 		}
 
@@ -261,7 +262,7 @@ func (s *Server) ImportGraph(ctx context.Context,
 	for _, rpcEdge := range graph.Edges {
 		rpcEdge := rpcEdge
 
-		edge := &channeldb.ChannelEdgeInfo{
+		edge := &models.ChannelEdgeInfo{
 			ChannelID: rpcEdge.ChannelId,
 			ChainHash: *s.cfg.ActiveNetParams.GenesisHash,
 			Capacity:  btcutil.Amount(rpcEdge.Capacity),
@@ -284,12 +285,12 @@ func (s *Server) ImportGraph(ctx context.Context,
 		edge.ChannelPoint = *channelPoint
 
 		if err := graphDB.AddChannelEdge(edge); err != nil {
-			return nil, fmt.Errorf("unable to add edge %v: %v",
+			return nil, fmt.Errorf("unable to add edge %v: %w",
 				rpcEdge.ChanPoint, err)
 		}
 
-		makePolicy := func(rpcPolicy *lnrpc.RoutingPolicy) *channeldb.ChannelEdgePolicy {
-			policy := &channeldb.ChannelEdgePolicy{
+		makePolicy := func(rpcPolicy *lnrpc.RoutingPolicy) *models.ChannelEdgePolicy { //nolint:lll
+			policy := &models.ChannelEdgePolicy{
 				ChannelID: rpcEdge.ChannelId,
 				LastUpdate: time.Unix(
 					int64(rpcPolicy.LastUpdate), 0,

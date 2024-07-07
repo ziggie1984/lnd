@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -382,7 +381,7 @@ func openChannel(ctx *cli.Context) error {
 			args.First(), 10, 64,
 		)
 		if err != nil {
-			return fmt.Errorf("unable to decode local amt: %v", err)
+			return fmt.Errorf("unable to decode local amt: %w", err)
 		}
 		args = args.Tail()
 	case !ctx.Bool("fundmax"):
@@ -420,7 +419,7 @@ func openChannel(ctx *cli.Context) error {
 	} else if args.Present() {
 		req.PushSat, err = strconv.ParseInt(args.First(), 10, 64)
 		if err != nil {
-			return fmt.Errorf("unable to decode push amt: %v", err)
+			return fmt.Errorf("unable to decode push amt: %w", err)
 		}
 	}
 
@@ -534,14 +533,14 @@ func openChannelPsbt(rpcCtx context.Context, ctx *cli.Context,
 	if basePsbt != "" {
 		basePsbtBytes, err = base64.StdEncoding.DecodeString(basePsbt)
 		if err != nil {
-			return fmt.Errorf("error parsing base PSBT: %v", err)
+			return fmt.Errorf("error parsing base PSBT: %w", err)
 		}
 	}
 
 	// Generate a new, random pending channel ID that we'll use as the main
 	// identifier when sending update messages to the RPC server.
 	if _, err := rand.Read(pendingChanID[:]); err != nil {
-		return fmt.Errorf("unable to generate random chan ID: %v", err)
+		return fmt.Errorf("unable to generate random chan ID: %w", err)
 	}
 	fmt.Printf("Starting PSBT funding flow with pending channel ID %x.\n",
 		pendingChanID)
@@ -591,7 +590,7 @@ func openChannelPsbt(rpcCtx context.Context, ctx *cli.Context,
 	// explicitly capture the signal.
 	stream, err := client.OpenChannel(ctxc, req)
 	if err != nil {
-		return fmt.Errorf("opening stream to server failed: %v", err)
+		return fmt.Errorf("opening stream to server failed: %w", err)
 	}
 
 	// We also need to spawn a goroutine that reads from the server. This
@@ -602,7 +601,7 @@ func openChannelPsbt(rpcCtx context.Context, ctx *cli.Context,
 			// Recv blocks until a message or error arrives.
 			resp, err := stream.Recv()
 			if err == io.EOF {
-				srvErr <- fmt.Errorf("lnd shutting down: %v",
+				srvErr <- fmt.Errorf("lnd shutting down: %w",
 					err)
 				return
 			} else if err != nil {
@@ -685,7 +684,7 @@ func openChannelPsbt(rpcCtx context.Context, ctx *cli.Context,
 			}
 			fundedPsbt, err := decodePsbt(inputPsbt)
 			if err != nil {
-				return fmt.Errorf("psbt decode failed: %v",
+				return fmt.Errorf("psbt decode failed: %w",
 					err)
 			}
 			verifyMsg := &lnrpc.FundingTransitionMsg{
@@ -817,6 +816,7 @@ var batchOpenChannelCommand = cli.Command{
 				"transaction when storing it to the local " +
 				"wallet after publishing it",
 		},
+		coinSelectionStrategyFlag,
 	},
 	Action: actionDecorator(batchOpenChannel),
 }
@@ -845,13 +845,19 @@ func batchOpenChannel(ctx *cli.Context) error {
 		return nil
 	}
 
+	coinSelectionStrategy, err := parseCoinSelectionStrategy(ctx)
+	if err != nil {
+		return err
+	}
+
 	minConfs := int32(ctx.Uint64("min_confs"))
 	req := &lnrpc.BatchOpenChannelRequest{
-		TargetConf:       int32(ctx.Int64("conf_target")),
-		SatPerVbyte:      int64(ctx.Uint64("sat_per_vbyte")),
-		MinConfs:         minConfs,
-		SpendUnconfirmed: minConfs == 0,
-		Label:            ctx.String("label"),
+		TargetConf:            int32(ctx.Int64("conf_target")),
+		SatPerVbyte:           int64(ctx.Uint64("sat_per_vbyte")),
+		MinConfs:              minConfs,
+		SpendUnconfirmed:      minConfs == 0,
+		Label:                 ctx.String("label"),
+		CoinSelectionStrategy: coinSelectionStrategy,
 	}
 
 	// Let's try and parse the JSON part of the CLI now. Fortunately we can
@@ -859,21 +865,21 @@ func batchOpenChannel(ctx *cli.Context) error {
 	// marshaler that keeps the original snake case.
 	var jsonChannels []*batchChannelJSON
 	if err := json.Unmarshal([]byte(args.First()), &jsonChannels); err != nil {
-		return fmt.Errorf("error parsing channels JSON: %v", err)
+		return fmt.Errorf("error parsing channels JSON: %w", err)
 	}
 
 	req.Channels = make([]*lnrpc.BatchOpenChannel, len(jsonChannels))
 	for idx, jsonChannel := range jsonChannels {
 		pubKeyBytes, err := hex.DecodeString(jsonChannel.NodePubkey)
 		if err != nil {
-			return fmt.Errorf("error parsing node pubkey hex: %v",
+			return fmt.Errorf("error parsing node pubkey hex: %w",
 				err)
 		}
 		pendingChanBytes, err := hex.DecodeString(
 			jsonChannel.PendingChanID,
 		)
 		if err != nil {
-			return fmt.Errorf("error parsing pending chan ID: %v",
+			return fmt.Errorf("error parsing pending chan ID: %w",
 				err)
 		}
 
@@ -1009,7 +1015,7 @@ func readTerminalOrFile(quit chan struct{}) (string, error) {
 
 	// If it's a path to an existing file and it's small enough, let's try
 	// to read its content now.
-	content, err := ioutil.ReadFile(maybeFile)
+	content, err := os.ReadFile(maybeFile)
 	if err != nil {
 		return "", err
 	}

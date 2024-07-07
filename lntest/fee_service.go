@@ -9,14 +9,15 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lightningnetwork/lnd/lntest/node"
+	"github.com/lightningnetwork/lnd"
+	"github.com/lightningnetwork/lnd/lntest/port"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
 )
 
 // WebFeeService defines an interface that's used to provide fee estimation
 // service used in the integration tests. It must provide an URL so that a lnd
-// node can be started with the flag `--feeurl` and uses the customized fee
+// node can be started with the flag `--fee.url` and uses the customized fee
 // estimator.
 type WebFeeService interface {
 	// Start starts the service.
@@ -31,6 +32,9 @@ type WebFeeService interface {
 	// SetFeeRate sets the estimated fee rate for a given confirmation
 	// target.
 	SetFeeRate(feeRate chainfee.SatPerKWeight, conf uint32)
+
+	// Reset resets the fee rate map to the default value.
+	Reset()
 }
 
 const (
@@ -59,11 +63,11 @@ type FeeService struct {
 // Compile-time check for the WebFeeService interface.
 var _ WebFeeService = (*FeeService)(nil)
 
-// Start spins up a go-routine to serve fee estimates.
+// NewFeeService spins up a go-routine to serve fee estimates.
 func NewFeeService(t *testing.T) *FeeService {
 	t.Helper()
 
-	port := node.NextAvailablePort()
+	port := port.NextAvailablePort()
 	f := FeeService{
 		T: t,
 		url: fmt.Sprintf(
@@ -81,8 +85,9 @@ func NewFeeService(t *testing.T) *FeeService {
 	mux.HandleFunc("/fee-estimates.json", f.handleRequest)
 
 	f.srv = &http.Server{
-		Addr:    listenAddr,
-		Handler: mux,
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: lnd.DefaultHTTPHeaderTimeout,
 	}
 
 	return &f
@@ -136,6 +141,16 @@ func (f *FeeService) SetFeeRate(fee chainfee.SatPerKWeight, conf uint32) {
 	defer f.lock.Unlock()
 
 	f.feeRateMap[conf] = uint32(fee.FeePerKVByte())
+}
+
+// Reset resets the fee rate map to the default value.
+func (f *FeeService) Reset() {
+	f.lock.Lock()
+	f.feeRateMap = make(map[uint32]uint32)
+	f.lock.Unlock()
+
+	// Initialize default fee estimate.
+	f.SetFeeRate(DefaultFeeRateSatPerKw, 1)
 }
 
 // URL returns the service endpoint.

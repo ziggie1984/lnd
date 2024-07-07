@@ -2,6 +2,7 @@ package itest
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/funding"
@@ -312,15 +314,6 @@ func runPsbtChanFunding(ht *lntest.HarnessTest, carol, dave *node.HarnessNode,
 	resp := dave.RPC.AddInvoice(invoice)
 	ht.CompletePaymentRequests(carol, []string{resp.PaymentRequest})
 
-	// TODO(yy): remove the sleep once the following bug is fixed. When the
-	// payment is reported as settled by Carol, it's expected the
-	// commitment dance is finished and all subsequent states have been
-	// updated. Yet we'd receive the error `cannot co-op close channel with
-	// active htlcs` or `link failed to shutdown` if we close the channel.
-	// We need to investigate the order of settling the payments and
-	// updating commitments to understand and fix .
-	time.Sleep(2 * time.Second)
-
 	// To conclude, we'll close the newly created channel between Carol and
 	// Dave. This function will also block until the channel is closed and
 	// will additionally assert the relevant channel closing post
@@ -496,15 +489,6 @@ func runPsbtChanFundingExternal(ht *lntest.HarnessTest, carol,
 	resp := dave.RPC.AddInvoice(invoice)
 	ht.CompletePaymentRequests(carol, []string{resp.PaymentRequest})
 
-	// TODO(yy): remove the sleep once the following bug is fixed. When the
-	// payment is reported as settled by Carol, it's expected the
-	// commitment dance is finished and all subsequent states have been
-	// updated. Yet we'd receive the error `cannot co-op close channel with
-	// active htlcs` or `link failed to shutdown` if we close the channel.
-	// We need to investigate the order of settling the payments and
-	// updating commitments to understand and fix .
-	time.Sleep(2 * time.Second)
-
 	// To conclude, we'll close the newly created channel between Carol and
 	// Dave. This function will also block until the channels are closed and
 	// will additionally assert the relevant channel closing post
@@ -656,15 +640,6 @@ func runPsbtChanFundingSingleStep(ht *lntest.HarnessTest, carol,
 	resp := dave.RPC.AddInvoice(invoice)
 	ht.CompletePaymentRequests(carol, []string{resp.PaymentRequest})
 
-	// TODO(yy): remove the sleep once the following bug is fixed. When the
-	// payment is reported as settled by Carol, it's expected the
-	// commitment dance is finished and all subsequent states have been
-	// updated. Yet we'd receive the error `cannot co-op close channel with
-	// active htlcs` or `link failed to shutdown` if we close the channel.
-	// We need to investigate the order of settling the payments and
-	// updating commitments to understand and fix .
-	time.Sleep(2 * time.Second)
-
 	// To conclude, we'll close the newly created channel between Carol and
 	// Dave. This function will also block until the channel is closed and
 	// will additionally assert the relevant channel closing post
@@ -719,11 +694,11 @@ func runSignPsbtSegWitV0P2WKH(ht *lntest.HarnessTest, alice *node.HarnessNode) {
 	}
 
 	// Let's simulate a change address.
-	change, err := xpub.DeriveNonStandard(changeIndex) // nolint:staticcheck
+	change, err := xpub.DeriveNonStandard(changeIndex)
 	require.NoError(ht, err)
 
 	// At an index that we are certainly not watching in the wallet.
-	addrKey, err := change.DeriveNonStandard(addrIndex) // nolint:staticcheck
+	addrKey, err := change.DeriveNonStandard(addrIndex)
 	require.NoError(ht, err)
 
 	addrPubKey, err := addrKey.ECPubKey()
@@ -800,11 +775,11 @@ func runSignPsbtSegWitV0NP2WKH(ht *lntest.HarnessTest,
 	}
 
 	// Let's simulate a change address.
-	change, err := xpub.DeriveNonStandard(changeIndex) // nolint:staticcheck
+	change, err := xpub.DeriveNonStandard(changeIndex)
 	require.NoError(ht, err)
 
 	// At an index that we are certainly not watching in the wallet.
-	addrKey, err := change.DeriveNonStandard(addrIndex) // nolint:staticcheck
+	addrKey, err := change.DeriveNonStandard(addrIndex)
 	require.NoError(ht, err)
 
 	addrPubKey, err := addrKey.ECPubKey()
@@ -882,10 +857,11 @@ func runSignPsbtSegWitV1KeySpendBip86(ht *lntest.HarnessTest,
 				PubKey:    keyDesc.RawKeyBytes,
 				Bip32Path: fullDerivationPath,
 			}}
-			in.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{{
+			p2trDerivation := []*psbt.TaprootBip32Derivation{{
 				XOnlyPubKey: keyDesc.RawKeyBytes[1:],
 				Bip32Path:   fullDerivationPath,
 			}}
+			in.TaprootBip32Derivation = p2trDerivation
 			in.SighashType = txscript.SigHashDefault
 		},
 		func(packet *psbt.Packet) {
@@ -929,10 +905,11 @@ func runSignPsbtSegWitV1KeySpendRootHash(ht *lntest.HarnessTest,
 				PubKey:    keyDesc.RawKeyBytes,
 				Bip32Path: fullDerivationPath,
 			}}
-			in.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{{
+			p2trDerivation := []*psbt.TaprootBip32Derivation{{
 				XOnlyPubKey: keyDesc.RawKeyBytes[1:],
 				Bip32Path:   fullDerivationPath,
 			}}
+			in.TaprootBip32Derivation = p2trDerivation
 			in.TaprootMerkleRoot = rootHash[:]
 			in.SighashType = txscript.SigHashDefault
 		},
@@ -982,11 +959,12 @@ func runSignPsbtSegWitV1ScriptSpend(ht *lntest.HarnessTest,
 				PubKey:    keyDesc.RawKeyBytes,
 				Bip32Path: fullDerivationPath,
 			}}
-			in.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{{
+			p2trDerivation := []*psbt.TaprootBip32Derivation{{
 				XOnlyPubKey: keyDesc.RawKeyBytes[1:],
 				Bip32Path:   fullDerivationPath,
 				LeafHashes:  [][]byte{rootHash[:]},
 			}}
+			in.TaprootBip32Derivation = p2trDerivation
 			in.SighashType = txscript.SigHashDefault
 			in.TaprootLeafScript = []*psbt.TaprootTapLeafScript{{
 				ControlBlock: controlBlockBytes,
@@ -1000,8 +978,8 @@ func runSignPsbtSegWitV1ScriptSpend(ht *lntest.HarnessTest,
 				ht, packet.Inputs[0].TaprootScriptSpendSig, 1,
 			)
 
-			scriptSpendSig := packet.Inputs[0].TaprootScriptSpendSig[0]
-			require.Len(ht, scriptSpendSig.Signature, 64)
+			spendSig := packet.Inputs[0].TaprootScriptSpendSig[0]
+			require.Len(ht, spendSig.Signature, 64)
 		},
 	)
 }
@@ -1032,7 +1010,7 @@ func runFundAndSignPsbt(ht *lntest.HarnessTest, alice *node.HarnessNode) {
 
 	for _, addrType := range spendAddrTypes {
 		for _, changeType := range changeAddrTypes {
-			ht.Logf("testing with address type %s and"+
+			ht.Logf("testing with address type %s and "+
 				"change address type %s", addrType, changeType)
 
 			// First, spend all the coins in the wallet to an
@@ -1057,6 +1035,265 @@ func runFundAndSignPsbt(ht *lntest.HarnessTest, alice *node.HarnessNode) {
 			)
 		}
 	}
+}
+
+// testFundPsbt tests the FundPsbt RPC use cases that aren't covered by the PSBT
+// channel funding tests above. These specifically are the use cases of funding
+// a PSBT that already specifies an input but where the user still wants the
+// wallet to perform coin selection.
+func testFundPsbt(ht *lntest.HarnessTest) {
+	// We test a pay-join between Alice and Bob. Bob wants to send Alice
+	// 5 million Satoshis in a non-obvious way. So Bob selects a UTXO that's
+	// bigger than 5 million Satoshis and expects the change minus the send
+	// amount back. Alice then funds the PSBT with coins of her own and
+	// combines her change with the 5 million Satoshis from Bob. With this
+	// Alice ends up paying the fees for a transfer to her.
+	const sendAmount = 5_000_000
+	aliceAddr := ht.Alice.RPC.NewAddress(&lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+	})
+	bobAddr := ht.Bob.RPC.NewAddress(&lnrpc.NewAddressRequest{
+		Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+	})
+
+	ht.Alice.UpdateState()
+	ht.Bob.UpdateState()
+	aliceStartBalance := ht.Alice.State.Wallet.TotalBalance
+	bobStartBalance := ht.Bob.State.Wallet.TotalBalance
+
+	var bobUtxo *lnrpc.Utxo
+	bobUnspent := ht.Bob.RPC.ListUnspent(&walletrpc.ListUnspentRequest{})
+	for _, utxo := range bobUnspent.Utxos {
+		if utxo.AmountSat > sendAmount {
+			bobUtxo = utxo
+			break
+		}
+	}
+	if bobUtxo == nil {
+		ht.Fatalf("Bob doesn't have a UTXO of at least %d sats",
+			sendAmount)
+	}
+
+	bobUtxoTxHash, err := chainhash.NewHash(bobUtxo.Outpoint.TxidBytes)
+	require.NoError(ht, err)
+
+	tx := wire.NewMsgTx(2)
+	tx.TxIn = append(tx.TxIn, &wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  *bobUtxoTxHash,
+			Index: bobUtxo.Outpoint.OutputIndex,
+		},
+	})
+	tx.TxOut = append(tx.TxOut, &wire.TxOut{
+		// Change going back to Bob.
+		PkScript: addressToPkScript(ht, bobAddr.Address),
+		Value:    bobUtxo.AmountSat - sendAmount,
+	}, &wire.TxOut{
+		// Amount to be sent to Alice, but we'll also send her change
+		// here.
+		PkScript: addressToPkScript(ht, aliceAddr.Address),
+		Value:    sendAmount,
+	})
+
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(ht, err)
+
+	derivation, trDerivation := getAddressBip32Derivation(
+		ht, bobUtxo.Address, ht.Bob,
+	)
+
+	bobUtxoPkScript, _ := hex.DecodeString(bobUtxo.PkScript)
+	firstInput := &packet.Inputs[0]
+	firstInput.WitnessUtxo = &wire.TxOut{
+		PkScript: bobUtxoPkScript,
+		Value:    bobUtxo.AmountSat,
+	}
+	firstInput.Bip32Derivation = []*psbt.Bip32Derivation{derivation}
+	firstInput.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{
+		trDerivation,
+	}
+	if txscript.IsPayToWitnessPubKeyHash(bobUtxoPkScript) {
+		packet.Inputs[0].SighashType = txscript.SigHashAll
+	}
+
+	// We have the template now. Bob basically funds the 5 million Sats to
+	// send to Alice and Alice now only needs to coin select to pay for the
+	// fees.
+	fundedPacket := fundPsbtCoinSelect(ht, ht.Alice, packet, 1)
+	txFee, err := fundedPacket.GetTxFee()
+	require.NoError(ht, err)
+
+	// We now let Bob sign the transaction.
+	signedPacket := signPacket(ht, ht.Bob, fundedPacket)
+
+	// And then Alice, which should give us a fully signed TX.
+	signedPacket = signPacket(ht, ht.Alice, signedPacket)
+
+	// We should be able to finalize the PSBT and extract the final TX now.
+	extractPublishAndMine(ht, ht.Alice, signedPacket)
+
+	// Make sure the new wallet balances are reflected correctly.
+	ht.AssertActiveNodesSynced()
+	ht.Alice.UpdateState()
+	ht.Bob.UpdateState()
+
+	require.Equal(
+		ht, aliceStartBalance+sendAmount-int64(txFee),
+		ht.Alice.State.Wallet.TotalBalance,
+	)
+	require.Equal(
+		ht, bobStartBalance-sendAmount,
+		ht.Bob.State.Wallet.TotalBalance,
+	)
+}
+
+// addressToPkScript parses the given address string and returns the pkScript
+// for the regtest environment.
+func addressToPkScript(t testing.TB, addr string) []byte {
+	parsed, err := btcutil.DecodeAddress(addr, harnessNetParams)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToAddrScript(parsed)
+	require.NoError(t, err)
+
+	return pkScript
+}
+
+// getAddressBip32Derivation returns the PSBT BIP-0032 derivation info of an
+// address.
+func getAddressBip32Derivation(t testing.TB, addr string,
+	node *node.HarnessNode) (*psbt.Bip32Derivation,
+	*psbt.TaprootBip32Derivation) {
+
+	// We can't query a single address directly, so we just query all wallet
+	// addresses.
+	addresses := node.RPC.ListAddresses(
+		&walletrpc.ListAddressesRequest{},
+	)
+
+	var (
+		path        []uint32
+		pubKeyBytes []byte
+		err         error
+	)
+	for _, account := range addresses.AccountWithAddresses {
+		for _, address := range account.Addresses {
+			if address.Address == addr {
+				path, err = lntest.ParseDerivationPath(
+					address.DerivationPath,
+				)
+				require.NoError(t, err)
+
+				pubKeyBytes = address.PublicKey
+			}
+		}
+	}
+
+	if len(path) != 5 || len(pubKeyBytes) == 0 {
+		t.Fatalf("Derivation path for address %s not found or invalid",
+			addr)
+	}
+
+	// The actual derivation path in a PSBT needs to be using the hardened
+	// uint32 notation for the first three elements.
+	path[0] += hdkeychain.HardenedKeyStart
+	path[1] += hdkeychain.HardenedKeyStart
+	path[2] += hdkeychain.HardenedKeyStart
+
+	return &psbt.Bip32Derivation{
+			PubKey:    pubKeyBytes,
+			Bip32Path: path,
+		}, &psbt.TaprootBip32Derivation{
+			XOnlyPubKey: pubKeyBytes[1:],
+			Bip32Path:   path,
+		}
+}
+
+// fundPsbtCoinSelect calls the FundPsbt RPC on the given node using the coin
+// selection with template PSBT mode.
+func fundPsbtCoinSelect(t testing.TB, node *node.HarnessNode,
+	packet *psbt.Packet, changeIndex int32) *psbt.Packet {
+
+	var buf bytes.Buffer
+	err := packet.Serialize(&buf)
+	require.NoError(t, err)
+
+	cs := &walletrpc.PsbtCoinSelect{
+		Psbt: buf.Bytes(),
+	}
+	if changeIndex >= 0 {
+		cs.ChangeOutput = &walletrpc.PsbtCoinSelect_ExistingOutputIndex{
+			ExistingOutputIndex: 1,
+		}
+	} else {
+		cs.ChangeOutput = &walletrpc.PsbtCoinSelect_Add{
+			Add: true,
+		}
+	}
+
+	fundResp := node.RPC.FundPsbt(&walletrpc.FundPsbtRequest{
+		Template: &walletrpc.FundPsbtRequest_CoinSelect{
+			CoinSelect: cs,
+		},
+		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
+			SatPerVbyte: 50,
+		},
+	})
+
+	fundedPacket, err := psbt.NewFromRawBytes(
+		bytes.NewReader(fundResp.FundedPsbt), false,
+	)
+	require.NoError(t, err)
+
+	return fundedPacket
+}
+
+// signPacket calls the SignPsbt RPC on the given node.
+func signPacket(t testing.TB, node *node.HarnessNode,
+	packet *psbt.Packet) *psbt.Packet {
+
+	var buf bytes.Buffer
+	err := packet.Serialize(&buf)
+	require.NoError(t, err)
+
+	signResp := node.RPC.SignPsbt(&walletrpc.SignPsbtRequest{
+		FundedPsbt: buf.Bytes(),
+	})
+
+	// Let's make sure we have a partial signature.
+	signedPacket, err := psbt.NewFromRawBytes(
+		bytes.NewReader(signResp.SignedPsbt), false,
+	)
+	require.NoError(t, err)
+
+	return signedPacket
+}
+
+// extractAndPublish extracts the final transaction from the packet and
+// publishes it with the given node, mines a block and asserts the TX was mined
+// successfully.
+func extractPublishAndMine(ht *lntest.HarnessTest, node *node.HarnessNode,
+	packet *psbt.Packet) *wire.MsgTx {
+
+	err := psbt.MaybeFinalizeAll(packet)
+	require.NoError(ht, err)
+
+	finalTx, err := psbt.Extract(packet)
+	require.NoError(ht, err)
+
+	var buf bytes.Buffer
+	err = finalTx.Serialize(&buf)
+	require.NoError(ht, err)
+
+	// Publish the second transaction and then mine both of them.
+	node.RPC.PublishTransaction(&walletrpc.Transaction{TxHex: buf.Bytes()})
+
+	// Mine one block which should contain two transactions.
+	block := ht.MineBlocksAndAssertNumTxes(1, 1)[0]
+	txHash := finalTx.TxHash()
+	ht.Miner.AssertTxInBlock(block, &txHash)
+
+	return finalTx
 }
 
 // assertPsbtSpend creates an output with the given pkScript on chain and then
@@ -1129,18 +1366,7 @@ func assertPsbtSpend(ht *lntest.HarnessTest, alice *node.HarnessNode,
 	decorateUnsigned(packet)
 
 	// That's it, we should be able to sign the PSBT now.
-	buf.Reset()
-	err = packet.Serialize(&buf)
-	require.NoError(ht, err)
-
-	signReq = &walletrpc.SignPsbtRequest{FundedPsbt: buf.Bytes()}
-	signResp := alice.RPC.SignPsbt(signReq)
-
-	// Let's make sure we have a partial signature.
-	signedPacket, err := psbt.NewFromRawBytes(
-		bytes.NewReader(signResp.SignedPsbt), false,
-	)
-	require.NoError(ht, err)
+	signedPacket := signPacket(ht, alice, packet)
 
 	// Allow the caller to also verify (and potentially move) some of the
 	// returned fields.
@@ -1156,12 +1382,7 @@ func assertPsbtSpend(ht *lntest.HarnessTest, alice *node.HarnessNode,
 	// Make sure we can also sign a second time. This makes sure any key
 	// tweaking that happened for the signing didn't affect any keys in the
 	// cache.
-	r := &walletrpc.SignPsbtRequest{FundedPsbt: buf.Bytes()}
-	signResp2 := alice.RPC.SignPsbt(r)
-	signedPacket2, err := psbt.NewFromRawBytes(
-		bytes.NewReader(signResp2.SignedPsbt), false,
-	)
-	require.NoError(ht, err)
+	signedPacket2 := signPacket(ht, alice, packet)
 	verifySigned(signedPacket2)
 
 	buf.Reset()
@@ -1254,32 +1475,14 @@ func assertPsbtFundSignSpend(ht *lntest.HarnessTest, alice *node.HarnessNode,
 	)
 	require.NoError(ht, err)
 
-	// We should be able to finalize the PSBT and extract the final
+	// We should be able to finalize the PSBT, extract and publish the final
 	// TX now.
-	err = psbt.MaybeFinalizeAll(signedPacket)
-	require.NoError(ht, err)
-
-	finalTx, err := psbt.Extract(signedPacket)
-	require.NoError(ht, err)
+	finalTx := extractPublishAndMine(ht, alice, signedPacket)
 
 	// Check type of the change script depending on the change address
 	// type we provided in FundPsbt.
 	changeScript := finalTx.TxOut[fundResp.ChangeOutputIndex].PkScript
 	assertChangeScriptType(ht, changeScript, changeType)
-
-	var buf bytes.Buffer
-	err = finalTx.Serialize(&buf)
-	require.NoError(ht, err)
-
-	// Publish the second transaction and then mine both of them.
-	alice.RPC.PublishTransaction(&walletrpc.Transaction{
-		TxHex: buf.Bytes(),
-	})
-
-	// Mine one block which should contain one transaction.
-	block := ht.MineBlocksAndAssertNumTxes(1, 1)[0]
-	finalTxHash := finalTx.TxHash()
-	ht.Miner.AssertTxInBlock(block, &finalTxHash)
 }
 
 // assertChangeScriptType checks if the given script has the right type given
@@ -1336,6 +1539,7 @@ func sendAllCoinsToAddrType(ht *lntest.HarnessTest,
 		Addr:             resp.Address,
 		SendAll:          true,
 		SpendUnconfirmed: true,
+		TargetConf:       6,
 	})
 
 	ht.MineBlocksAndAssertNumTxes(1, 1)
@@ -1387,4 +1591,322 @@ func testPsbtChanFundingFailFlow(ht *lntest.HarnessTest) {
 	// to fund this channel but instead wait for our peer to fail the
 	// funding workflow with an internal error.
 	ht.ReceiveOpenChannelError(chanUpdates, chanfunding.ErrRemoteCanceled)
+}
+
+// testPsbtChanFundingWithUnstableUtxos tests that channel openings with
+// unstable utxos, in this case in particular unconfirmed utxos still in use by
+// the sweeper subsystem, are not considered when opening a channel. They bear
+// the risk of being RBFed and are therefore not safe to open a channel with.
+func testPsbtChanFundingWithUnstableUtxos(ht *lntest.HarnessTest) {
+	fundingAmt := btcutil.Amount(2_000_000)
+
+	// First, we'll create two new nodes that we'll use to open channel
+	// between for this test.
+	carol := ht.NewNode("carol", nil)
+	dave := ht.NewNode("dave", nil)
+	ht.EnsureConnected(carol, dave)
+
+	// Fund Carol's wallet with a confirmed utxo.
+	ht.FundCoins(fundingAmt, carol)
+
+	ht.AssertNumUTXOs(carol, 1)
+
+	// Now spend the coins to create an unconfirmed transaction. This is
+	// necessary to test also the neutrino behaviour. For neutrino nodes
+	// only unconfirmed transactions originating from this node will be
+	// recognized as unconfirmed.
+	req := &lnrpc.NewAddressRequest{Type: AddrTypeTaprootPubkey}
+	resp := carol.RPC.NewAddress(req)
+
+	sendCoinsResp := carol.RPC.SendCoins(&lnrpc.SendCoinsRequest{
+		Addr:        resp.Address,
+		SendAll:     true,
+		SatPerVbyte: 1,
+	})
+
+	walletUtxo := ht.AssertNumUTXOsUnconfirmed(carol, 1)[0]
+	require.EqualValues(ht, sendCoinsResp.Txid, walletUtxo.Outpoint.TxidStr)
+
+	chanSize := btcutil.Amount(walletUtxo.AmountSat / 2)
+
+	// We use STATIC_REMOTE_KEY channels to easily generate sweeps without
+	// anchor sweeps interfering.
+	cType := lnrpc.CommitmentType_STATIC_REMOTE_KEY
+
+	// We open a normal channel so that we can force-close it and produce
+	// a sweeper originating utxo.
+	update := ht.OpenChannelAssertPending(carol, dave,
+		lntest.OpenChannelParams{
+			Amt:              chanSize,
+			SpendUnconfirmed: true,
+		})
+	channelPoint := lntest.ChanPointFromPendingUpdate(update)
+	ht.MineBlocksAndAssertNumTxes(1, 2)
+
+	// Now force close the channel by dave to generate a utxo which is
+	// swept by the sweeper. We have STATIC_REMOTE_KEY Channel Types.
+	ht.CloseChannelAssertPending(dave, channelPoint, true)
+	ht.MineBlocksAndAssertNumTxes(1, 1)
+
+	// Mine one block to trigger the sweep transaction.
+	ht.MineEmptyBlocks(1)
+
+	// We wait for the to_remote sweep tx.
+	ht.AssertNumUTXOsUnconfirmed(carol, 1)
+
+	// We need the maximum funding amount to ensure we are opening the next
+	// channel with all available utxos.
+	carolBalance := carol.RPC.WalletBalance()
+
+	// The max chan size needs to account for the fee opening the channel
+	// itself.
+	// NOTE: We need to always account for a change here, because their is
+	// an inaccurarcy in the backend code.
+	chanSize = btcutil.Amount(carolBalance.TotalBalance) -
+		fundingFee(2, true)
+
+	// Now open a channel of this amount via a psbt workflow.
+	// At this point, we can begin our PSBT channel funding workflow. We'll
+	// start by generating a pending channel ID externally that will be used
+	// to track this new funding type.
+	pendingChanID := ht.Random32Bytes()
+
+	// Now that we have the pending channel ID, Carol will open the channel
+	// by specifying a PSBT shim. We expect it to fail because we try to
+	// fund a channel with the maximum amount of our wallet, which also
+	// includes an unstable utxo originating from the sweeper.
+	chanUpdates, tempPsbt := ht.OpenChannelPsbt(
+		carol, dave, lntest.OpenChannelParams{
+			Amt: chanSize,
+			FundingShim: &lnrpc.FundingShim{
+				Shim: &lnrpc.FundingShim_PsbtShim{
+					PsbtShim: &lnrpc.PsbtShim{
+						PendingChanId: pendingChanID,
+					},
+				},
+			},
+			CommitmentType:   cType,
+			SpendUnconfirmed: true,
+		},
+	)
+
+	fundReq := &walletrpc.FundPsbtRequest{
+		Template: &walletrpc.FundPsbtRequest_Psbt{
+			Psbt: tempPsbt,
+		},
+		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
+			SatPerVbyte: 50,
+		},
+		MinConfs:         0,
+		SpendUnconfirmed: true,
+	}
+	carol.RPC.FundPsbtAssertErr(fundReq)
+
+	// We confirm the sweep transaction and make sure we see it as confirmed
+	// from the perspective of the underlying wallet.
+	ht.MineBlocksAndAssertNumTxes(1, 1)
+
+	// We expect 2 confirmed utxos, the change of the prior successful
+	// channel opening and the confirmed to_remote output.
+	ht.AssertNumUTXOsConfirmed(carol, 2)
+
+	// We fund the psbt request again and now all utxo are stable and can
+	// finally be used to fund the channel.
+	fundResp := carol.RPC.FundPsbt(fundReq)
+
+	// We verify the psbt before finalizing it.
+	carol.RPC.FundingStateStep(&lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_PsbtVerify{
+			PsbtVerify: &lnrpc.FundingPsbtVerify{
+				PendingChanId: pendingChanID,
+				FundedPsbt:    fundResp.FundedPsbt,
+			},
+		},
+	})
+
+	// Now we'll ask Carol's wallet to sign the PSBT so we can finish the
+	// funding flow.
+	finalizeReq := &walletrpc.FinalizePsbtRequest{
+		FundedPsbt: fundResp.FundedPsbt,
+	}
+	finalizeRes := carol.RPC.FinalizePsbt(finalizeReq)
+
+	// We've signed our PSBT now, let's pass it to the intent again.
+	carol.RPC.FundingStateStep(&lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_PsbtFinalize{
+			PsbtFinalize: &lnrpc.FundingPsbtFinalize{
+				PendingChanId: pendingChanID,
+				SignedPsbt:    finalizeRes.SignedPsbt,
+			},
+		},
+	})
+
+	// Consume the "channel pending" update. This waits until the funding
+	// transaction was fully compiled.
+	updateResp := ht.ReceiveOpenChannelUpdate(chanUpdates)
+	upd, ok := updateResp.Update.(*lnrpc.OpenStatusUpdate_ChanPending)
+	require.True(ht, ok)
+	channelPoint2 := &lnrpc.ChannelPoint{
+		FundingTxid: &lnrpc.ChannelPoint_FundingTxidBytes{
+			FundingTxidBytes: upd.ChanPending.Txid,
+		},
+		OutputIndex: upd.ChanPending.OutputIndex,
+	}
+
+	var finalTx wire.MsgTx
+	err := finalTx.Deserialize(bytes.NewReader(finalizeRes.RawFinalTx))
+	require.NoError(ht, err)
+
+	txHash := finalTx.TxHash()
+	block := ht.MineBlocksAndAssertNumTxes(1, 1)[0]
+	ht.Miner.AssertTxInBlock(block, &txHash)
+
+	// Now we do the same but instead use preselected utxos to verify that
+	// these utxos respects the utxo restrictions on sweeper unconfirmed
+	// inputs as well.
+
+	// Now force close the channel by dave to generate a utxo which is
+	// swept by the sweeper. We have STATIC_REMOTE_KEY Channel Types.
+	ht.CloseChannelAssertPending(dave, channelPoint2, true)
+	ht.MineBlocksAndAssertNumTxes(1, 1)
+
+	// Mine one block to trigger the sweep transaction.
+	ht.MineEmptyBlocks(1)
+
+	// We wait for the to_remote sweep tx of channelPoint2.
+	utxos := ht.AssertNumUTXOsUnconfirmed(carol, 1)
+
+	// We need the maximum funding amount to ensure we are opening the next
+	// channel with all available utxos.
+	carolBalance = carol.RPC.WalletBalance()
+
+	// The max chan size needs to account for the fee opening the channel
+	// itself.
+	// NOTE: We need to always account for a change here, because their is
+	// an inaccurarcy in the backend code calculating the fee of a 1 input
+	// one output transaction, it always account for a channge in that case
+	// as well.
+	chanSize = btcutil.Amount(carolBalance.TotalBalance) -
+		fundingFee(2, true)
+
+	// Now open a channel of this amount via a psbt workflow.
+	// At this point, we can begin our PSBT channel funding workflow. We'll
+	// start by generating a pending channel ID externally that will be used
+	// to track this new funding type.
+	pendingChanID = ht.Random32Bytes()
+
+	// Now that we have the pending channel ID, Carol will open the channel
+	// by specifying a PSBT shim. We expect it to fail because we try to
+	// fund a channel with the maximum amount of our wallet, which also
+	// includes an unstable utxo originating from the sweeper.
+	chanUpdates, tempPsbt = ht.OpenChannelPsbt(
+		carol, dave, lntest.OpenChannelParams{
+			Amt: chanSize,
+			FundingShim: &lnrpc.FundingShim{
+				Shim: &lnrpc.FundingShim_PsbtShim{
+					PsbtShim: &lnrpc.PsbtShim{
+						PendingChanId: pendingChanID,
+					},
+				},
+			},
+			CommitmentType:   cType,
+			SpendUnconfirmed: true,
+		},
+	)
+	// Add selected utxos to the funding intent.
+	decodedPsbt, err := psbt.NewFromRawBytes(
+		bytes.NewReader(tempPsbt), false,
+	)
+	require.NoError(ht, err)
+
+	for _, input := range utxos {
+		txHash, err := chainhash.NewHashFromStr(input.Outpoint.TxidStr)
+		require.NoError(ht, err)
+		decodedPsbt.UnsignedTx.TxIn = append(
+			decodedPsbt.UnsignedTx.TxIn, &wire.TxIn{
+				PreviousOutPoint: wire.OutPoint{
+					Hash:  *txHash,
+					Index: input.Outpoint.OutputIndex,
+				},
+			})
+
+		// The inputs we are using to fund the transaction are known to
+		// the internal wallet that's why we just append an empty input
+		// element so that the parsing of the psbt package succeeds.
+		decodedPsbt.Inputs = append(decodedPsbt.Inputs, psbt.PInput{})
+	}
+
+	var psbtBytes bytes.Buffer
+	err = decodedPsbt.Serialize(&psbtBytes)
+	require.NoError(ht, err)
+
+	fundReq = &walletrpc.FundPsbtRequest{
+		Template: &walletrpc.FundPsbtRequest_Psbt{
+			Psbt: psbtBytes.Bytes(),
+		},
+		Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
+			SatPerVbyte: 50,
+		},
+		MinConfs:         0,
+		SpendUnconfirmed: true,
+	}
+	carol.RPC.FundPsbtAssertErr(fundReq)
+
+	ht.MineBlocksAndAssertNumTxes(1, 1)
+
+	// We expect 2 confirmed utxos, the change of the last successful
+	// channel opening and the confirmed to_remote output of channelPoint2.
+	ht.AssertNumUTXOsConfirmed(carol, 2)
+
+	// After the confirmation of the sweep to_remote output the funding
+	// will now proceed.
+	fundResp = carol.RPC.FundPsbt(fundReq)
+
+	// We verify the funded psbt.
+	carol.RPC.FundingStateStep(&lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_PsbtVerify{
+			PsbtVerify: &lnrpc.FundingPsbtVerify{
+				PendingChanId: pendingChanID,
+				FundedPsbt:    fundResp.FundedPsbt,
+			},
+		},
+	})
+
+	// Now we'll ask Carol's wallet to sign the PSBT so we can finish the
+	// funding flow.
+	finalizeReq = &walletrpc.FinalizePsbtRequest{
+		FundedPsbt: fundResp.FundedPsbt,
+	}
+	finalizeRes = carol.RPC.FinalizePsbt(finalizeReq)
+
+	// We've signed our PSBT now, let's pass it to the intent again.
+	carol.RPC.FundingStateStep(&lnrpc.FundingTransitionMsg{
+		Trigger: &lnrpc.FundingTransitionMsg_PsbtFinalize{
+			PsbtFinalize: &lnrpc.FundingPsbtFinalize{
+				PendingChanId: pendingChanID,
+				SignedPsbt:    finalizeRes.SignedPsbt,
+			},
+		},
+	})
+
+	// Consume the "channel pending" update. This waits until the funding
+	// transaction was fully compiled.
+	updateResp = ht.ReceiveOpenChannelUpdate(chanUpdates)
+	upd, ok = updateResp.Update.(*lnrpc.OpenStatusUpdate_ChanPending)
+	require.True(ht, ok)
+	channelPoint3 := &lnrpc.ChannelPoint{
+		FundingTxid: &lnrpc.ChannelPoint_FundingTxidBytes{
+			FundingTxidBytes: upd.ChanPending.Txid,
+		},
+		OutputIndex: upd.ChanPending.OutputIndex,
+	}
+
+	err = finalTx.Deserialize(bytes.NewReader(finalizeRes.RawFinalTx))
+	require.NoError(ht, err)
+
+	txHash = finalTx.TxHash()
+	block = ht.MineBlocksAndAssertNumTxes(1, 1)[0]
+	ht.Miner.AssertTxInBlock(block, &txHash)
+
+	ht.CloseChannel(carol, channelPoint3)
 }

@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -72,7 +71,7 @@ func AdminAuthOptions(cfg *Config, skipMacaroons bool) ([]grpc.DialOption,
 
 	creds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
 	if err != nil {
-		return nil, fmt.Errorf("unable to read TLS cert: %v", err)
+		return nil, fmt.Errorf("unable to read TLS cert: %w", err)
 	}
 
 	// Create a dial options array.
@@ -83,7 +82,7 @@ func AdminAuthOptions(cfg *Config, skipMacaroons bool) ([]grpc.DialOption,
 	// Get the admin macaroon if macaroons are active.
 	if !skipMacaroons && !cfg.NoMacaroons {
 		// Load the admin macaroon file.
-		macBytes, err := ioutil.ReadFile(cfg.AdminMacPath)
+		macBytes, err := os.ReadFile(cfg.AdminMacPath)
 		if err != nil {
 			return nil, fmt.Errorf("unable to read macaroon "+
 				"path (check the network setting!): %v", err)
@@ -91,14 +90,14 @@ func AdminAuthOptions(cfg *Config, skipMacaroons bool) ([]grpc.DialOption,
 
 		mac := &macaroon.Macaroon{}
 		if err = mac.UnmarshalBinary(macBytes); err != nil {
-			return nil, fmt.Errorf("unable to decode macaroon: %v",
+			return nil, fmt.Errorf("unable to decode macaroon: %w",
 				err)
 		}
 
 		// Now we append the macaroon credentials to the dial options.
 		cred, err := macaroons.NewMacaroonCredential(mac)
 		if err != nil {
-			return nil, fmt.Errorf("error cloning mac: %v", err)
+			return nil, fmt.Errorf("error cloning mac: %w", err)
 		}
 		opts = append(opts, grpc.WithPerRPCCredentials(cred))
 	}
@@ -160,16 +159,16 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 
 	var network string
 	switch {
-	case cfg.Bitcoin.TestNet3 || cfg.Litecoin.TestNet3:
+	case cfg.Bitcoin.TestNet3:
 		network = "testnet"
 
-	case cfg.Bitcoin.MainNet || cfg.Litecoin.MainNet:
+	case cfg.Bitcoin.MainNet:
 		network = "mainnet"
 
-	case cfg.Bitcoin.SimNet || cfg.Litecoin.SimNet:
+	case cfg.Bitcoin.SimNet:
 		network = "simnet"
 
-	case cfg.Bitcoin.RegTest || cfg.Litecoin.RegTest:
+	case cfg.Bitcoin.RegTest:
 		network = "regtest"
 
 	case cfg.Bitcoin.SigNet:
@@ -177,8 +176,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 	}
 
 	ltndLog.Infof("Active chain: %v (network=%v)",
-		strings.Title(cfg.registeredChains.PrimaryChain().String()),
-		network,
+		strings.Title(BitcoinChainName), network,
 	)
 
 	ctx := context.Background()
@@ -215,7 +213,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		pprofServer := &http.Server{
 			Addr:              cfg.Profile,
 			Handler:           pprofMux,
-			ReadHeaderTimeout: 5 * time.Second,
+			ReadHeaderTimeout: cfg.HTTPHeaderTimeout,
 		}
 
 		// Shut the server down when lnd is shutting down.
@@ -272,6 +270,8 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		LetsEncryptListen: cfg.LetsEncryptListen,
 
 		DisableRestTLS: cfg.DisableRestTLS,
+
+		HTTPHeaderTimeout: cfg.HTTPHeaderTimeout,
 	}
 	tlsManager := NewTLSManager(tlsManagerCfg)
 	serverOpts, restDialOpts, restListen, cleanUp,
@@ -452,12 +452,6 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 	}
 
 	defer cleanUp()
-
-	// Finally before we start the server, we'll register the "holy
-	// trinity" of interface for our current "home chain" with the active
-	// chainRegistry interface.
-	primaryChain := cfg.registeredChains.PrimaryChain()
-	cfg.registeredChains.RegisterChain(primaryChain, activeChainControl)
 
 	// TODO(roasbeef): add rotation
 	idKeyDesc, err := activeChainControl.KeyRing.DeriveKey(

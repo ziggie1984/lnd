@@ -146,11 +146,15 @@ type mockChannel struct {
 	remoteKey keychain.KeyDescriptor
 }
 
-func (m *mockChannel) ChannelPoint() *wire.OutPoint {
-	return &m.chanPoint
+func (m *mockChannel) ChannelPoint() wire.OutPoint {
+	return m.chanPoint
 }
 
 func (m *mockChannel) MarkCoopBroadcasted(*wire.MsgTx, bool) error {
+	return nil
+}
+
+func (m *mockChannel) MarkShutdownSent(*channeldb.ShutdownInfo) error {
 	return nil
 }
 
@@ -192,7 +196,7 @@ func (m *mockChannel) CompleteCooperativeClose(localSig,
 	proposedFee btcutil.Amount,
 	_ ...lnwallet.ChanCloseOpt) (*wire.MsgTx, btcutil.Amount, error) {
 
-	return nil, 0, nil
+	return &wire.MsgTx{}, 0, nil
 }
 
 func (m *mockChannel) LocalBalanceDust() bool {
@@ -396,18 +400,22 @@ func TestMaxFeeBailOut(t *testing.T) {
 				FeeSatoshis: absoluteFee * 2,
 			}
 
-			_, _, err := chanCloser.ProcessCloseMsg(closeMsg)
+			_, err := chanCloser.ReceiveClosingSigned(*closeMsg)
 
 			switch isInitiator {
 			// If we're the initiator, then we expect an error at
 			// this point.
 			case true:
-				require.ErrorIs(t, err, ErrProposalExeceedsMaxFee)
+				require.ErrorIs(
+					t, err, ErrProposalExceedsMaxFee,
+				)
 
 			// Otherwise, we expect things to fail for some other
 			// reason (invalid sig, etc).
 			case false:
-				require.NotErrorIs(t, err, ErrProposalExeceedsMaxFee)
+				require.NotErrorIs(
+					t, err, ErrProposalExceedsMaxFee,
+				)
 			}
 		})
 	}
@@ -468,13 +476,6 @@ func TestParseUpfrontShutdownAddress(t *testing.T) {
 	}
 }
 
-func assertType[T any](t *testing.T, typ any) T {
-	value, ok := typ.(T)
-	require.True(t, ok)
-
-	return value
-}
-
 // TestTaprootFastClose tests that we are able to properly execute a fast close
 // (skip negotiation) for taproot channels.
 func TestTaprootFastClose(t *testing.T) {
@@ -531,27 +532,37 @@ func TestTaprootFastClose(t *testing.T) {
 
 	// Bob will then process this message. As he's the responder, he should
 	// only send the shutdown message back to Alice.
-	bobMsgs, closeFinished, err := bobCloser.ProcessCloseMsg(msg)
+	oShutdown, err := bobCloser.ReceiveShutdown(*msg)
 	require.NoError(t, err)
-	require.False(t, closeFinished)
-	require.Len(t, bobMsgs, 1)
-	require.IsType(t, &lnwire.Shutdown{}, bobMsgs[0])
+	oClosingSigned, err := bobCloser.BeginNegotiation()
+	require.NoError(t, err)
+	tx, _ := bobCloser.ClosingTx()
+	require.Nil(t, tx)
+	require.True(t, oShutdown.IsSome())
+	require.True(t, oClosingSigned.IsNone())
 
 	// Alice should process the shutdown message, and create a closing
 	// signed of her own.
-	aliceMsgs, closeFinished, err := aliceCloser.ProcessCloseMsg(bobMsgs[0])
+	oShutdown, err = aliceCloser.ReceiveShutdown(oShutdown.UnwrapOrFail(t))
 	require.NoError(t, err)
-	require.False(t, closeFinished)
-	require.Len(t, aliceMsgs, 1)
-	require.IsType(t, &lnwire.ClosingSigned{}, aliceMsgs[0])
+	oClosingSigned, err = aliceCloser.BeginNegotiation()
+	require.NoError(t, err)
+	tx, _ = aliceCloser.ClosingTx()
+	require.Nil(t, tx)
+	require.True(t, oShutdown.IsNone())
+	require.True(t, oClosingSigned.IsSome())
+
+	aliceClosingSigned := oClosingSigned.UnwrapOrFail(t)
 
 	// Next, Bob will process the closing signed message, and send back a
 	// new one that should match exactly the offer Alice sent.
-	bobMsgs, closeFinished, err = bobCloser.ProcessCloseMsg(aliceMsgs[0])
+	oClosingSigned, err = bobCloser.ReceiveClosingSigned(aliceClosingSigned)
 	require.NoError(t, err)
-	require.True(t, closeFinished)
-	require.Len(t, aliceMsgs, 1)
-	require.IsType(t, &lnwire.ClosingSigned{}, bobMsgs[0])
+	tx, _ = bobCloser.ClosingTx()
+	require.NotNil(t, tx)
+	require.True(t, oClosingSigned.IsSome())
+
+	bobClosingSigned := oClosingSigned.UnwrapOrFail(t)
 
 	// At this point, Bob has accepted the offer, so he can broadcast the
 	// closing transaction, and considers the channel closed.
@@ -559,38 +570,41 @@ func TestTaprootFastClose(t *testing.T) {
 	require.NoError(t, err)
 
 	// Bob's fee proposal should exactly match Alice's initial fee.
-	aliceOffer := assertType[*lnwire.ClosingSigned](t, aliceMsgs[0])
-	bobOffer := assertType[*lnwire.ClosingSigned](t, bobMsgs[0])
-	require.Equal(t, aliceOffer.FeeSatoshis, bobOffer.FeeSatoshis)
+	require.Equal(
+		t, aliceClosingSigned.FeeSatoshis, bobClosingSigned.FeeSatoshis,
+	)
 
 	// If we modify Bob's offer, and try to have Alice process it, then she
 	// should reject it.
-	ogOffer := bobOffer.FeeSatoshis
-	bobOffer.FeeSatoshis /= 2
+	ogOffer := bobClosingSigned.FeeSatoshis
+	bobClosingSigned.FeeSatoshis /= 2
 
-	_, _, err = aliceCloser.ProcessCloseMsg(bobOffer)
+	_, err = aliceCloser.ReceiveClosingSigned(bobClosingSigned)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "was not accepted")
 
 	// We'll now restore the original offer before passing it on to Alice.
-	bobOffer.FeeSatoshis = ogOffer
+	bobClosingSigned.FeeSatoshis = ogOffer
 
 	// If we use the original offer, then Alice should accept this message,
 	// and finalize the shutdown process. We expect a message here as Alice
 	// will echo back the final message.
-	aliceMsgs, closeFinished, err = aliceCloser.ProcessCloseMsg(bobMsgs[0])
+	oClosingSigned, err = aliceCloser.ReceiveClosingSigned(bobClosingSigned)
 	require.NoError(t, err)
-	require.True(t, closeFinished)
-	require.Len(t, aliceMsgs, 1)
-	require.IsType(t, &lnwire.ClosingSigned{}, aliceMsgs[0])
+	tx, _ = aliceCloser.ClosingTx()
+	require.NotNil(t, tx)
+	require.True(t, oClosingSigned.IsSome())
+
+	aliceClosingSigned = oClosingSigned.UnwrapOrFail(t)
 
 	// Alice should now also broadcast her closing transaction.
 	_, err = lnutils.RecvOrTimeout(broadcastSignal, time.Second*1)
 	require.NoError(t, err)
 
 	// Finally, Bob will process Alice's echo message, and conclude.
-	bobMsgs, closeFinished, err = bobCloser.ProcessCloseMsg(aliceMsgs[0])
+	oClosingSigned, err = bobCloser.ReceiveClosingSigned(aliceClosingSigned)
 	require.NoError(t, err)
-	require.True(t, closeFinished)
-	require.Len(t, bobMsgs, 0)
+	tx, _ = bobCloser.ClosingTx()
+	require.NotNil(t, tx)
+	require.True(t, oClosingSigned.IsNone())
 }

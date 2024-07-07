@@ -42,36 +42,36 @@ Each version is marked with appropriate `basedon-vX.X.X-beta` tags. We are using
 
    a) Go to https://github.com/lightningnetwork/lnd/releases and find the commit on which we should add our resources.  
    b) Checkout a new branch for that commit, usually in the format of `lnd/v0.18.1-beta`.  
-   c) Cherry-pick the `Adding BtcPayServer related files and resources` commit. Example: https://github.com/btcpayserver/lnd/commit/9f94d045ae2123f4f1e9bd9c041bf48332b10502.  
-   d) Tag it with the `basedon-*` prefix name and push it. For v0.18.1, the tag name was `basedon-v0.18.1-beta`.  
-   e) The build process will start. Example: https://app.circleci.com/pipelines/github/btcpayserver/lnd/193/workflows/5f6f4238-21c8-44fc-b668-164088dfa073.  
-   f) The resulting image will be published to Docker Hub. Example for v0.18.1: https://hub.docker.com/layers/btcpayserver/lnd/v0.18.1-beta/images/sha256-5fbfa76a218ab59bf9206485f4c0c071a525f9f0906255a5672054741d043b79?context=repo.
+   c) Cherry-pick the `Adding BtcPayServer related files and resources` commit. [Example commit](https://github.com/btcpayserver/lnd/commit/9f94d045ae2123f4f1e9bd9c041bf48332b10502).  
+   d) Tag it with the `basedon-v*` prefix name and push it. For v0.18.1, the tag name was `basedon-v0.18.1-beta`.  
+   e) The build process will start (it [matches on tag format](.circleci/config.yml#L11)). Here is [an example CircleCI build](https://app.circleci.com/pipelines/github/btcpayserver/lnd/193/workflows/5f6f4238-21c8-44fc-b668-164088dfa073).  
+   f) The resulting image will be published to Docker Hub. Example [Docker Hub image for v0.18.1](https://hub.docker.com/layers/btcpayserver/lnd/v0.18.1-beta/images/sha256-5fbfa76a218ab59bf9206485f4c0c071a525f9f0906255a5672054741d043b79?context=repo).
 
    Occasionally, there are problems with:
-   - Versioning of base Docker images used for building Go binaries. You may need to bump that base image. Example commit: https://github.com/btcpayserver/lnd/commit/c841954c515a9d067c24987291316b093b91c2f2.
-   - Updating Loop as part of the package, which needs to happen occasionally: https://github.com/btcpayserver/lnd/commit/b3aecc7ac58280ef662e39ba99461573a30fe79a.
+   - Versioning of base Docker images used for building Go binaries. You may need to bump that base image - [example commit](https://github.com/btcpayserver/lnd/commit/c841954c515a9d067c24987291316b093b91c2f2).
+   - Updating Loop as part of the package, which needs to happen occasionally. [Example bump of Loop version](https://github.com/btcpayserver/lnd/commit/b3aecc7ac58280ef662e39ba99461573a30fe79a].
 
 2. **Update https://github.com/btcpayserver/BTCPayServer.Lightning**
 
    Now we need to update the dependency in our Lightning library project. This library has tests, so we will know if something is broken.
 
-   a) Modify the `docker-compose.yml` file to reference the new LND version. Example: https://github.com/btcpayserver/BTCPayServer.Lightning/pull/162/commits/413784ef9b2a8e7aa0496eb91f792ff0086c0ef7.  
+   a) Modify the `docker-compose.yml` file to reference the new LND version. [Example](https://github.com/btcpayserver/BTCPayServer.Lightning/pull/162/commits/413784ef9b2a8e7aa0496eb91f792ff0086c0ef7).  
    b) Checkout a new branch for that commit, usually in the format of `feat/lnd-0.18.1`.  
    c) Title the commit `Bumping LND to 0.18.1-beta`.  
-   d) Open a pull request and reference Docker Hub and Tag. Example: https://github.com/btcpayserver/BTCPayServer.Lightning/pull/162.  
+   d) Open a pull request and reference Docker Hub and Tag. [Example PR](https://github.com/btcpayserver/BTCPayServer.Lightning/pull/162).
    e) Once tests pass, you can merge it.
 
 3. **Update https://github.com/btcpayserver/btcpayserver**
 
    This will give access to LND to the whole dev team and allow for further testing on their dev machines if everything works as expected.
 
-   a) Modify 2 `docker-compose.yml` files in `BTCPayServer.Tests`. Example pull request to emulate: https://github.com/btcpayserver/btcpayserver/pull/6094.  
+   a) Modify 2 `docker-compose.yml` files in `BTCPayServer.Tests`. [Example pull request to emulate](https://github.com/btcpayserver/btcpayserver/pull/6094).  
    b) When you open the PR, include the version and link to the BTCPayServer.Lightning PR.  
    c) Once tests pass, you can merge it.
 
 4. **Update https://github.com/btcpayserver/btcpayserver-docker**
 
-   a) Now that everything is prepared, open a PR in the btcpayserver-docker repository to allow these changes to propagate to everyone. Example PR: https://github.com/btcpayserver/btcpayserver-docker/pull/911.  
+   a) Now that everything is prepared, open a PR in the btcpayserver-docker repository to allow these changes to propagate to everyone. [Example pull request](https://github.com/btcpayserver/btcpayserver-docker/pull/911).  
    b) Open the PR in DRAFT mode and tag @NicolasDorier and @Pavlenex as reviewers. They typically handle releases, and once they test that the LND version update works on their server, they can ACK the update and merge it as part of the release process.
 
 ## Source repository

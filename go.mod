@@ -231,6 +231,9 @@ replace github.com/btcsuite/btcwallet/walletdb => github.com/djkazic/btcwallet/w
 // Neutrino high latency perf
 replace github.com/lightninglabs/neutrino => github.com/djkazic/neutrino v0.16.1-6
 
+// New rescan functionality
+replace github.com/btcsuite/btcwallet => github.com/ZeusLN/btcwallet v1.7.2-m
+
 // If you change this please also update docs/INSTALL.md and GO_VERSION in
 // Makefile (then run `make lint` to see where else it needs to be updated as
 // well).

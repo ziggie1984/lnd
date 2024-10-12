@@ -454,7 +454,9 @@ type Config struct {
 
 	GcCanceledInvoicesOnTheFly bool `long:"gc-canceled-invoices-on-the-fly" description:"If true, we'll delete newly canceled invoices on the fly."`
 
-	MaxFeeExposure uint64 `long:"dust-threshold" description:"Sets the max fee exposure in satoshis for a channel after which HTLC's will be failed."`
+	DustTresHold uint64 `long:"dust-threshold" description:"DEPRECATED: Sets the max fee exposure in satoshis for a channel after which HTLC's will be failed."`
+
+	MaxFeeExposure uint64 `long:"channel-max-fee-exposure" description:" Limits the maximum fee exposure in sathosis of a channel. This value is enforced for all channels and is independent of the channel initiator."`
 
 	Fee *lncfg.Fee `group:"fee" namespace:"fee"`
 
@@ -714,6 +716,7 @@ func DefaultConfig() Config {
 		MaxChannelFeeAllocation:   htlcswitch.DefaultMaxLinkFeeAllocation,
 		MaxCommitFeeRateAnchors:   lnwallet.DefaultAnchorsCommitMaxFeeRateSatPerVByte,
 		MaxFeeExposure:            uint64(htlcswitch.DefaultMaxFeeExposure.ToSatoshis()),
+		DustTresHold:              uint64(htlcswitch.DefaultMaxFeeExposure.ToSatoshis()),
 		LogWriter:                 build.NewRotatingLogWriter(),
 		DB:                        lncfg.DefaultDB(),
 		Cluster:                   lncfg.DefaultCluster(),
@@ -1698,6 +1701,18 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	// startup is blocked on config parsing.
 	if err := lnwire.SetCustomOverrides(customMsg); err != nil {
 		return nil, mkErr("custom-message: %v", err)
+	}
+
+	// Don't allow both the old dust-threshold and the new
+	// channel-max-fee-exposure to be set.
+	if cfg.DustTresHold != 0 && cfg.MaxFeeExposure != 0 {
+		return nil, mkErr("cannot set both dust-threshold and " +
+			"channel-max-fee-exposure")
+	}
+
+	// Map the old dust-threshold to the new channel-max-fee-exposure.
+	if cfg.DustTresHold != 0 {
+		cfg.MaxFeeExposure = cfg.DustTresHold
 	}
 
 	// Validate the subconfigs for workers, caches, and the tower client.

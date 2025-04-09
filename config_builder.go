@@ -1433,7 +1433,7 @@ func importWatchOnlyAccounts(wallet *wallet.Wallet,
 // handleNeutrinoPostgresDBMigration handles the migration of the neutrino db
 // to postgres. Initially we kept the neutrino db in the bolt db when running
 // with kvdb postgres backend. Now now move it to postgres as well. However we
-// we need to make a distinction whether the user migrated the neutrino db to
+// need to make a distinction whether the user migrated the neutrino db to
 // postgres via lndinit or not. Currently if the db is not migrated we start
 // with a fresh db in postgres.
 //
@@ -1447,7 +1447,8 @@ func handleNeutrinoPostgresDBMigration(dbName, dbPath string,
 	}
 
 	// Open bolt db to check if it is tombstoned. If it is we assume that
-	// the neutrino db was successfully migrated to postgres.
+	// the neutrino db was successfully migrated to postgres. We open it
+	// in read-only mode to avoid long db open times.
 	boltDb, err := kvdb.Open(
 		kvdb.BoltBackendName, dbName, true,
 		cfg.DB.Bolt.DBTimeout, true,
@@ -1471,6 +1472,7 @@ func handleNeutrinoPostgresDBMigration(dbName, dbPath string,
 	if isTombstoned {
 		ltndLog.Infof("Neutrino Bolt DB is tombstoned, assuming " +
 			"database was successfully migrated to postgres")
+
 		return nil
 	}
 

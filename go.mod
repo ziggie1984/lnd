@@ -14,7 +14,7 @@ require (
 	github.com/btcsuite/btcwallet v0.16.12
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.3.5
 	github.com/btcsuite/btcwallet/wallet/txrules v1.2.2
-	github.com/btcsuite/btcwallet/walletdb v1.4.4
+	github.com/btcsuite/btcwallet/walletdb v1.5.0
 	github.com/btcsuite/btcwallet/wtxmgr v1.5.4
 	github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f
 	github.com/davecgh/go-spew v1.1.1
@@ -216,3 +216,9 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 go 1.23.6
 
 retract v0.0.2
+
+replace github.com/lightningnetwork/lnd/kvdb => ./kvdb
+
+replace github.com/btcsuite/btcwallet/walletdb => github.com/ziggie1984/btcwallet/walletdb v1.4.1-0.20250409071443-7db3eba6fe97
+
+replace github.com/btcsuite/btcwallet => github.com/ziggie1984/btcwallet v0.16.10-0.20250409073435-3e97a045fc9e

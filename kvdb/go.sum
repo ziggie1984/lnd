@@ -42,8 +42,6 @@ github.com/btcsuite/btclog v0.0.0-20241003133417-09c4e92e319c/go.mod h1:w7xnGOhw
 github.com/btcsuite/btclog/v2 v2.0.0-20241017175713-3428138b75c7 h1:3Ct3zN3VCEKVm5nceWBBEKczc+jvTfVyOEG71ob2Yuc=
 github.com/btcsuite/btclog/v2 v2.0.0-20241017175713-3428138b75c7/go.mod h1:XItGUfVOxotJL8kkuk2Hj3EVow5KCugXl3wWfQ6K0AE=
 github.com/btcsuite/btcutil v0.0.0-20190425235716-9e5f4b9a998d/go.mod h1:+5NJ2+qvTyV9exUAL/rxXi3DcLg2Ts+ymUAY5y4NvMg=
-github.com/btcsuite/btcwallet/walletdb v1.4.4 h1:BDel6iT/ltYSIYKs0YbjwnEDi7xR3yzABIsQxN2F1L8=
-github.com/btcsuite/btcwallet/walletdb v1.4.4/go.mod h1:jk/hvpLFINF0C1kfTn0bfx2GbnFT+Nvnj6eblZALfjs=
 github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd/go.mod h1:HHNXQzUsZCxOoE+CPiyCTO6x34Zs86zZUiwtpXoGdtg=
 github.com/btcsuite/goleveldb v0.0.0-20160330041536-7834afc9e8cd/go.mod h1:F+uVaaLLH7j4eDXPRvw78tMflu7Ie2bzYOH4Y8rRKBY=
 github.com/btcsuite/goleveldb v1.0.0/go.mod h1:QiK9vBlgftBg6rWQIj6wFzbPfRjiykIEhBH4obrXJ/I=
@@ -430,6 +428,8 @@ github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9de
 github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 github.com/zenazn/goji v0.9.0/go.mod h1:7S9M489iMyHBNxwZnk9/EHS098H4/F6TATF2mIxtB1Q=
+github.com/ziggie1984/btcwallet/walletdb v1.4.1-0.20250409071443-7db3eba6fe97 h1:rFQRum2fmRNx6le2AAopGWIoi3snWQ05a0pEFiK/8fc=
+github.com/ziggie1984/btcwallet/walletdb v1.4.1-0.20250409071443-7db3eba6fe97/go.mod h1:jk/hvpLFINF0C1kfTn0bfx2GbnFT+Nvnj6eblZALfjs=
 go.etcd.io/bbolt v1.3.11 h1:yGEzV1wPz2yVCLsD8ZAiGHhHVlczyC9d1rP43/VCRJ0=
 go.etcd.io/bbolt v1.3.11/go.mod h1:dksAq7YMXoljX0xu6VF5DMZGbhYYoLUalEiSySYAS4I=
 go.etcd.io/etcd/api/v3 v3.5.12 h1:W4sw5ZoU2Juc9gBWuLk5U6fHfNVyY1WC5g9uiXZio/c=

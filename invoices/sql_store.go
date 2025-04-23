@@ -878,67 +878,81 @@ func (i *SQLStore) InvoicesSettledSince(ctx context.Context, idx uint64) (
 
 		// Now fetch all the AMP sub invoices that were settled since
 		// the provided index.
-		//
-		// TODO(ziggie): Add limit query for AMP sub invoices.
-		ampInvoices, err := i.db.FetchSettledAMPSubInvoices(
-			ctx, sqlc.FetchSettledAMPSubInvoicesParams{
-				SettleIndexGet: sqldb.SQLInt64(idx + 1),
-			},
-		)
-		if err != nil {
-			return err
-		}
+		err = queryWithLimit(int64(idx), false, i.opts.paginationLimit,
+			//nolint:ll
+			func(offset int64) (int, int64, error) {
+				ampInvoices, err := i.db.FetchSettledAMPSubInvoices(
+					ctx, sqlc.FetchSettledAMPSubInvoicesParams{
+						SettleIndexGet: sqldb.SQLInt64(
+							offset,
+						),
+						NumLimit: int32(i.opts.paginationLimit),
+					},
+				)
+				if err != nil {
+					return 0, 0, err
+				}
 
-		for _, ampInvoice := range ampInvoices {
-			// Convert the row to a sqlc.Invoice so we can use the
-			// existing fetchInvoiceData function.
-			sqlInvoice := sqlc.Invoice{
-				ID:             ampInvoice.ID,
-				Hash:           ampInvoice.Hash,
-				Preimage:       ampInvoice.Preimage,
-				SettleIndex:    ampInvoice.AmpSettleIndex,
-				SettledAt:      ampInvoice.AmpSettledAt,
-				Memo:           ampInvoice.Memo,
-				AmountMsat:     ampInvoice.AmountMsat,
-				CltvDelta:      ampInvoice.CltvDelta,
-				Expiry:         ampInvoice.Expiry,
-				PaymentAddr:    ampInvoice.PaymentAddr,
-				PaymentRequest: ampInvoice.PaymentRequest,
-				State:          ampInvoice.State,
-				AmountPaidMsat: ampInvoice.AmountPaidMsat,
-				IsAmp:          ampInvoice.IsAmp,
-				IsHodl:         ampInvoice.IsHodl,
-				IsKeysend:      ampInvoice.IsKeysend,
-				CreatedAt:      ampInvoice.CreatedAt.UTC(),
-			}
+				if len(ampInvoices) == 0 {
+					return 0, 0, nil
+				}
 
-			// Fetch the state and HTLCs for this AMP sub invoice.
-			_, invoice, err := fetchInvoiceData(
-				ctx, db, sqlInvoice,
-				(*[32]byte)(ampInvoice.SetID), true,
-			)
-			if err != nil {
-				return fmt.Errorf("unable to fetch "+
-					"AMP invoice(id=%d) from db: %w",
-					ampInvoice.ID, err)
-			}
+				for _, ampInvoice := range ampInvoices {
+					// Convert the row to a sqlc.Invoice so we can use the
+					// existing fetchInvoiceData function.
+					sqlInvoice := sqlc.Invoice{
+						ID:             ampInvoice.ID,
+						Hash:           ampInvoice.Hash,
+						Preimage:       ampInvoice.Preimage,
+						SettleIndex:    ampInvoice.AmpSettleIndex,
+						SettledAt:      ampInvoice.AmpSettledAt,
+						Memo:           ampInvoice.Memo,
+						AmountMsat:     ampInvoice.AmountMsat,
+						CltvDelta:      ampInvoice.CltvDelta,
+						Expiry:         ampInvoice.Expiry,
+						PaymentAddr:    ampInvoice.PaymentAddr,
+						PaymentRequest: ampInvoice.PaymentRequest,
+						State:          ampInvoice.State,
+						AmountPaidMsat: ampInvoice.AmountPaidMsat,
+						IsAmp:          ampInvoice.IsAmp,
+						IsHodl:         ampInvoice.IsHodl,
+						IsKeysend:      ampInvoice.IsKeysend,
+						CreatedAt:      ampInvoice.CreatedAt.UTC(),
+					}
 
-			invoices = append(invoices, *invoice)
+					// Fetch the state and HTLCs for this AMP sub invoice.
+					_, invoice, err := fetchInvoiceData(
+						ctx, db, sqlInvoice,
+						(*[32]byte)(ampInvoice.SetID), true,
+					)
+					if err != nil {
+						return 0, 0, fmt.Errorf("unable to fetch "+
+							"AMP invoice(id=%d) from db: %w",
+							ampInvoice.ID, err)
+					}
 
-			processedCount++
-			if time.Since(lastLogTime) >=
-				invoiceProgressLogInterval {
+					invoices = append(invoices, *invoice)
 
-				log.Debugf("Processed %d settled invoices "+
-					"including AMP sub invoices which "+
-					"have a settle index greater than %v",
-					processedCount, idx)
+					processedCount++
+					if time.Since(lastLogTime) >=
+						invoiceProgressLogInterval {
 
-				lastLogTime = time.Now()
-			}
-		}
+						log.Debugf("Processed %d settled invoices "+
+							"including AMP sub invoices which "+
+							"have a settle index greater than %v",
+							processedCount, idx)
 
-		return nil
+						lastLogTime = time.Now()
+					}
+				}
+
+				lastInv := ampInvoices[len(ampInvoices)-1]
+				LastIndexOffset := lastInv.SettleIndex.Int64
+
+				return len(ampInvoices), LastIndexOffset, nil
+			})
+
+		return err
 	}, func() {
 		invoices = nil
 	})

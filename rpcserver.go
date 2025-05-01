@@ -6261,8 +6261,8 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 		QueryBlindedRoutes: func(amt lnwire.MilliSatoshi) (
 			[]*route.Route, error) {
 
-			return r.server.chanRouter.FindBlindedPaths(
-				r.selfNode, amt,
+			return routing.FindBlindedPaths(
+				r.selfNode, r.server.graphDB, amt,
 				r.server.defaultMC.GetProbability,
 				blindingRestrictions,
 			)

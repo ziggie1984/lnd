@@ -603,9 +603,6 @@ type BlindedPathRestrictions struct {
 	// our node along with an introduction node hop.
 	NumHops uint8
 
-	// MaxNumPaths is the maximum number of blinded paths to select.
-	MaxNumPaths uint8
-
 	// NodeOmissionSet is a set of nodes that should not be used within any
 	// of the blinded paths that we generate.
 	NodeOmissionSet fn.Set[route.Vertex]

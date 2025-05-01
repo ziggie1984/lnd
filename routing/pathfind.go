@@ -1288,12 +1288,8 @@ func FindBlindedPaths(destination route.Vertex, graph Graph,
 
 	// Now just choose the best paths up until the maximum number of allowed
 	// paths.
-	bestRoutes := make([]*route.Route, 0, restrictions.MaxNumPaths)
+	bestRoutes := make([]*route.Route, 0, len(paths))
 	for _, route := range routes {
-		if len(bestRoutes) >= int(restrictions.MaxNumPaths) {
-			break
-		}
-
 		bestRoutes = append(bestRoutes, route.route)
 	}
 

@@ -3014,15 +3014,6 @@ func (f *Manager) waitForFundingWithTimeout(
 	cancelChan := make(chan struct{})
 	errorChan := make(chan error, 1)
 
-	// If the channel is not a zero-conf channel, we add the SCID to the
-	// database once the channel opening transaction receives one
-	// confirmation. This enables us to calculate the number of
-	// confirmations before the pending channel becomes active.
-	if !ch.IsZeroConf() {
-		f.wg.Add(1)
-		go f.handleOpenChanTxConfirmation(ch, cancelChan, errorChan)
-	}
-
 	f.wg.Add(1)
 	go f.waitForFundingConfirmation(ch, cancelChan, confChan)
 
@@ -3107,80 +3098,80 @@ func makeFundingScript(channel *channeldb.OpenChannel) ([]byte, error) {
 // handles shutdown signals or cancellations.
 //
 // NOTE: This MUST be run as a goroutine.
-func (f *Manager) handleOpenChanTxConfirmation(openChannel *channeldb.
-	OpenChannel, cancelChan <-chan struct{}, errorChan chan<- error) {
+// func (f *Manager) handleOpenChanTxConfirmation(openChannel *channeldb.
+// 	OpenChannel, cancelChan <-chan struct{}, errorChan chan<- error) {
 
-	defer f.wg.Done()
-	defer close(errorChan)
+// 	defer f.wg.Done()
+// 	defer close(errorChan)
 
-	// Generate the funding output script needed to detect the transaction
-	// confirmation
-	chanFundingScript, err := makeFundingScript(openChannel)
-	if err != nil {
-		errorChan <- fmt.Errorf("unable to create funding script for "+
-			"ChannelPoint(%v): %v", openChannel.FundingOutpoint,
-			err)
+// 	// Generate the funding output script needed to detect the transaction
+// 	// confirmation
+// 	chanFundingScript, err := makeFundingScript(openChannel)
+// 	if err != nil {
+// 		errorChan <- fmt.Errorf("unable to create funding script for "+
+// 			"ChannelPoint(%v): %v", openChannel.FundingOutpoint,
+// 			err)
 
-		return
-	}
+// 		return
+// 	}
 
-	// Register for transaction confirmation notifications
-	chanConfNtfn, err := f.cfg.Notifier.RegisterConfirmationsNtfn(
-		&openChannel.FundingOutpoint.Hash, chanFundingScript, 1,
-		openChannel.BroadcastHeight(),
-	)
-	if err != nil {
-		errorChan <- fmt.Errorf("unable to register for confirmation "+
-			"of ChannelPoint(%v): %v", openChannel.FundingOutpoint,
-			err)
+// 	// Register for transaction confirmation notifications
+// 	chanConfNtfn, err := f.cfg.Notifier.RegisterConfirmationsNtfn(
+// 		&openChannel.FundingOutpoint.Hash, chanFundingScript, 1,
+// 		openChannel.BroadcastHeight(),
+// 	)
+// 	if err != nil {
+// 		errorChan <- fmt.Errorf("unable to register for confirmation "+
+// 			"of ChannelPoint(%v): %v", openChannel.FundingOutpoint,
+// 			err)
 
-		return
-	}
+// 		return
+// 	}
 
-	var confDetails *chainntnfs.TxConfirmation
-	var ok bool
+// 	var confDetails *chainntnfs.TxConfirmation
+// 	var ok bool
 
-	// Wait for either the funding confirmation, cancellation, or manager
-	// shutdown
-	select {
-	case confDetails, ok = <-chanConfNtfn.Confirmed:
-		// fallthrough
+// 	// Wait for either the funding confirmation, cancellation, or manager
+// 	// shutdown
+// 	select {
+// 	case confDetails, ok = <-chanConfNtfn.Confirmed:
+// 		// fallthrough
 
-	case <-cancelChan:
-		// canceled waiting for funding confirmation
-		return
+// 	case <-cancelChan:
+// 		// canceled waiting for funding confirmation
+// 		return
 
-	case <-f.quit:
-		// fundingManager is shutting down
-		return
-	}
+// 	case <-f.quit:
+// 		// fundingManager is shutting down
+// 		return
+// 	}
 
-	if !ok {
-		errorChan <- fmt.Errorf("ChainNotifier shutting down, can't "+
-			"complete funding flow for ChannelPoint(%v)",
-			openChannel.FundingOutpoint)
+// 	if !ok {
+// 		errorChan <- fmt.Errorf("ChainNotifier shutting down, can't "+
+// 			"complete funding flow for ChannelPoint(%v)",
+// 			openChannel.FundingOutpoint)
 
-		return
-	}
+// 		return
+// 	}
 
-	fundingPoint := openChannel.FundingOutpoint
-	log.Infof("ChannelPoint(%v) confirmed at block %d",
-		fundingPoint, confDetails.BlockHeight)
+// 	fundingPoint := openChannel.FundingOutpoint
+// 	log.Infof("ChannelPoint(%v) confirmed at block %d",
+// 		fundingPoint, confDetails.BlockHeight)
 
-	// Construct short channel ID from confirmation details
-	shortChanID := lnwire.ShortChannelID{
-		BlockHeight: confDetails.BlockHeight,
-		TxIndex:     confDetails.TxIndex,
-		TxPosition:  uint16(fundingPoint.Index),
-	}
+// 	// Construct short channel ID from confirmation details
+// 	shortChanID := lnwire.ShortChannelID{
+// 		BlockHeight: confDetails.BlockHeight,
+// 		TxIndex:     confDetails.TxIndex,
+// 		TxPosition:  uint16(fundingPoint.Index),
+// 	}
 
-	// Update the channel's state in the database to mark its confirmed SCID
-	err = openChannel.MarkConfirmedScid(shortChanID)
-	if err != nil {
-		errorChan <- fmt.Errorf("failed to update confirmed state for "+
-			"ChannelPoint(%v): %v", fundingPoint, err)
-	}
-}
+// 	// Update the channel's state in the database to mark its confirmed SCID
+// 	err = openChannel.MarkConfirmedScid(shortChanID)
+// 	if err != nil {
+// 		errorChan <- fmt.Errorf("failed to update confirmed state for "+
+// 			"ChannelPoint(%v): %v", fundingPoint, err)
+// 	}
+// }
 
 // waitForFundingConfirmation handles the final stages of the channel funding
 // process once the funding transaction has been broadcast. The primary
@@ -3234,38 +3225,72 @@ func (f *Manager) waitForFundingConfirmation(
 	var ok bool
 
 	// Wait until the specified number of confirmations has been reached,
-	// we get a cancel signal, or the wallet signals a shutdown.
-	select {
-	case confDetails, ok = <-confNtfn.Confirmed:
-		// fallthrough
+	// we get a cancel signal, or the wallet signals a shutdown. Moreover
+	// we update the confirmation height as soon as the transaction has
+	//
+	for {
+		select {
+		case <-confNtfn.Updates:
+			log.Debugf("funding tx %v got a confirmation update",
+				txid)
 
-	case <-cancelChan:
-		log.Warnf("canceled waiting for funding confirmation, "+
-			"stopping funding flow for ChannelPoint(%v)",
-			completeChan.FundingOutpoint)
-		return
+			if completeChan.ConfirmationHeight == 0 {
+				completeChan.MarkConfirmationHeight(
+					uint32(confDetails.BlockHeight),
+				)
+			}
 
-	case <-f.quit:
-		log.Warnf("fundingManager shutting down, stopping funding "+
-			"flow for ChannelPoint(%v)",
-			completeChan.FundingOutpoint)
-		return
+		case <-confNtfn.NegativeConf:
+			log.Warnf("funding tx %v was reorged out", txid)
+
+			// Reset the confirmation height to 0 because the
+			// funding transaction was reorged out.
+			completeChan.MarkConfirmationHeight(0)
+
+		case confDetails, ok = <-confNtfn.Confirmed:
+			if !ok {
+				log.Warnf("ChainNotifier shutting down, "+
+					"cannot complete funding flow for "+
+					"ChannelPoint(%v)",
+					completeChan.FundingOutpoint)
+				return
+			}
+
+			err := f.handleConfirmation(
+				confDetails, completeChan, confChan,
+			)
+			if err != nil {
+				log.Errorf("Error handling confirmation: %v",
+					err)
+
+			}
+			return
+
+		case <-cancelChan:
+			log.Warnf("canceled waiting for funding confirmation, "+
+				"stopping funding flow for ChannelPoint(%v)",
+				completeChan.FundingOutpoint)
+			return
+
+		case <-f.quit:
+			log.Warnf("fundingManager shutting down, stopping "+
+				"funding flow for ChannelPoint(%v)",
+				completeChan.FundingOutpoint)
+			return
+		}
 	}
+}
 
-	if !ok {
-		log.Warnf("ChainNotifier shutting down, cannot complete "+
-			"funding flow for ChannelPoint(%v)",
-			completeChan.FundingOutpoint)
-		return
-	}
+// handleConfirmation is a helper function that sends the confirmation info
+// to the specified golang channel.
+func (f *Manager) handleConfirmation(confDetails *chainntnfs.TxConfirmation,
+	completeChan *channeldb.OpenChannel,
+	confChan chan<- *confirmedChannel) error {
 
 	fundingPoint := completeChan.FundingOutpoint
 	log.Infof("ChannelPoint(%v) is now active: ChannelID(%v)",
 		fundingPoint, lnwire.NewChanIDFromOutPoint(fundingPoint))
 
-	// With the block height and the transaction index known, we can
-	// construct the compact chanID which is used on the network to unique
-	// identify channels.
 	shortChanID := lnwire.ShortChannelID{
 		BlockHeight: confDetails.BlockHeight,
 		TxIndex:     confDetails.TxIndex,
@@ -3278,8 +3303,10 @@ func (f *Manager) waitForFundingConfirmation(
 		fundingTx:   confDetails.Tx,
 	}:
 	case <-f.quit:
-		return
+		return fmt.Errorf("manager shutting down")
 	}
+
+	return nil
 }
 
 // waitForTimeout will close the timeout channel if MaxWaitNumBlocksFundingConf

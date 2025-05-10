@@ -261,6 +261,10 @@ type openChannelTlvData struct {
 	// customBlob is an optional TLV encoded blob of data representing
 	// custom channel funding information.
 	customBlob tlv.OptionalRecordT[tlv.TlvType7, tlv.Blob]
+
+	// confirmationHeight is the height in which the funding transaction
+	// was confirmed.
+	confirmationHeight tlv.RecordT[tlv.TlvType8, uint32]
 }
 
 // encode serializes the openChannelTlvData to the given io.Writer.
@@ -270,6 +274,7 @@ func (c *openChannelTlvData) encode(w io.Writer) error {
 		c.initialLocalBalance.Record(),
 		c.initialRemoteBalance.Record(),
 		c.realScid.Record(),
+		c.confirmationHeight.Record(),
 	}
 	c.memo.WhenSome(func(memo tlv.RecordT[tlv.TlvType5, []byte]) {
 		tlvRecords = append(tlvRecords, memo.Record())
@@ -307,6 +312,7 @@ func (c *openChannelTlvData) decode(r io.Reader) error {
 		memo.Record(),
 		tapscriptRoot.Record(),
 		blob.Record(),
+		c.confirmationHeight.Record(),
 	)
 	if err != nil {
 		return err
@@ -906,6 +912,10 @@ type OpenChannel struct {
 	// been confirmed before a certain height.
 	FundingBroadcastHeight uint32
 
+	// ConfirmationHeight is the height in which the funding transaction
+	// was confirmed.
+	ConfirmationHeight uint32
+
 	// NumConfsRequired is the number of confirmations a channel's funding
 	// transaction must have received in order to be considered available
 	// for normal transactional use.
@@ -1207,7 +1217,7 @@ func (c *OpenChannel) amendTlvData(auxData openChannelTlvData) {
 		auxData.initialRemoteBalance.Val,
 	)
 	c.confirmedScid = auxData.realScid.Val
-
+	c.ConfirmationHeight = auxData.confirmationHeight.Val
 	auxData.memo.WhenSomeV(func(memo []byte) {
 		c.Memo = memo
 	})
@@ -1233,6 +1243,9 @@ func (c *OpenChannel) extractTlvData() openChannelTlvData {
 		),
 		realScid: tlv.NewRecordT[tlv.TlvType4](
 			c.confirmedScid,
+		),
+		confirmationHeight: tlv.NewPrimitiveRecord[tlv.TlvType8](
+			c.ConfirmationHeight,
 		),
 	}
 
@@ -1501,9 +1514,9 @@ func (c *OpenChannel) fullSync(tx kvdb.RwTx) error {
 	return putOpenChannel(chanBucket, c)
 }
 
-// MarkConfirmedScid updates the channel's ShortChannelID once the channel
-// opening transaction receives one confirmation.
-func (c *OpenChannel) MarkConfirmedScid(scid lnwire.ShortChannelID) error {
+// MarkConfirmationHeight updates the channel's confirmation height once the
+// channel opening transaction receives one confirmation.
+func (c *OpenChannel) MarkConfirmationHeight(height uint32) error {
 	c.Lock()
 	defer c.Unlock()
 
@@ -1520,14 +1533,14 @@ func (c *OpenChannel) MarkConfirmedScid(scid lnwire.ShortChannelID) error {
 			return err
 		}
 
-		channel.ShortChannelID = scid
+		channel.ConfirmationHeight = height
 
 		return putOpenChannel(chanBucket, channel)
 	}, func() {}); err != nil {
 		return err
 	}
 
-	c.ShortChannelID = scid
+	c.ConfirmationHeight = height
 
 	return nil
 }

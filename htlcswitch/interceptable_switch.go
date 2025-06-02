@@ -353,13 +353,17 @@ func (s *InterceptableSwitch) run() error {
 func (s *InterceptableSwitch) failExpiredHtlcs() {
 	s.heldHtlcSet.popAutoFails(
 		uint32(s.currentHeight),
-		func(fwd InterceptedForward) {
+		func(fwd InterceptedForward) error {
 			err := fwd.FailWithCode(
 				lnwire.CodeTemporaryChannelFailure,
 			)
 			if err != nil {
 				log.Errorf("Cannot fail packet: %v", err)
+
+				return err
 			}
+
+			return nil
 		},
 	)
 }

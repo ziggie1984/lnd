@@ -39,14 +39,22 @@ func (h *heldHtlcSet) popAll(cb func(InterceptedForward)) {
 
 // popAutoFails calls the callback for each forward that has an auto-fail height
 // equal or less then the specified pop height and removes them from the set.
-func (h *heldHtlcSet) popAutoFails(height uint32, cb func(InterceptedForward)) {
+func (h *heldHtlcSet) popAutoFails(height uint32,
+	cb func(InterceptedForward) error) {
+
 	for key, fwd := range h.set {
 		if uint32(fwd.Packet().AutoFailHeight) > height {
 			continue
 		}
 
-		cb(fwd)
+		err := cb(fwd)
+		if err != nil {
+			log.Errorf("Cannot fail packet: %v", err)
 
+			continue
+		}
+
+		// We only delete the forward if the callback succeeds.
 		delete(h.set, key)
 	}
 }

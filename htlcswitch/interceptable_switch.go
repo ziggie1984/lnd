@@ -513,7 +513,7 @@ func (s *InterceptableSwitch) interceptForward(packet *htlcPacket,
 			return false, nil
 		}
 
-		intercepted := &interceptedForward{
+		intercepted := &offchainInterceptedFwd{
 			htlc:       htlc,
 			packet:     packet,
 			htlcSwitch: s.htlcSwitch,
@@ -605,7 +605,7 @@ func (s *InterceptableSwitch) forward(
 
 // handleExpired checks that the htlc isn't too close to the channel
 // force-close broadcast height. If it is, it is cancelled back.
-func (s *InterceptableSwitch) handleExpired(fwd *interceptedForward) (
+func (s *InterceptableSwitch) handleExpired(fwd *offchainInterceptedFwd) (
 	bool, error) {
 
 	height := uint32(s.currentHeight)
@@ -629,10 +629,10 @@ func (s *InterceptableSwitch) handleExpired(fwd *interceptedForward) (
 	return true, nil
 }
 
-// interceptedForward implements the InterceptedForward interface.
+// offchainInterceptedFwd implements the InterceptedForward interface.
 // It is passed from the switch to external interceptors that are interested
 // in holding forwards and resolve them manually.
-type interceptedForward struct {
+type offchainInterceptedFwd struct {
 	htlc           *lnwire.UpdateAddHTLC
 	packet         *htlcPacket
 	htlcSwitch     *Switch
@@ -640,7 +640,7 @@ type interceptedForward struct {
 }
 
 // Packet returns the intercepted htlc packet.
-func (f *interceptedForward) Packet() InterceptedPacket {
+func (f *offchainInterceptedFwd) Packet() InterceptedPacket {
 	return InterceptedPacket{
 		IncomingCircuit: models.CircuitKey{
 			ChanID: f.packet.incomingChanID,
@@ -660,7 +660,7 @@ func (f *interceptedForward) Packet() InterceptedPacket {
 }
 
 // Resume resumes the default behavior as if the packet was not intercepted.
-func (f *interceptedForward) Resume() error {
+func (f *offchainInterceptedFwd) Resume() error {
 	// Forward to the switch. A link quit channel isn't needed, because we
 	// are on a different thread now.
 	return f.htlcSwitch.ForwardPackets(nil, f.packet)
@@ -671,7 +671,7 @@ func (f *interceptedForward) Resume() error {
 // should be interpreted differently from the on-chain amount during further
 // validation. The presence of an output amount and/or custom records indicates
 // that those values should be modified on the outgoing HTLC.
-func (f *interceptedForward) ResumeModified(
+func (f *offchainInterceptedFwd) ResumeModified(
 	inAmountMsat fn.Option[lnwire.MilliSatoshi],
 	outAmountMsat fn.Option[lnwire.MilliSatoshi],
 	outWireCustomRecords fn.Option[lnwire.CustomRecords]) error {
@@ -737,7 +737,7 @@ func (f *interceptedForward) ResumeModified(
 
 // Fail notifies the intention to Fail an existing hold forward with an
 // encrypted failure reason.
-func (f *interceptedForward) Fail(reason []byte) error {
+func (f *offchainInterceptedFwd) Fail(reason []byte) error {
 	obfuscatedReason := f.packet.obfuscator.IntermediateEncrypt(reason)
 
 	return f.resolve(&lnwire.UpdateFailHTLC{
@@ -747,7 +747,7 @@ func (f *interceptedForward) Fail(reason []byte) error {
 
 // FailWithCode notifies the intention to fail an existing hold forward with the
 // specified failure code.
-func (f *interceptedForward) FailWithCode(code lnwire.FailCode) error {
+func (f *offchainInterceptedFwd) FailWithCode(code lnwire.FailCode) error {
 	shaOnionBlob := func() [32]byte {
 		return sha256.Sum256(f.htlc.OnionBlob[:])
 	}
@@ -815,7 +815,7 @@ func (f *interceptedForward) FailWithCode(code lnwire.FailCode) error {
 }
 
 // Settle forwards a settled packet to the switch.
-func (f *interceptedForward) Settle(preimage lntypes.Preimage) error {
+func (f *offchainInterceptedFwd) Settle(preimage lntypes.Preimage) error {
 	if !preimage.Matches(f.htlc.PaymentHash) {
 		return errors.New("preimage does not match hash")
 	}
@@ -826,7 +826,7 @@ func (f *interceptedForward) Settle(preimage lntypes.Preimage) error {
 
 // resolve is used for both Settle and Fail and forwards the message to the
 // switch.
-func (f *interceptedForward) resolve(message lnwire.Message) error {
+func (f *offchainInterceptedFwd) resolve(message lnwire.Message) error {
 	pkt := &htlcPacket{
 		incomingChanID: f.packet.incomingChanID,
 		incomingHTLCID: f.packet.incomingHTLCID,

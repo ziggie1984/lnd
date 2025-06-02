@@ -36,7 +36,7 @@ func TestHeldHtlcSet(t *testing.T) {
 	require.Error(t, set.push(key, nil))
 
 	// Test pushing a forward.
-	fwd := &interceptedForward{
+	fwd := &offchainInterceptedFwd{
 		htlc: &lnwire.UpdateAddHTLC{},
 	}
 	require.NoError(t, set.push(key, fwd))
@@ -88,7 +88,7 @@ func TestHeldHtlcSetAutoFails(t *testing.T) {
 	}
 
 	const autoFailHeight = 100
-	fwd := &interceptedForward{
+	fwd := &offchainInterceptedFwd{
 		packet:         &htlcPacket{},
 		htlc:           &lnwire.UpdateAddHTLC{},
 		autoFailHeight: autoFailHeight,

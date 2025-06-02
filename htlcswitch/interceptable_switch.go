@@ -26,6 +26,12 @@ var (
 	ErrUnsupportedFailureCode = errors.New("unsupported failure code")
 
 	errBlockStreamStopped = errors.New("block epoch stream stopped")
+
+	// ErrCannotFail is an error returned when we cannot fail the incoming
+	// add backwards because we are waiting for a resolution of the outgoing
+	// htlc.
+	ErrCannotFail = errors.New("cannot fail htlc when already seen by " +
+		"switch")
 )
 
 // InterceptableSwitch is an implementation of ForwardingSwitch interface.
@@ -735,10 +741,44 @@ func (f *offchainInterceptedFwd) ResumeModified(
 	return f.htlcSwitch.ForwardPackets(nil, f.packet)
 }
 
+// canFail returns true if there does not exist an open circuit for this htlc
+// in the circuit map. This means that the HTLC has not been forwarded on the
+// outgoing link yet so it is safe to fail the incoming add backwards.
+//
+// NOTE: The reason why we need to check if the incoming htlc has already been
+// forwarded is that we might replay HTLCs during the restart of the link,
+// hence for those HTLCs we need to make sure they are not locked in on the
+// outgoing link before we might fail them back because of the timeout.
+func (f *offchainInterceptedFwd) canFail() bool {
+	circuit := f.htlcSwitch.CircuitLookup().LookupCircuit(
+		CircuitKey{
+			ChanID: f.packet.incomingChanID,
+			HtlcID: f.packet.incomingHTLCID,
+		},
+	)
+
+	if circuit != nil {
+		log.Infof("Found circuit(%v) in the switch "+
+			"for this htlc, meaning it is locked",
+			circuit.Incoming)
+
+		return false
+	}
+
+	return true
+}
+
 // Fail notifies the intention to Fail an existing hold forward with an
 // encrypted failure reason.
 func (f *offchainInterceptedFwd) Fail(reason []byte) error {
 	obfuscatedReason := f.packet.obfuscator.IntermediateEncrypt(reason)
+
+	// We cannot fail the incoming add backwards if there already exists
+	// an open circuit for this htlc in the circuit map meaning that the
+	// HTLC might already be forwarded on the outgoing link.
+	if !f.canFail() {
+		return ErrCannotFail
+	}
 
 	return f.resolve(&lnwire.UpdateFailHTLC{
 		Reason: obfuscatedReason,
@@ -748,6 +788,13 @@ func (f *offchainInterceptedFwd) Fail(reason []byte) error {
 // FailWithCode notifies the intention to fail an existing hold forward with the
 // specified failure code.
 func (f *offchainInterceptedFwd) FailWithCode(code lnwire.FailCode) error {
+	// We cannot fail the incoming add backwards if there already exists
+	// an open circuit for this htlc in the circuit map meaning that the
+	// HTLC might already be forwarded on the outgoing link.
+	if !f.canFail() {
+		return ErrCannotFail
+	}
+
 	shaOnionBlob := func() [32]byte {
 		return sha256.Sum256(f.htlc.OnionBlob[:])
 	}

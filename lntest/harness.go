@@ -607,6 +607,15 @@ func (h *HarnessTest) RestartNodeWithExtraArgs(hn *node.HarnessNode,
 	h.RestartNode(hn)
 }
 
+// RestartNodeWithoutExtraArg restarts a given node without a specific extra
+// argument if found.
+func (h *HarnessTest) RestartNodeWithoutExtraArg(hn *node.HarnessNode,
+	deleteArg string) {
+
+	hn.DeleteExtraArg(deleteArg)
+	h.RestartNode(hn)
+}
+
 // NewNodeWithSeed fully initializes a new HarnessNode after creating a fresh
 // aezeed. The provided password is used as both the aezeed password and the
 // wallet password. The generated mnemonic is returned along with the

@@ -1381,37 +1381,18 @@ func testBlindedPaymentHTLCReForward(ht *lntest.HarnessTest) {
 	_, err := testCase.carolInterceptor.Recv()
 	require.NoError(ht, err)
 
-	// Now, restart Carol. Carol should load up any previously persisted
-	// UpdateAddHTLC messages and continue the processing of them. This
-	// time, again with an interceptor because we need to make sure that
-	// the HTLC is forwarded after the nodes carol-dave are connected
-	// and their channel active. Otherwise the reforwarding of the HTLC
-	// would fail.
-	ht.RestartNode(testCase.carol)
-
-	// Register the client for the interceptor because the previous one
-	// closed during the restart.
-	carolInterceptor, err := testCase.carol.RPC.Router.HtlcInterceptor(
-		ctx,
-	)
-	require.NoError(ht, err, "interceptor")
-
-	// Intercept the replayed forward on Carol's link again.
-	carolHTLC, err := carolInterceptor.Recv()
-	require.NoError(ht, err)
+	// Now we restart Carol however this time without an interceptor because
+	// reforwared HTLCs are either forwarded when no interceptor is present
+	// or they are tried to fail back if still no forwarding by the switch
+	// has happened. We cannot guarantee that the interceptor is registered
+	// before the HTLC is reforwarded therefore we need to restart without
+	// the interceptor.
+	ht.RestartNodeWithoutExtraArg(testCase.carol, "--requireinterceptor")
 
 	// Nodes need to be connected otherwise the forwarding of the
 	// intercepted htlc will fail.
 	ht.EnsureConnected(bob, testCase.carol)
 	ht.EnsureConnected(testCase.carol, testCase.dave)
-
-	// Now that carol and dave are connected signal the forwarding of the
-	// HTLC.
-	err = carolInterceptor.Send(&routerrpc.ForwardHtlcInterceptResponse{
-		IncomingCircuitKey: carolHTLC.IncomingCircuitKey,
-		Action:             routerrpc.ResolveHoldForwardAction_RESUME,
-	})
-	require.NoError(ht, err)
 
 	// Now, wait for the payment to complete.
 	select {

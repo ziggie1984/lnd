@@ -555,7 +555,6 @@ func (s *InterceptableSwitch) interceptForward(packet *htlcPacket) (bool,
 
 // forward records the intercepted htlc and forwards it to the interceptor.
 func (s *InterceptableSwitch) forward(fwd InterceptedForward) (bool, error) {
-
 	inKey := fwd.Packet().IncomingCircuit
 
 	// Ignore already held htlcs.

@@ -2197,7 +2197,7 @@ func newSingleLinkTestHarness(t *testing.T, chanAmt,
 		return nil
 	}
 
-	forwardPackets := func(linkQuit <-chan struct{}, _ bool,
+	forwardPackets := func(linkQuit <-chan struct{},
 		packets ...*htlcPacket) error {
 
 		return aliceSwitch.ForwardPackets(linkQuit, packets...)
@@ -4879,7 +4879,7 @@ func (h *persistentLinkHarness) restartLink(
 		return nil
 	}
 
-	forwardPackets := func(linkQuit <-chan struct{}, _ bool,
+	forwardPackets := func(linkQuit <-chan struct{},
 		packets ...*htlcPacket) error {
 
 		return h.hSwitch.ForwardPackets(linkQuit, packets...)
@@ -7076,7 +7076,7 @@ func TestPipelineSettle(t *testing.T) {
 	// erroneously forwarded. If the forwardChan is closed before the last
 	// step, then the test will fail.
 	forwardChan := make(chan struct{})
-	fwdPkts := func(c <-chan struct{}, _ bool, hp ...*htlcPacket) error {
+	fwdPkts := func(c <-chan struct{}, hp ...*htlcPacket) error {
 		close(forwardChan)
 		return nil
 	}
@@ -7262,7 +7262,7 @@ func TestChannelLinkShortFailureRelay(t *testing.T) {
 	aliceMsgs := mockPeer.sentMsgs
 	switchChan := make(chan *htlcPacket)
 
-	coreLink.cfg.ForwardPackets = func(linkQuit <-chan struct{}, _ bool,
+	coreLink.cfg.ForwardPackets = func(linkQuit <-chan struct{},
 		packets ...*htlcPacket) error {
 
 		for _, p := range packets {

@@ -26,6 +26,12 @@ var (
 	ErrUnsupportedFailureCode = errors.New("unsupported failure code")
 
 	errBlockStreamStopped = errors.New("block epoch stream stopped")
+
+	// ErrCannotFail is an error returned when we cannot fail the incoming
+	// add backwards because we are waiting for a resolution of the outgoing
+	// htlc.
+	ErrCannotFail = errors.New("cannot fail htlc when already seen by " +
+		"switch")
 )
 
 // InterceptableSwitch is an implementation of ForwardingSwitch interface.
@@ -96,7 +102,6 @@ type InterceptableSwitch struct {
 type interceptedPackets struct {
 	packets  []*htlcPacket
 	linkQuit <-chan struct{}
-	isReplay bool
 }
 
 // FwdAction defines the various resolution types.
@@ -297,9 +302,7 @@ func (s *InterceptableSwitch) run() error {
 		case packets := <-s.intercepted:
 			var notIntercepted []*htlcPacket
 			for _, p := range packets.packets {
-				intercepted, err := s.interceptForward(
-					p, packets.isReplay,
-				)
+				intercepted, err := s.interceptForward(p)
 				if err != nil {
 					return err
 				}
@@ -318,14 +321,12 @@ func (s *InterceptableSwitch) run() error {
 			}
 
 		case fwd := <-s.onchainIntercepted:
-			// For on-chain interceptions, we don't know if it has
-			// already been offered before. This information is in
-			// the forwarding package which isn't easily accessible
-			// from contractcourt. It is likely though that it was
-			// already intercepted in the off-chain flow. And even
-			// if not, it is safe to signal replay so that we won't
-			// unexpectedly skip over this htlc.
-			if _, err := s.forward(fwd, true); err != nil {
+			// For onchain interceptions, we make sure we forward
+			// the HTLC through the interceptor in case we have the
+			// preimage externally otherwise this will be just a
+			// NOOP because if we cannot settle the HTLC, the
+			// peer will most likely sweep it via the timeout path.
+			if _, err := s.forward(fwd); err != nil {
 				return err
 			}
 
@@ -352,13 +353,17 @@ func (s *InterceptableSwitch) run() error {
 func (s *InterceptableSwitch) failExpiredHtlcs() {
 	s.heldHtlcSet.popAutoFails(
 		uint32(s.currentHeight),
-		func(fwd InterceptedForward) {
+		func(fwd InterceptedForward) error {
 			err := fwd.FailWithCode(
 				lnwire.CodeTemporaryChannelFailure,
 			)
 			if err != nil {
 				log.Errorf("Cannot fail packet: %v", err)
+
+				return err
 			}
+
+			return nil
 		},
 	)
 }
@@ -466,7 +471,7 @@ func (s *InterceptableSwitch) Resolve(res *FwdResolution) error {
 // forwarded to the switch. The link's quit signal should be provided to allow
 // cancellation of forwarding during link shutdown.
 func (s *InterceptableSwitch) ForwardPackets(linkQuit <-chan struct{},
-	isReplay bool, packets ...*htlcPacket) error {
+	packets ...*htlcPacket) error {
 
 	// Synchronize with the main event loop. This should be light in the
 	// case where there is no interceptor.
@@ -474,7 +479,6 @@ func (s *InterceptableSwitch) ForwardPackets(linkQuit <-chan struct{},
 	case s.intercepted <- &interceptedPackets{
 		packets:  packets,
 		linkQuit: linkQuit,
-		isReplay: isReplay,
 	}:
 
 	case <-linkQuit:
@@ -503,8 +507,8 @@ func (s *InterceptableSwitch) ForwardPacket(
 
 // interceptForward forwards the packet to the external interceptor after
 // checking the interception criteria.
-func (s *InterceptableSwitch) interceptForward(packet *htlcPacket,
-	isReplay bool) (bool, error) {
+func (s *InterceptableSwitch) interceptForward(packet *htlcPacket) (bool,
+	error) {
 
 	switch htlc := packet.htlc.(type) {
 	case *lnwire.UpdateAddHTLC:
@@ -513,7 +517,7 @@ func (s *InterceptableSwitch) interceptForward(packet *htlcPacket,
 			return false, nil
 		}
 
-		intercepted := &interceptedForward{
+		intercepted := &offchainInterceptedFwd{
 			htlc:       htlc,
 			packet:     packet,
 			htlcSwitch: s.htlcSwitch,
@@ -542,7 +546,7 @@ func (s *InterceptableSwitch) interceptForward(packet *htlcPacket,
 			return true, nil
 		}
 
-		return s.forward(intercepted, isReplay)
+		return s.forward(intercepted)
 
 	default:
 		return false, nil
@@ -550,9 +554,7 @@ func (s *InterceptableSwitch) interceptForward(packet *htlcPacket,
 }
 
 // forward records the intercepted htlc and forwards it to the interceptor.
-func (s *InterceptableSwitch) forward(
-	fwd InterceptedForward, isReplay bool) (bool, error) {
-
+func (s *InterceptableSwitch) forward(fwd InterceptedForward) (bool, error) {
 	inKey := fwd.Packet().IncomingCircuit
 
 	// Ignore already held htlcs.
@@ -568,19 +570,23 @@ func (s *InterceptableSwitch) forward(
 			return false, nil
 		}
 
-		// We are in interceptor-required mode. If this is a new packet, it is
-		// still safe to fail back. The interceptor has never seen this packet
-		// yet. This limits the backlog of htlcs when the interceptor is down.
-		if !isReplay {
-			err := fwd.FailWithCode(
-				lnwire.CodeTemporaryChannelFailure,
-			)
-			if err != nil {
-				log.Errorf("Cannot fail packet: %v", err)
-			}
-
+		// We are in interceptor-required mode. If this is a new
+		// packet, it is still safe to fail back and fail method will
+		// be successful otherwise it will return an error, which means
+		// in cannot be failed at this point in time. We add it to the
+		// heldHtlcSet and it will be resolved as soon as the
+		// interceptor reconnects.
+		err := fwd.FailWithCode(
+			lnwire.CodeTemporaryChannelFailure,
+		)
+		if err == nil {
 			return true, nil
 		}
+
+		// We might not be able to fail the packet in case the HTLC is
+		// replayed meaning that the switch already made a decision for
+		// this HTLC how to handle it.
+		log.Warnf("Cannot fail packet: %v", err)
 
 		// This packet is a replay. It is not safe to fail back, because the
 		// interceptor may still signal otherwise upon reconnect. Keep the
@@ -605,7 +611,7 @@ func (s *InterceptableSwitch) forward(
 
 // handleExpired checks that the htlc isn't too close to the channel
 // force-close broadcast height. If it is, it is cancelled back.
-func (s *InterceptableSwitch) handleExpired(fwd *interceptedForward) (
+func (s *InterceptableSwitch) handleExpired(fwd *offchainInterceptedFwd) (
 	bool, error) {
 
 	height := uint32(s.currentHeight)
@@ -619,6 +625,9 @@ func (s *InterceptableSwitch) handleExpired(fwd *interceptedForward) (
 		fwd.packet.inKey(), height,
 		fwd.packet.incomingTimeout)
 
+	// We fail the htlc backwards, however this will not be allowed if the
+	// HTLC has already been seen by the switch and potentially forwarded
+	// it on the outgoing link.
 	err := fwd.FailWithCode(
 		lnwire.CodeExpiryTooSoon,
 	)
@@ -629,10 +638,10 @@ func (s *InterceptableSwitch) handleExpired(fwd *interceptedForward) (
 	return true, nil
 }
 
-// interceptedForward implements the InterceptedForward interface.
+// offchainInterceptedFwd implements the InterceptedForward interface.
 // It is passed from the switch to external interceptors that are interested
 // in holding forwards and resolve them manually.
-type interceptedForward struct {
+type offchainInterceptedFwd struct {
 	htlc           *lnwire.UpdateAddHTLC
 	packet         *htlcPacket
 	htlcSwitch     *Switch
@@ -640,7 +649,7 @@ type interceptedForward struct {
 }
 
 // Packet returns the intercepted htlc packet.
-func (f *interceptedForward) Packet() InterceptedPacket {
+func (f *offchainInterceptedFwd) Packet() InterceptedPacket {
 	return InterceptedPacket{
 		IncomingCircuit: models.CircuitKey{
 			ChanID: f.packet.incomingChanID,
@@ -660,7 +669,7 @@ func (f *interceptedForward) Packet() InterceptedPacket {
 }
 
 // Resume resumes the default behavior as if the packet was not intercepted.
-func (f *interceptedForward) Resume() error {
+func (f *offchainInterceptedFwd) Resume() error {
 	// Forward to the switch. A link quit channel isn't needed, because we
 	// are on a different thread now.
 	return f.htlcSwitch.ForwardPackets(nil, f.packet)
@@ -671,7 +680,7 @@ func (f *interceptedForward) Resume() error {
 // should be interpreted differently from the on-chain amount during further
 // validation. The presence of an output amount and/or custom records indicates
 // that those values should be modified on the outgoing HTLC.
-func (f *interceptedForward) ResumeModified(
+func (f *offchainInterceptedFwd) ResumeModified(
 	inAmountMsat fn.Option[lnwire.MilliSatoshi],
 	outAmountMsat fn.Option[lnwire.MilliSatoshi],
 	outWireCustomRecords fn.Option[lnwire.CustomRecords]) error {
@@ -735,10 +744,44 @@ func (f *interceptedForward) ResumeModified(
 	return f.htlcSwitch.ForwardPackets(nil, f.packet)
 }
 
+// canFail returns true if there does not exist an open circuit for this htlc
+// in the circuit map. This means that the HTLC has not been forwarded on the
+// outgoing link yet so it is safe to fail the incoming add backwards.
+//
+// NOTE: The reason why we need to check if the incoming htlc has already been
+// forwarded is that we might replay HTLCs during the restart of the link,
+// hence for those HTLCs we need to make sure they are not locked in on the
+// outgoing link before we might fail them back because of the timeout.
+func (f *offchainInterceptedFwd) canFail() bool {
+	circuit := f.htlcSwitch.CircuitLookup().LookupCircuit(
+		CircuitKey{
+			ChanID: f.packet.incomingChanID,
+			HtlcID: f.packet.incomingHTLCID,
+		},
+	)
+
+	if circuit != nil {
+		log.Infof("Found circuit(%v) in the switch "+
+			"for this htlc, meaning it is locked",
+			circuit.Incoming)
+
+		return false
+	}
+
+	return true
+}
+
 // Fail notifies the intention to Fail an existing hold forward with an
 // encrypted failure reason.
-func (f *interceptedForward) Fail(reason []byte) error {
+func (f *offchainInterceptedFwd) Fail(reason []byte) error {
 	obfuscatedReason := f.packet.obfuscator.IntermediateEncrypt(reason)
+
+	// We cannot fail the incoming add backwards if there already exists
+	// an open circuit for this htlc in the circuit map meaning that the
+	// HTLC might already be forwarded on the outgoing link.
+	if !f.canFail() {
+		return ErrCannotFail
+	}
 
 	return f.resolve(&lnwire.UpdateFailHTLC{
 		Reason: obfuscatedReason,
@@ -747,7 +790,14 @@ func (f *interceptedForward) Fail(reason []byte) error {
 
 // FailWithCode notifies the intention to fail an existing hold forward with the
 // specified failure code.
-func (f *interceptedForward) FailWithCode(code lnwire.FailCode) error {
+func (f *offchainInterceptedFwd) FailWithCode(code lnwire.FailCode) error {
+	// We cannot fail the incoming add backwards if there already exists
+	// an open circuit for this htlc in the circuit map meaning that the
+	// HTLC might already be forwarded on the outgoing link.
+	if !f.canFail() {
+		return ErrCannotFail
+	}
+
 	shaOnionBlob := func() [32]byte {
 		return sha256.Sum256(f.htlc.OnionBlob[:])
 	}
@@ -815,7 +865,7 @@ func (f *interceptedForward) FailWithCode(code lnwire.FailCode) error {
 }
 
 // Settle forwards a settled packet to the switch.
-func (f *interceptedForward) Settle(preimage lntypes.Preimage) error {
+func (f *offchainInterceptedFwd) Settle(preimage lntypes.Preimage) error {
 	if !preimage.Matches(f.htlc.PaymentHash) {
 		return errors.New("preimage does not match hash")
 	}
@@ -826,7 +876,7 @@ func (f *interceptedForward) Settle(preimage lntypes.Preimage) error {
 
 // resolve is used for both Settle and Fail and forwards the message to the
 // switch.
-func (f *interceptedForward) resolve(message lnwire.Message) error {
+func (f *offchainInterceptedFwd) resolve(message lnwire.Message) error {
 	pkt := &htlcPacket{
 		incomingChanID: f.packet.incomingChanID,
 		incomingHTLCID: f.packet.incomingHTLCID,

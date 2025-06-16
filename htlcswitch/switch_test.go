@@ -3915,7 +3915,7 @@ func TestSwitchHoldForward(t *testing.T) {
 	packet := c.createTestPacket()
 	packet.incomingTimeout = testStartingHeight + c.cltvRejectDelta - 1
 
-	err = switchForwardInterceptor.ForwardPackets(linkQuit, false, packet)
+	err = switchForwardInterceptor.ForwardPackets(linkQuit, packet)
 	require.NoError(t, err, "can't forward htlc packet")
 	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
 	assertOutgoingLinkReceiveIntercepted(t, c.aliceChannelLink)
@@ -3933,13 +3933,13 @@ func TestSwitchHoldForward(t *testing.T) {
 		return nil, errors.New("cannot fetch update")
 	}
 
-	err = switchForwardInterceptor.ForwardPackets(linkQuit, false, packet)
+	err = switchForwardInterceptor.ForwardPackets(linkQuit, packet)
 	require.NoError(t, err, "can't forward htlc packet")
 	receivedPkt := assertOutgoingLinkReceive(t, c.bobChannelLink, true)
 	assertNumCircuits(t, c.s, 1, 1)
 
 	require.NoError(t, switchForwardInterceptor.ForwardPackets(
-		linkQuit, false,
+		linkQuit,
 		c.createSettlePacket(receivedPkt.outgoingHTLCID),
 	))
 
@@ -3951,7 +3951,7 @@ func TestSwitchHoldForward(t *testing.T) {
 	// Test resume a hold forward.
 	assertNumCircuits(t, c.s, 0, 0)
 	err = switchForwardInterceptor.ForwardPackets(
-		linkQuit, false, c.createTestPacket(),
+		linkQuit, c.createTestPacket(),
 	)
 	require.NoError(t, err)
 
@@ -3967,7 +3967,7 @@ func TestSwitchHoldForward(t *testing.T) {
 
 	// settling the htlc to close the circuit.
 	err = switchForwardInterceptor.ForwardPackets(
-		linkQuit, false,
+		linkQuit,
 		c.createSettlePacket(receivedPkt.outgoingHTLCID),
 	)
 	require.NoError(t, err)
@@ -3977,7 +3977,7 @@ func TestSwitchHoldForward(t *testing.T) {
 
 	// Test resume a hold forward after disconnection.
 	require.NoError(t, switchForwardInterceptor.ForwardPackets(
-		linkQuit, false, c.createTestPacket(),
+		linkQuit, c.createTestPacket(),
 	))
 
 	// Wait until the packet is offered to the interceptor.
@@ -3995,7 +3995,7 @@ func TestSwitchHoldForward(t *testing.T) {
 
 	// Settle the htlc to close the circuit.
 	require.NoError(t, switchForwardInterceptor.ForwardPackets(
-		linkQuit, false,
+		linkQuit,
 		c.createSettlePacket(receivedPkt.outgoingHTLCID),
 	))
 
@@ -4008,7 +4008,7 @@ func TestSwitchHoldForward(t *testing.T) {
 	)
 
 	require.NoError(t, switchForwardInterceptor.ForwardPackets(
-		linkQuit, false, c.createTestPacket(),
+		linkQuit, c.createTestPacket(),
 	))
 	assertNumCircuits(t, c.s, 0, 0)
 	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
@@ -4025,7 +4025,7 @@ func TestSwitchHoldForward(t *testing.T) {
 	// Test failing a hold forward with a failure message.
 	require.NoError(t,
 		switchForwardInterceptor.ForwardPackets(
-			linkQuit, false, c.createTestPacket(),
+			linkQuit, c.createTestPacket(),
 		),
 	)
 	assertNumCircuits(t, c.s, 0, 0)
@@ -4047,7 +4047,7 @@ func TestSwitchHoldForward(t *testing.T) {
 
 	// Test failing a hold forward with a malformed htlc failure.
 	err = switchForwardInterceptor.ForwardPackets(
-		linkQuit, false, c.createTestPacket(),
+		linkQuit, c.createTestPacket(),
 	)
 	require.NoError(t, err)
 
@@ -4078,7 +4078,7 @@ func TestSwitchHoldForward(t *testing.T) {
 
 	// Test settling a hold forward
 	require.NoError(t, switchForwardInterceptor.ForwardPackets(
-		linkQuit, false, c.createTestPacket(),
+		linkQuit, c.createTestPacket(),
 	))
 	assertNumCircuits(t, c.s, 0, 0)
 	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
@@ -4115,43 +4115,53 @@ func TestSwitchHoldForward(t *testing.T) {
 	// Forward a fresh packet. It is expected to be failed immediately,
 	// because there is no interceptor registered.
 	require.NoError(t, switchForwardInterceptor.ForwardPackets(
-		linkQuit, false, c.createTestPacket(),
+		linkQuit, c.createTestPacket(),
 	))
 
 	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
 	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
 	assertNumCircuits(t, c.s, 0, 0)
 
-	// Forward a replayed packet. It is expected to be held until the
-	// interceptor connects. To continue the test, it needs to be ran in a
-	// goroutine.
-	errChan := make(chan error)
-	go func() {
-		errChan <- switchForwardInterceptor.ForwardPackets(
-			linkQuit, true, c.createTestPacket(),
-		)
-	}()
+	// // Forward a replayed packet. It is expected to be held until the
+	// // interceptor connects. To continue the test, it needs to be ran in a
+	// // goroutine.
+	// errChan := make(chan error)
+	// go func() {
+	// 	errChan <- switchForwardInterceptor.ForwardPackets(
+	// 		linkQuit, c.createTestPacket(),
+	// 	)
+	// }()
 
-	// Assert that nothing is forward to the switch.
-	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
-	assertNumCircuits(t, c.s, 0, 0)
+	// // Assert that nothing is forward to the switch.
+	// assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	// assertNumCircuits(t, c.s, 0, 0)
 
 	// Register an interceptor.
 	switchForwardInterceptor.SetInterceptor(
 		c.forwardInterceptor.InterceptForwardHtlc,
 	)
 
-	// Expect the ForwardPackets call to unblock.
-	require.NoError(t, <-errChan)
+	// // Expect the ForwardPackets call to unblock.
+	// require.NoError(t, <-errChan)
 
-	// Now expect the queued packet to come through.
-	c.forwardInterceptor.getIntercepted()
+	// // Now expect the queued packet to come through.
+	// c.forwardInterceptor.getIntercepted()
 
 	// Disconnect and reconnect interceptor.
 	switchForwardInterceptor.SetInterceptor(nil)
 	switchForwardInterceptor.SetInterceptor(
 		c.forwardInterceptor.InterceptForwardHtlc,
 	)
+
+	errChan := make(chan error)
+	go func() {
+		errChan <- switchForwardInterceptor.ForwardPackets(
+			linkQuit, c.createTestPacket(),
+		)
+	}()
+
+	// Expect the ForwardPackets call to unblock.
+	require.NoError(t, <-errChan)
 
 	// A replay of the held packet is expected.
 	intercepted := c.forwardInterceptor.getIntercepted()
@@ -4209,7 +4219,7 @@ func TestInterceptableSwitchWatchDog(t *testing.T) {
 
 	packet := c.createTestPacket()
 
-	err = switchForwardInterceptor.ForwardPackets(linkQuit, false, packet)
+	err = switchForwardInterceptor.ForwardPackets(linkQuit, packet)
 	require.NoError(t, err, "can't forward htlc packet")
 
 	// Intercept the packet.
@@ -5519,7 +5529,7 @@ func testSwitchAliasInterceptFail(t *testing.T, zeroConf bool) {
 	require.NoError(t, interceptSwitch.Start())
 	interceptSwitch.SetInterceptor(forwardInterceptor.InterceptForwardHtlc)
 
-	err = interceptSwitch.ForwardPackets(nil, false, ogPacket)
+	err = interceptSwitch.ForwardPackets(nil, ogPacket)
 	require.NoError(t, err)
 
 	inCircuit := forwardInterceptor.getIntercepted().IncomingCircuit

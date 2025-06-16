@@ -372,6 +372,19 @@ func (hn *HarnessNode) SetExtraArgs(extraArgs []string) {
 	hn.Cfg.ExtraArgs = extraArgs
 }
 
+// DeleteExtraArg removes a specific argument from the ExtraArgs slice if it exists.
+func (hn *HarnessNode) DeleteExtraArg(arg string) {
+	for i, existingArg := range hn.Cfg.ExtraArgs {
+		if existingArg == arg {
+			hn.Cfg.ExtraArgs = append(
+				hn.Cfg.ExtraArgs[:i],
+				hn.Cfg.ExtraArgs[i+1:]...)
+
+			return
+		}
+	}
+}
+
 // StartLndCmd handles the startup of lnd, creating log files, and possibly
 // kills the process when needed.
 func (hn *HarnessNode) StartLndCmd(ctxb context.Context) error {

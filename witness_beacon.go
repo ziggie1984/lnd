@@ -109,7 +109,7 @@ func (p *preimageBeacon) SubscribeUpdates(
 	}
 	copy(packet.OnionBlob[:], nextHopOnionBlob)
 
-	fwd := newInterceptedForward(packet, p)
+	fwd := newOnchainInterceptedFwd(packet, p)
 
 	err := p.interceptor(fwd)
 	if err != nil {

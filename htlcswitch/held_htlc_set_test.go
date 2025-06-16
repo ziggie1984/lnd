@@ -36,7 +36,7 @@ func TestHeldHtlcSet(t *testing.T) {
 	require.Error(t, set.push(key, nil))
 
 	// Test pushing a forward.
-	fwd := &interceptedForward{
+	fwd := &offchainInterceptedFwd{
 		htlc: &lnwire.UpdateAddHTLC{},
 	}
 	require.NoError(t, set.push(key, fwd))
@@ -88,7 +88,7 @@ func TestHeldHtlcSetAutoFails(t *testing.T) {
 	}
 
 	const autoFailHeight = 100
-	fwd := &interceptedForward{
+	fwd := &offchainInterceptedFwd{
 		packet:         &htlcPacket{},
 		htlc:           &lnwire.UpdateAddHTLC{},
 		autoFailHeight: autoFailHeight,
@@ -99,8 +99,10 @@ func TestHeldHtlcSetAutoFails(t *testing.T) {
 	// of our forward.
 	set.popAutoFails(
 		autoFailHeight-1,
-		func(_ InterceptedForward) {
+		func(_ InterceptedForward) error {
 			require.Fail(t, "unexpected fwd")
+
+			return nil
 		},
 	)
 
@@ -108,10 +110,12 @@ func TestHeldHtlcSetAutoFails(t *testing.T) {
 	cbCalled := false
 	set.popAutoFails(
 		autoFailHeight,
-		func(poppedFwd InterceptedForward) {
+		func(poppedFwd InterceptedForward) error {
 			cbCalled = true
 
 			require.Equal(t, fwd, poppedFwd)
+
+			return nil
 		},
 	)
 	require.True(t, cbCalled)
@@ -119,8 +123,10 @@ func TestHeldHtlcSetAutoFails(t *testing.T) {
 	// After this, there should be nothing more to pop.
 	set.popAutoFails(
 		autoFailHeight,
-		func(_ InterceptedForward) {
+		func(_ InterceptedForward) error {
 			require.Fail(t, "unexpected fwd")
+
+			return nil
 		},
 	)
 }

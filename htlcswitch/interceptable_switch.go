@@ -325,7 +325,7 @@ func (s *InterceptableSwitch) run() error {
 			// the HTLC through the interceptor in case we have the
 			// preimage externally otherwise this will be just a
 			// NOOP because if we cannot settle the HTLC, the
-			// contractcourt will sweep it via the timeout path.
+			// peer will most likely sweep it via the timeout path.
 			if _, err := s.forward(fwd); err != nil {
 				return err
 			}

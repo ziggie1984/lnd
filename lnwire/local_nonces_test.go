@@ -188,7 +188,9 @@ func TestLocalNoncesDataDecodeFailuresValue(t *testing.T) {
 
 			if test.expectError {
 				require.Error(t, err)
-				require.Contains(t, err.Error(), test.errorContains)
+				require.Contains(
+					t, err.Error(), test.errorContains,
+				)
 			} else {
 				require.NoError(t, err)
 			}

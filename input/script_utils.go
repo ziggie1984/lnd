@@ -333,25 +333,39 @@ func SenderHTLCScript(senderHtlcKey, receiverHtlcKey,
 	revocationKey *btcec.PublicKey, paymentHash []byte,
 	confirmedSpend bool) ([]byte, error) {
 
-	// Build the base script template
+	// Build the base script template. The script structure is:
+	//   - Revocation path: hash the top-of-stack item and check if it
+	//     matches the revocation key hash. If so, checksig.
+	//   - Else branch: push the receiver's key, swap to expose the
+	//     witness item, and check its size.
+	//     - If not 32 bytes (timeout path): drop, then 2-of-2 multisig
+	//       with sender+receiver HTLC keys.
+	//     - If 32 bytes (preimage path): hash160-verify, then checksig
+	//       with the receiver's key.
+	//   - Optional 1-block CSV for confirmed spend.
 	scriptTemplate := `
-	OP_DUP OP_HASH160 {{ hex .RevKeyHash }} OP_EQUAL
-	OP_IF
-		OP_CHECKSIG
-	OP_ELSE
-		{{ hex .ReceiverKey }}
-		OP_SWAP OP_SIZE 32 OP_EQUAL
-		OP_NOTIF
-			OP_DROP 2 OP_SWAP {{ hex .SenderKey }} 2 OP_CHECKMULTISIG
-		OP_ELSE
-			OP_HASH160 {{ hex .PaymentHashRipemd }} OP_EQUALVERIFY
+		OP_DUP OP_HASH160 {{ hex .RevKeyHash }} OP_EQUAL
+		OP_IF
 			OP_CHECKSIG
-		OP_ENDIF
+		OP_ELSE
+			{{ hex .ReceiverKey }}
+			OP_SWAP
+			OP_SIZE 32 OP_EQUAL
+			OP_NOTIF
+				OP_DROP 2 OP_SWAP
+				{{ hex .SenderKey }} 2 OP_CHECKMULTISIG
+			OP_ELSE
+				OP_HASH160 {{ hex .PaymentHashRipemd }}
+				OP_EQUALVERIFY
+				OP_CHECKSIG
+			OP_ENDIF
 	`
 
-	// Add 1 block CSV delay if a confirmation is required.
+	// Add 1 block CSV delay if a confirmation is required for the
+	// non-revocation clauses.
 	if confirmedSpend {
-		scriptTemplate += ` OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
+		scriptTemplate += `
+			OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
 	}
 
 	// Close out the top level if statement.
@@ -528,27 +542,30 @@ func SenderHTLCTapLeafTimeout(senderHtlcKey,
 //	<remote_htlcpubkey> OP_CHECKSIG
 //	1 OP_CHECKSEQUENCEVERIFY OP_DROP
 func SenderHTLCTapLeafSuccess(receiverHtlcKey *btcec.PublicKey,
-	paymentHash []byte, opts ...TaprootScriptOpt) (txscript.TapLeaf, error) {
+	paymentHash []byte,
+	opts ...TaprootScriptOpt) (txscript.TapLeaf, error) {
 
 	opt := defaultTaprootScriptOpt()
 	for _, o := range opts {
 		o(opt)
 	}
 
+	// Check pre-image size (32 bytes), verify hash, then verify the
+	// remote party's signature with a 1-block CSV delay.
 	var scriptTemplate string
 	switch {
-	case !opt.prodScript:
+	case opt.prodScript:
 		scriptTemplate = `
-			OP_SIZE 32 OP_EQUALVERIFY OP_HASH160 
-			{{ hex .PaymentHashRipemd }} OP_EQUALVERIFY 
-			{{ hex .ReceiverKey }} OP_CHECKSIG 
-			OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
+		OP_SIZE 32 OP_EQUALVERIFY
+		OP_HASH160 {{ hex .PaymentHashRipemd }} OP_EQUALVERIFY
+		{{ hex .ReceiverKey }} OP_CHECKSIGVERIFY
+		OP_1 OP_CHECKSEQUENCEVERIFY`
 	default:
 		scriptTemplate = `
-			OP_SIZE 32 OP_EQUALVERIFY OP_HASH160 
-			{{ hex .PaymentHashRipemd }} OP_EQUALVERIFY 
-			{{ hex .ReceiverKey }} OP_CHECKSIGVERIFY
-			OP_1 OP_CHECKSEQUENCEVERIFY`
+		OP_SIZE 32 OP_EQUALVERIFY
+		OP_HASH160 {{ hex .PaymentHashRipemd }} OP_EQUALVERIFY
+		{{ hex .ReceiverKey }} OP_CHECKSIG
+		OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
 	}
 
 	successLeafScript, err := txscript.ScriptTemplate(
@@ -941,26 +958,39 @@ func ReceiverHTLCScript(cltvExpiry uint32, senderHtlcKey,
 	receiverHtlcKey, revocationKey *btcec.PublicKey,
 	paymentHash []byte, confirmedSpend bool) ([]byte, error) {
 
+	// The script structure mirrors SenderHTLCScript but from the
+	// receiver's perspective:
+	//   - Revocation path: DUP+HASH160 check, then checksig.
+	//   - Else: push sender key, swap, check size.
+	//     - If 32 bytes (preimage path): hash160-verify the preimage,
+	//       then 2-of-2 multisig with sender+receiver keys.
+	//     - If not 32 bytes (timeout path): drop, CLTV check, checksig.
+	//   - Optional 1-block CSV for confirmed spend.
 	scriptTemplate := `
-	OP_DUP OP_HASH160 {{ hex .RevKeyHash }} OP_EQUAL
-	OP_IF
-		OP_CHECKSIG
-	OP_ELSE
-		{{ hex .SenderKey }}
-		OP_SWAP OP_SIZE 32 OP_EQUAL
+		OP_DUP OP_HASH160 {{ hex .RevKeyHash }} OP_EQUAL
 		OP_IF
-			OP_HASH160 {{ hex .PaymentHashRipemd }} OP_EQUALVERIFY
-			OP_2 OP_SWAP {{ hex .ReceiverKey }} OP_2 OP_CHECKMULTISIG
-		OP_ELSE
-			OP_DROP {{ .CltvExpiry }} OP_CHECKLOCKTIMEVERIFY OP_DROP
 			OP_CHECKSIG
-		OP_ENDIF
+		OP_ELSE
+			{{ hex .SenderKey }}
+			OP_SWAP
+			OP_SIZE 32 OP_EQUAL
+			OP_IF
+				OP_HASH160 {{ hex .PaymentHashRipemd }}
+				OP_EQUALVERIFY
+				OP_2 OP_SWAP {{ hex .ReceiverKey }}
+				OP_2 OP_CHECKMULTISIG
+			OP_ELSE
+				OP_DROP
+				{{ .CltvExpiry }} OP_CHECKLOCKTIMEVERIFY
+				OP_DROP OP_CHECKSIG
+			OP_ENDIF
 	`
 
 	// Add 1 block CSV delay for non-revocation clauses if confirmation is
 	// required.
 	if confirmedSpend {
-		scriptTemplate += ` OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
+		scriptTemplate += `
+			OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
 	}
 
 	// Close out the outer if statement.
@@ -1132,24 +1162,23 @@ func ReceiverHtlcTapLeafTimeout(senderHtlcKey *btcec.PublicKey,
 		o(opt)
 	}
 
+	// Verify sender signature, enforce 1-block CSV, then verify CLTV
+	// expiry. The prod script variant uses CHECKSIGVERIFY/VERIFY instead
+	// of CHECKSIG+DROP patterns.
 	var scriptTemplate string
 	switch {
-	case !opt.prodScript:
-		scriptTemplate = `
-		{{ hex .SenderKey }} OP_CHECKSIG 
-		OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP 
-		{{ .CltvExpiry }} OP_CHECKLOCKTIMEVERIFY OP_DROP`
-
-	default:
+	case opt.prodScript:
 		scriptTemplate = `
 		{{ hex .SenderKey }} OP_CHECKSIGVERIFY
 		OP_1 OP_CHECKSEQUENCEVERIFY OP_VERIFY
 		{{ .CltvExpiry }} OP_CHECKLOCKTIMEVERIFY`
+	default:
+		scriptTemplate = `
+		{{ hex .SenderKey }} OP_CHECKSIG
+		OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP
+		{{ .CltvExpiry }} OP_CHECKLOCKTIMEVERIFY OP_DROP`
 	}
 
-	// The first part of the script will verify a signature from the sender
-	// authorizing the spend (the timeout). The second portion will ensure
-	// that the CLTV expiry on the spending transaction is correct.
 	timeoutLeafScript, err := txscript.ScriptTemplate(
 		scriptTemplate,
 		txscript.WithScriptTemplateParams(TemplateParams{
@@ -1177,15 +1206,11 @@ func ReceiverHtlcTapLeafSuccess(receiverHtlcKey *btcec.PublicKey,
 	paymentHash []byte,
 	_ ...TaprootScriptOpt) (txscript.TapLeaf, error) {
 
-	// Check that the pre-image is 32 bytes as required. We also check that
-	// the specified pre-image matches what we hard code into the script.
-	// Finally, verify the "2-of-2" multi-sig that requires both parties to
-	// sign off.
 	successLeafScript, err := txscript.ScriptTemplate(
 		`
-		OP_SIZE 32 OP_EQUALVERIFY OP_HASH160 
-		{{ hex .PaymentHashRipemd }} OP_EQUALVERIFY 
-		{{ hex .ReceiverKey }} OP_CHECKSIGVERIFY 
+		OP_SIZE 32 OP_EQUALVERIFY
+		OP_HASH160 {{ hex .PaymentHashRipemd }} OP_EQUALVERIFY
+		{{ hex .ReceiverKey }} OP_CHECKSIGVERIFY
 		{{ hex .SenderKey }} OP_CHECKSIG`,
 		txscript.WithScriptTemplateParams(TemplateParams{
 			"PaymentHashRipemd": Ripemd160H(paymentHash),
@@ -1456,23 +1481,12 @@ func ReceiverHTLCScriptTaprootRevoke(signer Signer, signDesc *SignDescriptor,
 func SecondLevelHtlcScript(revocationKey, delayKey *btcec.PublicKey,
 	csvDelay uint32) ([]byte, error) {
 
-	// If this is the revocation clause for this script is to be executed,
-	// the spender will push a 1, forcing us to hit the true clause of this
-	// if statement.
-	// If this is the revocation case, then we'll push the revocation
-	// public key on the stack.
-	// Otherwise, this is either the sender or receiver of the HTLC
-	// attempting to claim the HTLC output.
-	// In order to give the other party time to execute the revocation
-	// clause above, we require a relative timeout to pass before the
-	// output can be spent.
-	// If the relative timelock passes, then we'll add the delay key to the
-	// stack to ensure that we properly authenticate the spending party.
 	// In either case, we'll ensure that only either the party possessing
 	// the revocation private key, or the delay private key is able to
 	// spend this output.
 	return txscript.ScriptTemplate(
-		`OP_IF
+		`
+		OP_IF
 			{{ hex .RevokeKey }}
 		OP_ELSE
 			{{ .CsvDelay }} OP_CHECKSEQUENCEVERIFY OP_DROP
@@ -1503,23 +1517,22 @@ func TaprootSecondLevelTapLeaf(delayKey *btcec.PublicKey,
 		o(opt)
 	}
 
-	var scriptTemplate string
-	switch {
-	case !opt.prodScript:
-		scriptTemplate = `
-		{{ hex .DelayKey }} OP_CHECKSIG 
-		{{ .CsvDelay }} OP_CHECKSEQUENCEVERIFY OP_DROP`
-
-	default:
-		scriptTemplate = `
-		{{ hex .DelayKey }} OP_CHECKSIGVERIFY
-		{{ .CsvDelay }} OP_CHECKSEQUENCEVERIFY`
-	}
-
 	// Ensure the proper party can sign for this output.
 	// Assuming the above passes, then we'll now ensure that the CSV delay
 	// has been upheld, dropping the int we pushed on. If the sig above is
 	// valid, then a 1 will be left on the stack.
+	var scriptTemplate string
+	switch {
+	case opt.prodScript:
+		scriptTemplate = `
+		{{ hex .DelayKey }} OP_CHECKSIGVERIFY
+		{{ .CsvDelay }} OP_CHECKSEQUENCEVERIFY`
+	default:
+		scriptTemplate = `
+		{{ hex .DelayKey }} OP_CHECKSIG
+		{{ .CsvDelay }} OP_CHECKSEQUENCEVERIFY OP_DROP`
+	}
+
 	secondLevelLeafScript, err := txscript.ScriptTemplate(
 		scriptTemplate,
 		txscript.WithScriptTemplateParams(TemplateParams{
@@ -1537,11 +1550,14 @@ func TaprootSecondLevelTapLeaf(delayKey *btcec.PublicKey,
 // SecondLevelHtlcTapscriptTree construct the indexed tapscript tree needed to
 // generate the tap tweak to create the final output and also control block.
 func SecondLevelHtlcTapscriptTree(delayKey *btcec.PublicKey, csvDelay uint32,
-	auxLeaf AuxTapLeaf) (*txscript.IndexedTapScriptTree, error) {
+	auxLeaf AuxTapLeaf,
+	opts ...TaprootScriptOpt) (*txscript.IndexedTapScriptTree, error) {
 
 	// First grab the second level leaf script we need to create the top
 	// level output.
-	secondLevelTapLeaf, err := TaprootSecondLevelTapLeaf(delayKey, csvDelay)
+	secondLevelTapLeaf, err := TaprootSecondLevelTapLeaf(
+		delayKey, csvDelay, opts...,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1795,9 +1811,10 @@ func TaprootHtlcSpendSuccess(signer Signer, signDesc *SignDescriptor,
 func LeaseSecondLevelHtlcScript(revocationKey, delayKey *btcec.PublicKey,
 	csvDelay, cltvExpiry uint32) ([]byte, error) {
 
-	// Build a script template with conditional paths for revocation and normal spending
-	// If this is the revocation clause, the spender will push a 1, forcing the first path
-	// Otherwise, this is either the sender or receiver of the HTLC attempting to claim
+	// Build a script template with conditional paths for revocation and
+	// normal spending If this is the revocation clause, the spender will
+	// push a 1, forcing the first path Otherwise, this is either the sender
+	// or receiver of the HTLC attempting to claim
 	return txscript.ScriptTemplate(
 		`
 		OP_IF
@@ -1930,8 +1947,9 @@ func LockTimeToSequence(isSeconds bool, locktime uint32) uint32 {
 
 // CommitScriptToSelf constructs the public key script for the output on the
 // commitment transaction paying to the "owner" of said commitment transaction.
-// If the other party learns of the preimage to the revocation hash, then they
-// can claim all the settled funds in the channel, plus the unsettled funds.
+// If the other party obtains the revocation private key for this commitment,
+// then they can claim all the settled funds in the channel, plus the unsettled
+// funds.
 //
 // Possible Input Scripts:
 //
@@ -2146,15 +2164,14 @@ func TaprootLocalCommitDelayScript(csvTimeout uint32,
 
 	var scriptTemplate string
 	switch {
-	case !opt.prodScript:
-		scriptTemplate = `
-		{{ hex .SelfKey }} OP_CHECKSIG 
-		{{ .CsvTimeout }} OP_CHECKSEQUENCEVERIFY OP_DROP`
-
-	default:
+	case opt.prodScript:
 		scriptTemplate = `
 		{{ hex .SelfKey }} OP_CHECKSIGVERIFY
 		{{ .CsvTimeout }} OP_CHECKSEQUENCEVERIFY`
+	default:
+		scriptTemplate = `
+		{{ hex .SelfKey }} OP_CHECKSIG
+		{{ .CsvTimeout }} OP_CHECKSEQUENCEVERIFY OP_DROP`
 	}
 
 	return txscript.ScriptTemplate(
@@ -2330,8 +2347,9 @@ func TaprootCommitSpendRevoke(signer Signer, signDesc *SignDescriptor,
 
 // LeaseCommitScriptToSelf constructs the public key script for the output on the
 // commitment transaction paying to the "owner" of said commitment transaction.
-// If the other party learns of the preimage to the revocation hash, then they
-// can claim all the settled funds in the channel, plus the unsettled funds.
+// If the other party obtains the revocation private key for this commitment,
+// then they can claim all the settled funds in the channel, plus the unsettled
+// funds.
 //
 // Possible Input Scripts:
 //
@@ -2533,20 +2551,20 @@ func NewRemoteCommitScriptTree(remoteKey *btcec.PublicKey,
 		o(opt)
 	}
 
+	// First, construct the remote party's tapscript they'll use to sweep
+	// their outputs.
 	var scriptTemplate string
 	switch {
-	case !opt.prodScript:
-		scriptTemplate = `
-		{{ hex .RemoteKey }} OP_CHECKSIG 
-		OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
-	default:
+	case opt.prodScript:
 		scriptTemplate = `
 		{{ hex .RemoteKey }} OP_CHECKSIGVERIFY
 		OP_1 OP_CHECKSEQUENCEVERIFY`
+	default:
+		scriptTemplate = `
+		{{ hex .RemoteKey }} OP_CHECKSIG
+		OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP`
 	}
 
-	// First, construct the remote party's tapscript they'll use to sweep
-	// their outputs.
 	remoteScript, err := txscript.ScriptTemplate(
 		scriptTemplate,
 		txscript.WithScriptTemplateParams(TemplateParams{
@@ -2671,8 +2689,8 @@ func LeaseCommitScriptToRemoteConfirmed(key *btcec.PublicKey,
 	// standard remote confirmed script requirements.
 	return txscript.ScriptTemplate(
 		`
-		{{ hex .Key }} OP_CHECKSIGVERIFY 
-		{{ .LeaseExpiry }} OP_CHECKLOCKTIMEVERIFY OP_DROP 
+		{{ hex .Key }} OP_CHECKSIGVERIFY
+		{{ .LeaseExpiry }} OP_CHECKLOCKTIMEVERIFY OP_DROP
 		OP_1 OP_CHECKSEQUENCEVERIFY`,
 		txscript.WithScriptTemplateParams(TemplateParams{
 			"Key":         key.SerializeCompressed(),
@@ -2728,10 +2746,11 @@ func CommitScriptAnchor(key *btcec.PublicKey) ([]byte, error) {
 	// 2. Spend after 16 confirmations by anyone (the alternative path)
 	return txscript.ScriptTemplate(
 		`
-		{{ hex .Key }} OP_CHECKSIG OP_IFDUP 
-		OP_NOTIF 
-			OP_16 OP_CHECKSEQUENCEVERIFY 
-	        OP_ENDIF`,
+		{{ hex .Key }} OP_CHECKSIG
+		OP_IFDUP
+		OP_NOTIF
+			OP_16 OP_CHECKSEQUENCEVERIFY
+		OP_ENDIF`,
 		txscript.WithScriptTemplateParams(TemplateParams{
 			"Key": key.SerializeCompressed(),
 		}),

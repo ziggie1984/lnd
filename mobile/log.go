@@ -4,7 +4,7 @@
 package lndmobile
 
 import (
-	"github.com/btcsuite/btclog"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/build"
 )
@@ -17,16 +17,19 @@ var (
 
 // SetupLoggers initializes all package-global logger variables.
 func SetupLoggers(root *build.RotatingLogWriter, intercept Interceptor) {
-	genLogger := genSubLogger(root, intercept)
+	// Create a SubLoggerManager to wrap the RotatingLogWriter
+	subLoggerManager := build.NewSubLoggerManager()
+	
+	genLogger := genSubLogger(subLoggerManager, intercept)
 
 	log = build.NewSubLogger(Subsystem, genLogger)
 
-	lnd.SetSubLogger(root, Subsystem, log)
+	lnd.SetSubLogger(subLoggerManager, Subsystem, log)
 }
 
 // genSubLogger creates a logger for a subsystem. We provide an instance of
 // a signal.Interceptor to be able to shutdown in the case of a critical error.
-func genSubLogger(root *build.RotatingLogWriter,
+func genSubLogger(root *build.SubLoggerManager,
 	interceptor Interceptor) func(string) btclog.Logger {
 
 	// Create a shutdown function which will request shutdown from our

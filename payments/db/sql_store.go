@@ -1039,3 +1039,98 @@ func (s *SQLStore) Fail(paymentHash lntypes.Hash,
 
 	return mpPayment, nil
 }
+
+// DeletePayments deletes all payments from the DB given the specified flags.
+//
+// TODO(ziggie): batch and use iterator instead.
+func (s *SQLStore) DeletePayments(failedOnly, failedHtlcsOnly bool) (int,
+	error) {
+
+	var numPayments int
+	ctx := context.TODO()
+
+	extractCursor := func(
+		row sqlc.FilterPaymentsRow) int64 {
+
+		return row.Payment.ID
+	}
+
+	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
+		processPayment := func(ctx context.Context,
+			dbPayment sqlc.FilterPaymentsRow) error {
+
+			// Fetch all the additional data for the payment.
+			mpPayment, err := s.fetchPaymentWithCompleteData(
+				ctx, db, dbPayment,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to fetch payment "+
+					"with complete data: %w", err)
+			}
+
+			// Payments which are not final yet cannot be deleted.
+			// we skip them.
+			if err := mpPayment.Status.removable(); err != nil {
+				return nil
+			}
+
+			// If we are only deleting failed payments, we skip
+			// if the payment is not failed.
+			if failedOnly && mpPayment.Status != StatusFailed {
+				return nil
+			}
+
+			// If we are only deleting failed HTLCs, we delete them
+			// and return early.
+			if failedHtlcsOnly {
+				return db.DeleteFailedAttempts(
+					ctx, dbPayment.Payment.ID,
+				)
+			}
+
+			// Otherwise we delete the payment.
+			err = db.DeletePayment(ctx, dbPayment.Payment.ID)
+			if err != nil {
+				return fmt.Errorf("failed to delete "+
+					"payment: %w", err)
+			}
+
+			numPayments++
+
+			return nil
+		}
+
+		queryFunc := func(ctx context.Context, lastID int64,
+			limit int32) ([]sqlc.FilterPaymentsRow, error) {
+
+			filterParams := sqlc.FilterPaymentsParams{
+				NumLimit: limit,
+				// For now there are only BOLT 11 payment
+				// intents.
+				IntentType: sqldb.SQLInt16(
+					PaymentIntentTypeBolt11,
+				),
+				IndexOffsetGet: sqldb.SQLInt64(
+					lastID,
+				),
+			}
+
+			return db.FilterPayments(ctx, filterParams)
+		}
+
+		return sqldb.ExecutePaginatedQuery(
+			ctx, s.cfg.QueryCfg, int64(-1), queryFunc,
+			extractCursor, processPayment,
+		)
+
+	}, func() {
+		numPayments = 0
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete payments "+
+			"(failedOnly: %v, failedHtlcsOnly: %v): %w",
+			failedOnly, failedHtlcsOnly, err)
+	}
+
+	return numPayments, nil
+}

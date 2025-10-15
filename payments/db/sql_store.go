@@ -552,11 +552,13 @@ func (s *SQLStore) DeletePayment(paymentHash lntypes.Hash,
 
 		// If we are only deleting failed HTLCs, we delete them.
 		if failedHtlcsOnly {
-			return s.db.DeleteFailedAttempts(
+			return db.DeleteFailedAttempts(
 				ctx, fetchPayment.Payment.ID,
 			)
 		}
 
+		// Be careful to not use s.db here, because we are in a
+		// transaction, is there a way to make this more secure?
 		return db.DeletePayment(ctx, fetchPayment.Payment.ID)
 
 	}, func() {
@@ -565,6 +567,50 @@ func (s *SQLStore) DeletePayment(paymentHash lntypes.Hash,
 		return fmt.Errorf("failed to delete payment "+
 			"(failedHtlcsOnly: %v, paymentHash: %v): %w",
 			failedHtlcsOnly, paymentHash, err)
+	}
+
+	return nil
+}
+
+// DeleteFailedAttempts removes all failed HTLCs from the db. It should
+// be called for a given payment whenever all inflight htlcs are
+// completed, and the payment has reached a final terminal state.
+func (s *SQLStore) DeleteFailedAttempts(paymentHash lntypes.Hash) error {
+	// In case we are configured to keep failed payment attempts, we exit
+	// early.
+	if s.keepFailedPaymentAttempts {
+		return nil
+	}
+
+	ctx := context.TODO()
+
+	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
+		// We first fetch the payment to get the payment ID.
+		payment, err := db.FetchPayment(ctx, paymentHash[:])
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment: %w", err)
+		}
+
+		completePayment, err := s.fetchPaymentWithCompleteData(
+			ctx, db, payment,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment with "+
+				"complete data: %w", err)
+		}
+
+		if err := completePayment.Status.removable(); err != nil {
+			return fmt.Errorf("payment %v cannot be deleted: %w",
+				paymentHash, err)
+		}
+
+		// Then we delete the failed attempts for this payment.
+		return db.DeleteFailedAttempts(ctx, payment.Payment.ID)
+	}, func() {
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete failed attempts for "+
+			"payment %v: %w", paymentHash, err)
 	}
 
 	return nil

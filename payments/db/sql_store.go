@@ -2,11 +2,13 @@ package paymentsdb
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
 	"time"
 
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/sqldb"
 	"github.com/lightningnetwork/lnd/sqldb/sqlc"
@@ -473,4 +475,41 @@ func (s *SQLStore) QueryPayments(ctx context.Context,
 		LastIndexOffset:  allPayments[len(allPayments)-1].SequenceNum,
 		TotalCount:       uint64(totalCount),
 	}, nil
+}
+
+// FetchPayment fetches the payment corresponding to the given payment
+// hash.
+//
+// This is part of the DB interface.
+func (s *SQLStore) FetchPayment(paymentHash lntypes.Hash) (*MPPayment, error) {
+	ctx := context.TODO()
+
+	var mpPayment *MPPayment
+
+	err := s.db.ExecTx(ctx, sqldb.ReadTxOpt(), func(db SQLQueries) error {
+		dbPayment, err := db.FetchPayment(ctx, paymentHash[:])
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to fetch payment: %w", err)
+		}
+
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrPaymentNotInitiated
+		}
+
+		mpPayment, err = s.fetchPaymentWithCompleteData(
+			ctx, db, dbPayment,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment with "+
+				"complete data: %w", err)
+		}
+
+		return nil
+	}, func() {
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch payment: %w", err)
+	}
+
+	return mpPayment, nil
 }

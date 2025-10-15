@@ -388,7 +388,7 @@ func TestDeleteFailedAttempts(t *testing.T) {
 // testDeleteFailedAttempts tests the DeleteFailedAttempts method with the
 // given keepFailedPaymentAttempts flag as argument.
 func testDeleteFailedAttempts(t *testing.T, keepFailedPaymentAttempts bool) {
-	paymentDB := NewTestDB(
+	paymentDB := NewKVTestDB(
 		t, WithKeepFailedPaymentAttempts(keepFailedPaymentAttempts),
 	)
 
@@ -479,7 +479,7 @@ func testDeleteFailedAttempts(t *testing.T, keepFailedPaymentAttempts bool) {
 func TestMPPRecordValidation(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewTestDB(t)
+	paymentDB := NewKVTestDB(t)
 
 	info, attempt, _, err := genInfo(t)
 	require.NoError(t, err, "unable to generate htlc message")
@@ -550,7 +550,7 @@ func TestMPPRecordValidation(t *testing.T) {
 func TestDeleteSinglePayment(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewTestDB(t)
+	paymentDB := NewKVTestDB(t)
 
 	// Register four payments:
 	// All payments will have one failed HTLC attempt and one HTLC attempt
@@ -1195,7 +1195,7 @@ func TestEmptyRoutesGenerateSphinxPacket(t *testing.T) {
 func TestSuccessesWithoutInFlight(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewTestDB(t)
+	paymentDB := NewKVTestDB(t)
 
 	info, _, preimg, err := genInfo(t)
 	require.NoError(t, err, "unable to generate htlc message")
@@ -1215,7 +1215,7 @@ func TestSuccessesWithoutInFlight(t *testing.T) {
 func TestFailsWithoutInFlight(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewTestDB(t)
+	paymentDB := NewKVTestDB(t)
 
 	info, _, _, err := genInfo(t)
 	require.NoError(t, err, "unable to generate htlc message")
@@ -1232,7 +1232,7 @@ func TestFailsWithoutInFlight(t *testing.T) {
 func TestDeletePayments(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewTestDB(t)
+	paymentDB := NewKVTestDB(t)
 
 	// Register three payments:
 	// 1. A payment with two failed attempts.
@@ -1290,7 +1290,7 @@ func TestDeletePayments(t *testing.T) {
 func TestSwitchDoubleSend(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewTestDB(t)
+	paymentDB := NewKVTestDB(t)
 
 	info, attempt, preimg, err := genInfo(t)
 	require.NoError(t, err, "unable to generate htlc message")
@@ -1363,7 +1363,7 @@ func TestSwitchDoubleSend(t *testing.T) {
 func TestSwitchFail(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewTestDB(t)
+	paymentDB := NewKVTestDB(t)
 
 	info, attempt, preimg, err := genInfo(t)
 	require.NoError(t, err, "unable to generate htlc message")
@@ -1520,7 +1520,7 @@ func TestMultiShard(t *testing.T) {
 	}
 
 	runSubTest := func(t *testing.T, test testCase) {
-		paymentDB := NewTestDB(t)
+		paymentDB := NewKVTestDB(t)
 
 		info, attempt, preimg, err := genInfo(t)
 		if err != nil {

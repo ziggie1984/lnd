@@ -544,6 +544,58 @@ func (s *SQLStore) FetchPayment(paymentHash lntypes.Hash) (*MPPayment, error) {
 	return mpPayment, nil
 }
 
+// FetchInFlightPayments fetches all payments with status InFlight.
+//
+// TODO(ziggie): Add pagination (LIMIT)) to this function?
+//
+// This is part of the DB interface.
+func (s *SQLStore) FetchInFlightPayments() ([]*MPPayment, error) {
+	ctx := context.TODO()
+
+	var mpPayments []*MPPayment
+
+	err := s.db.ExecTx(ctx, sqldb.ReadTxOpt(), func(db SQLQueries) error {
+		inflightDBAttempts, err := db.FetchAllInflightAttempts(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to fetch inflight "+
+				"attempts: %w", err)
+		}
+
+		paymentIDs := make([]int64, len(inflightDBAttempts))
+		for i, attempt := range inflightDBAttempts {
+			paymentIDs[i] = attempt.PaymentID
+		}
+
+		dbPayments, err := db.FetchPaymentsByIDs(ctx, paymentIDs)
+		if err != nil {
+			return fmt.Errorf("failed to fetch payments by IDs: %w",
+				err)
+		}
+
+		mpPayments = make([]*MPPayment, len(dbPayments))
+		for i, dbPayment := range dbPayments {
+			mpPayment, err := s.fetchPaymentWithCompleteData(
+				ctx, db, dbPayment,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to fetch payment "+
+					"with complete data: %w", err)
+			}
+			mpPayments[i] = mpPayment
+		}
+
+		return nil
+	}, func() {
+		mpPayments = nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch inflight "+
+			"attempts: %w", err)
+	}
+
+	return mpPayments, nil
+}
+
 // DeletePayment deletes a payment from the DB given its payment hash. If
 // failedHtlcsOnly is set, only failed HTLC attempts of the payment will be
 // deleted.

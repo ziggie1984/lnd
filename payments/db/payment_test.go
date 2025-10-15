@@ -446,7 +446,7 @@ func TestDeleteFailedAttempts(t *testing.T) {
 // testDeleteFailedAttempts tests the DeleteFailedAttempts method with the
 // given keepFailedPaymentAttempts flag as argument.
 func testDeleteFailedAttempts(t *testing.T, keepFailedPaymentAttempts bool) {
-	paymentDB := NewKVTestDB(
+	paymentDB := NewTestDB(
 		t, WithKeepFailedPaymentAttempts(keepFailedPaymentAttempts),
 	)
 
@@ -537,7 +537,7 @@ func testDeleteFailedAttempts(t *testing.T, keepFailedPaymentAttempts bool) {
 func TestMPPRecordValidation(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewKVTestDB(t)
+	paymentDB := NewTestDB(t)
 
 	preimg, err := genPreimage(t)
 	require.NoError(t, err)
@@ -638,7 +638,7 @@ func TestMPPRecordValidation(t *testing.T) {
 func TestDeleteSinglePayment(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewKVTestDB(t)
+	paymentDB := NewTestDB(t)
 
 	// Register four payments:
 	// All payments will have one failed HTLC attempt and one HTLC attempt
@@ -1283,7 +1283,7 @@ func TestEmptyRoutesGenerateSphinxPacket(t *testing.T) {
 func TestSuccessesWithoutInFlight(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewKVTestDB(t)
+	paymentDB := NewTestDB(t)
 
 	preimg, err := genPreimage(t)
 	require.NoError(t, err)
@@ -1306,7 +1306,7 @@ func TestSuccessesWithoutInFlight(t *testing.T) {
 func TestFailsWithoutInFlight(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewKVTestDB(t)
+	paymentDB := NewTestDB(t)
 
 	preimg, err := genPreimage(t)
 	require.NoError(t, err)
@@ -1326,7 +1326,7 @@ func TestFailsWithoutInFlight(t *testing.T) {
 func TestDeletePayments(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewKVTestDB(t)
+	paymentDB := NewTestDB(t)
 
 	// Register three payments:
 	// 1. A payment with two failed attempts.
@@ -1384,7 +1384,7 @@ func TestDeletePayments(t *testing.T) {
 func TestSwitchDoubleSend(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewKVTestDB(t)
+	paymentDB := NewTestDB(t)
 
 	preimg, err := genPreimage(t)
 	require.NoError(t, err)
@@ -1462,7 +1462,7 @@ func TestSwitchDoubleSend(t *testing.T) {
 func TestSwitchFail(t *testing.T) {
 	t.Parallel()
 
-	paymentDB := NewKVTestDB(t)
+	paymentDB := NewTestDB(t)
 
 	preimg, err := genPreimage(t)
 	require.NoError(t, err)
@@ -1628,7 +1628,7 @@ func TestMultiShard(t *testing.T) {
 	}
 
 	runSubTest := func(t *testing.T, test testCase) {
-		paymentDB := NewKVTestDB(t)
+		paymentDB := NewTestDB(t)
 
 		preimg, err := genPreimage(t)
 		require.NoError(t, err)

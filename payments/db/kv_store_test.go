@@ -2,6 +2,7 @@ package paymentsdb
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"math"
 	"reflect"
 	"testing"
@@ -61,10 +62,15 @@ func TestKVStoreDeleteNonInFlight(t *testing.T) {
 	var numSuccess, numInflight int
 
 	for _, p := range payments {
-		info, attempt, preimg, err := genInfo(t)
-		if err != nil {
-			t.Fatalf("unable to generate htlc message: %v", err)
-		}
+		preimg, err := genPreimage(t)
+		require.NoError(t, err)
+
+		rhash := sha256.Sum256(preimg[:])
+		info := genPaymentCreationInfo(t, rhash)
+		attempt, err := genAttemptWithHash(
+			t, 0, genSessionKey(t), rhash,
+		)
+		require.NoError(t, err)
 
 		// Sends base htlc message which initiate StatusInFlight.
 		err = paymentDB.InitPayment(info.PaymentIdentifier, info)
@@ -474,7 +480,7 @@ func TestFetchPaymentWithSequenceNumber(t *testing.T) {
 	paymentDB := NewKVTestDB(t)
 
 	// Generate a test payment which does not have duplicates.
-	noDuplicates, _, _, err := genInfo(t)
+	noDuplicates, _, err := genInfo(t)
 	require.NoError(t, err)
 
 	// Create a new payment entry in the database.
@@ -490,7 +496,7 @@ func TestFetchPaymentWithSequenceNumber(t *testing.T) {
 	require.NoError(t, err)
 
 	// Generate a test payment which we will add duplicates to.
-	hasDuplicates, _, preimg, err := genInfo(t)
+	hasDuplicates, preimg, err := genInfo(t)
 	require.NoError(t, err)
 
 	// Create a new payment entry in the database.
@@ -648,7 +654,7 @@ func putDuplicatePayment(t *testing.T, duplicateBucket kvdb.RwBucket,
 	require.NoError(t, err)
 
 	// Generate fake information for the duplicate payment.
-	info, _, _, err := genInfo(t)
+	info, _, err := genInfo(t)
 	require.NoError(t, err)
 
 	// Write the payment info to disk under the creation info key. This code
@@ -956,7 +962,7 @@ func TestQueryPayments(t *testing.T) {
 
 			for i := 0; i < nonDuplicatePayments; i++ {
 				// Generate a test payment.
-				info, _, preimg, err := genInfo(t)
+				info, preimg, err := genInfo(t)
 				if err != nil {
 					t.Fatalf("unable to create test "+
 						"payment: %v", err)

@@ -523,3 +523,49 @@ func (s *SQLStore) FetchPayment(paymentHash lntypes.Hash) (*MPPayment, error) {
 
 	return mpPayment, nil
 }
+
+// DeletePayment deletes a payment from the DB given its payment hash. If
+// failedHtlcsOnly is set, only failed HTLC attempts of the payment will be
+// deleted.
+func (s *SQLStore) DeletePayment(paymentHash lntypes.Hash,
+	failedHtlcsOnly bool) error {
+
+	ctx := context.TODO()
+
+	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
+		fetchPayment, err := db.FetchPayment(ctx, paymentHash[:])
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment: %w", err)
+		}
+		completePayment, err := s.fetchPaymentWithCompleteData(
+			ctx, db, fetchPayment,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment with "+
+				"complete data: %w", err)
+		}
+
+		if err := completePayment.Status.removable(); err != nil {
+			return fmt.Errorf("payment %v cannot be deleted: %w",
+				paymentHash, err)
+		}
+
+		// If we are only deleting failed HTLCs, we delete them.
+		if failedHtlcsOnly {
+			return s.db.DeleteFailedAttempts(
+				ctx, fetchPayment.Payment.ID,
+			)
+		}
+
+		return db.DeletePayment(ctx, fetchPayment.Payment.ID)
+
+	}, func() {
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete payment "+
+			"(failedHtlcsOnly: %v, paymentHash: %v): %w",
+			failedHtlcsOnly, paymentHash, err)
+	}
+
+	return nil
+}

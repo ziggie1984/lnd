@@ -936,3 +936,51 @@ func (s *SQLStore) RegisterAttempt(paymentHash lntypes.Hash,
 
 	return mpPayment, nil
 }
+
+// SettleAttempt marks the given attempt settled with the preimage.
+func (s *SQLStore) SettleAttempt(paymentHash lntypes.Hash,
+	attemptID uint64, settleInfo *HTLCSettleInfo) (*MPPayment, error) {
+
+	ctx := context.TODO()
+
+	var mpPayment *MPPayment
+
+	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
+		// Before updating the attempt, we fetch the payment to get the
+		// payment ID.
+		payment, err := db.FetchPayment(ctx, paymentHash[:])
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to fetch payment: %w", err)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrPaymentNotInitiated
+		}
+
+		err = db.SettleAttempt(ctx, sqlc.SettleAttemptParams{
+			AttemptIndex:   int64(attemptID),
+			ResolutionTime: time.Now(),
+			ResolutionType: int32(HTLCAttemptResolutionSettled),
+			SettlePreimage: settleInfo.Preimage[:],
+		})
+		if err != nil {
+			return fmt.Errorf("failed to settle attempt: %w", err)
+		}
+
+		mpPayment, err = s.fetchPaymentWithCompleteData(
+			ctx, db, payment,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment with "+
+				"complete data: %w", err)
+		}
+
+		return nil
+	}, func() {
+		mpPayment = nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to settle attempt: %w", err)
+	}
+
+	return mpPayment, nil
+}

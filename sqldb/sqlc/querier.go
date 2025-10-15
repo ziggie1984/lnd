@@ -31,6 +31,7 @@ type Querier interface {
 	DeletePruneLogEntriesInRange(ctx context.Context, arg DeletePruneLogEntriesInRangeParams) error
 	DeleteUnconnectedNodes(ctx context.Context) ([][]byte, error)
 	DeleteZombieChannel(ctx context.Context, arg DeleteZombieChannelParams) (sql.Result, error)
+	FailAttempt(ctx context.Context, arg FailAttemptParams) error
 	FetchAMPSubInvoiceHTLCs(ctx context.Context, arg FetchAMPSubInvoiceHTLCsParams) ([]FetchAMPSubInvoiceHTLCsRow, error)
 	FetchAMPSubInvoices(ctx context.Context, arg FetchAMPSubInvoicesParams) ([]AmpSubInvoice, error)
 	// Fetch all inflight attempts across all payments
@@ -116,6 +117,7 @@ type Querier interface {
 	// UpsertEdgePolicy query is used because of the constraint in that query that
 	// requires a policy update to have a newer last_update than the existing one).
 	InsertEdgePolicyMig(ctx context.Context, arg InsertEdgePolicyMigParams) (int64, error)
+	InsertHtlcAttempt(ctx context.Context, arg InsertHtlcAttemptParams) (int64, error)
 	InsertInvoice(ctx context.Context, arg InsertInvoiceParams) (int64, error)
 	InsertInvoiceFeature(ctx context.Context, arg InsertInvoiceFeatureParams) error
 	InsertInvoiceHTLC(ctx context.Context, arg InsertInvoiceHTLCParams) (int64, error)
@@ -129,6 +131,17 @@ type Querier interface {
 	// is used because of the constraint in that query that requires a node update
 	// to have a newer last_update than the existing node).
 	InsertNodeMig(ctx context.Context, arg InsertNodeMigParams) (int64, error)
+	// Insert a new payment with the given intent ID and return its ID.
+	InsertPayment(ctx context.Context, arg InsertPaymentParams) error
+	InsertPaymentAttemptFirstHopCustomRecord(ctx context.Context, arg InsertPaymentAttemptFirstHopCustomRecordParams) error
+	InsertPaymentFirstHopCustomRecord(ctx context.Context, arg InsertPaymentFirstHopCustomRecordParams) error
+	InsertPaymentHopCustomRecord(ctx context.Context, arg InsertPaymentHopCustomRecordParams) error
+	// Insert a new payment intent and return its ID.
+	InsertPaymentIntent(ctx context.Context, arg InsertPaymentIntentParams) (int64, error)
+	InsertRouteHop(ctx context.Context, arg InsertRouteHopParams) (int64, error)
+	InsertRouteHopAmp(ctx context.Context, arg InsertRouteHopAmpParams) error
+	InsertRouteHopBlinded(ctx context.Context, arg InsertRouteHopBlindedParams) error
+	InsertRouteHopMpp(ctx context.Context, arg InsertRouteHopMppParams) error
 	IsClosedChannel(ctx context.Context, scid []byte) (bool, error)
 	IsPublicV1Node(ctx context.Context, pubKey []byte) (bool, error)
 	IsZombieChannel(ctx context.Context, arg IsZombieChannelParams) (bool, error)
@@ -148,6 +161,7 @@ type Querier interface {
 	OnInvoiceSettled(ctx context.Context, arg OnInvoiceSettledParams) error
 	SetKVInvoicePaymentHash(ctx context.Context, arg SetKVInvoicePaymentHashParams) error
 	SetMigration(ctx context.Context, arg SetMigrationParams) error
+	SettleAttempt(ctx context.Context, arg SettleAttemptParams) error
 	UpdateAMPSubInvoiceHTLCPreimage(ctx context.Context, arg UpdateAMPSubInvoiceHTLCPreimageParams) (sql.Result, error)
 	UpdateAMPSubInvoiceState(ctx context.Context, arg UpdateAMPSubInvoiceStateParams) error
 	UpdateInvoiceAmountPaid(ctx context.Context, arg UpdateInvoiceAmountPaidParams) (sql.Result, error)

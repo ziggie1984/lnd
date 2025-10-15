@@ -1,6 +1,7 @@
 package paymentsdb
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -76,6 +77,7 @@ type SQLQueries interface {
 	InsertPaymentHopCustomRecord(ctx context.Context, arg sqlc.InsertPaymentHopCustomRecordParams) error
 
 	SettleAttempt(ctx context.Context, arg sqlc.SettleAttemptParams) error
+	FailAttempt(ctx context.Context, arg sqlc.FailAttemptParams) error
 
 	FailPayment(ctx context.Context, arg sqlc.FailPaymentParams) (sql.Result, error)
 
@@ -982,6 +984,66 @@ func (s *SQLStore) SettleAttempt(paymentHash lntypes.Hash,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to settle attempt: %w", err)
+	}
+
+	return mpPayment, nil
+}
+
+// FailAttempt marks the given attempt failed.
+func (s *SQLStore) FailAttempt(paymentHash lntypes.Hash,
+	attemptID uint64, failInfo *HTLCFailInfo) (*MPPayment, error) {
+
+	ctx := context.TODO()
+
+	var mpPayment *MPPayment
+
+	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
+		// Before updating the attempt, we fetch the payment to get the
+		// payment ID.
+		payment, err := db.FetchPayment(ctx, paymentHash[:])
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to fetch payment: %w", err)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrPaymentNotInitiated
+		}
+
+		var failureMsg bytes.Buffer
+		if failInfo.Message != nil {
+			err := lnwire.EncodeFailureMessage(
+				&failureMsg, failInfo.Message, 0,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to encode "+
+					"failure message: %w", err)
+			}
+		}
+
+		err = db.FailAttempt(ctx, sqlc.FailAttemptParams{
+			AttemptIndex:   int64(attemptID),
+			ResolutionTime: time.Now(),
+			ResolutionType: int32(HTLCAttemptResolutionFailed),
+			FailureSourceIndex: sqldb.SQLInt32(
+				failInfo.FailureSourceIndex,
+			),
+			HtlcFailReason: sqldb.SQLInt32(failInfo.Reason),
+			FailureMsg:     failureMsg.Bytes(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to fail attempt: %w", err)
+		}
+
+		mpPayment, err = s.fetchPaymentWithCompleteData(ctx, db, payment)
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment with complete data: %w", err)
+		}
+
+		return nil
+	}, func() {
+		mpPayment = nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fail attempt: %w", err)
 	}
 
 	return mpPayment, nil

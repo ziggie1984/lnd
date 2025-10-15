@@ -77,6 +77,8 @@ type SQLQueries interface {
 
 	SettleAttempt(ctx context.Context, arg sqlc.SettleAttemptParams) error
 
+	FailPayment(ctx context.Context, arg sqlc.FailPaymentParams) (sql.Result, error)
+
 	DeletePayment(ctx context.Context, paymentID int64) error
 
 	// DeleteFailedAttempts removes all failed HTLCs from the db for a
@@ -980,6 +982,59 @@ func (s *SQLStore) SettleAttempt(paymentHash lntypes.Hash,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to settle attempt: %w", err)
+	}
+
+	return mpPayment, nil
+}
+
+// Fail transitions a payment into the Failed state, and records the ultimate
+// reason the payment failed. Note that this should only be called when all
+// active attempts are already failed. After invoking this method, InitPayment
+// should return nil on its next call for this payment hash, allowing the user
+// to make a subsequent payments for the same payment hash.
+func (s *SQLStore) Fail(paymentHash lntypes.Hash,
+	reason FailureReason) (*MPPayment, error) {
+
+	ctx := context.TODO()
+
+	var mpPayment *MPPayment
+
+	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
+		result, err := db.FailPayment(ctx, sqlc.FailPaymentParams{
+			PaymentIdentifier: paymentHash[:],
+			FailReason:        sqldb.SQLInt32(reason),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to fail payment: %w", err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to get rows affected: %w",
+				err)
+		}
+		if rowsAffected == 0 {
+			return ErrPaymentNotInitiated
+		}
+
+		payment, err := db.FetchPayment(ctx, paymentHash[:])
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment: %w", err)
+		}
+		mpPayment, err = s.fetchPaymentWithCompleteData(
+			ctx, db, payment,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to fetch payment with "+
+				"complete data: %w", err)
+		}
+
+		return nil
+	}, func() {
+		mpPayment = nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fail payment: %w", err)
 	}
 
 	return mpPayment, nil

@@ -195,7 +195,7 @@ ON CONFLICT (intent_type, intent_payload) DO UPDATE SET
     intent_payload = EXCLUDED.intent_payload
 RETURNING id;
 
--- name: InsertPayment :exec
+-- name: InsertPayment :one
 -- Insert a new payment with the given intent ID and return its ID.
 INSERT INTO payments (
     intent_id,
@@ -209,7 +209,8 @@ VALUES (
     @created_at,
     @payment_identifier,
     NULL
-);
+)
+RETURNING id;
 
 -- name: InsertPaymentFirstHopCustomRecord :exec
 INSERT INTO payment_first_hop_custom_records (

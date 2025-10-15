@@ -767,7 +767,7 @@ func (q *Queries) InsertHtlcAttempt(ctx context.Context, arg InsertHtlcAttemptPa
 	return id, err
 }
 
-const insertPayment = `-- name: InsertPayment :exec
+const insertPayment = `-- name: InsertPayment :one
 INSERT INTO payments (
     intent_id,
     amount_msat, 
@@ -781,6 +781,7 @@ VALUES (
     $4,
     NULL
 )
+RETURNING id
 `
 
 type InsertPaymentParams struct {
@@ -791,14 +792,16 @@ type InsertPaymentParams struct {
 }
 
 // Insert a new payment with the given intent ID and return its ID.
-func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) error {
-	_, err := q.db.ExecContext(ctx, insertPayment,
+func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, insertPayment,
 		arg.IntentID,
 		arg.AmountMsat,
 		arg.CreatedAt,
 		arg.PaymentIdentifier,
 	)
-	return err
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const insertPaymentAttemptFirstHopCustomRecord = `-- name: InsertPaymentAttemptFirstHopCustomRecord :exec

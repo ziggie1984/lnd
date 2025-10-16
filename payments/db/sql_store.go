@@ -628,7 +628,6 @@ func (s *SQLStore) DeletePayment(paymentHash lntypes.Hash,
 		// Be careful to not use s.db here, because we are in a
 		// transaction, is there a way to make this more secure?
 		return db.DeletePayment(ctx, fetchPayment.Payment.ID)
-
 	}, func() {
 	})
 	if err != nil {
@@ -813,14 +812,17 @@ func (s *SQLStore) insertRouteHops(ctx context.Context, db SQLQueries,
 		// Insert the per-hop custom records
 		if len(hop.CustomRecords) > 0 {
 			for key, value := range hop.CustomRecords {
-				err = db.InsertPaymentHopCustomRecord(ctx, sqlc.InsertPaymentHopCustomRecordParams{
-					HopID: hopID,
-					Key:   int64(key),
-					Value: value,
-				})
+				err = db.InsertPaymentHopCustomRecord(ctx,
+					sqlc.InsertPaymentHopCustomRecordParams{
+						HopID: hopID,
+						Key:   int64(key),
+						Value: value,
+					},
+				)
 				if err != nil {
 					return fmt.Errorf("failed to insert "+
-						"payment hop custom record: %w", err)
+						"payment hop custom "+
+						"records: %w", err)
 				}
 			}
 		}
@@ -828,11 +830,13 @@ func (s *SQLStore) insertRouteHops(ctx context.Context, db SQLQueries,
 		// Insert MPP data if present
 		if hop.MPP != nil {
 			paymentAddr := hop.MPP.PaymentAddr()
-			err = db.InsertRouteHopMpp(ctx, sqlc.InsertRouteHopMppParams{
-				HopID:       hopID,
-				PaymentAddr: paymentAddr[:],
-				TotalMsat:   int64(hop.MPP.TotalMsat()),
-			})
+			err = db.InsertRouteHopMpp(ctx,
+				sqlc.InsertRouteHopMppParams{
+					HopID:       hopID,
+					PaymentAddr: paymentAddr[:],
+					TotalMsat:   int64(hop.MPP.TotalMsat()),
+				},
+			)
 			if err != nil {
 				return fmt.Errorf("failed to insert "+
 					"route hop MPP: %w", err)
@@ -843,11 +847,13 @@ func (s *SQLStore) insertRouteHops(ctx context.Context, db SQLQueries,
 		if hop.AMP != nil {
 			rootShare := hop.AMP.RootShare()
 			setID := hop.AMP.SetID()
-			err = db.InsertRouteHopAmp(ctx, sqlc.InsertRouteHopAmpParams{
-				HopID:     hopID,
-				RootShare: rootShare[:],
-				SetID:     setID[:],
-			})
+			err = db.InsertRouteHopAmp(ctx,
+				sqlc.InsertRouteHopAmpParams{
+					HopID:     hopID,
+					RootShare: rootShare[:],
+					SetID:     setID[:],
+				},
+			)
 			if err != nil {
 				return fmt.Errorf("failed to insert "+
 					"route hop AMP: %w", err)
@@ -946,6 +952,7 @@ func (s *SQLStore) RegisterAttempt(paymentHash lntypes.Hash,
 
 		for key, value := range attemptFirstHopCustomRecords {
 			err = db.InsertPaymentAttemptFirstHopCustomRecord(ctx,
+				//nolint:ll
 				sqlc.InsertPaymentAttemptFirstHopCustomRecordParams{
 					HtlcAttemptIndex: int64(attempt.AttemptID),
 					Key:              int64(key),
@@ -1081,9 +1088,12 @@ func (s *SQLStore) FailAttempt(paymentHash lntypes.Hash,
 			return fmt.Errorf("failed to fail attempt: %w", err)
 		}
 
-		mpPayment, err = s.fetchPaymentWithCompleteData(ctx, db, payment)
+		mpPayment, err = s.fetchPaymentWithCompleteData(
+			ctx, db, payment,
+		)
 		if err != nil {
-			return fmt.Errorf("failed to fetch payment with complete data: %w", err)
+			return fmt.Errorf("failed to fetch payment with"+
+				"complete data: %w", err)
 		}
 
 		return nil
@@ -1232,7 +1242,6 @@ func (s *SQLStore) DeletePayments(failedOnly, failedHtlcsOnly bool) (int,
 			ctx, s.cfg.QueryCfg, int64(-1), queryFunc,
 			extractCursor, processPayment,
 		)
-
 	}, func() {
 		numPayments = 0
 	})

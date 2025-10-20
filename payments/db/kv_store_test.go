@@ -25,6 +25,8 @@ import (
 func TestKVStoreDeleteNonInFlight(t *testing.T) {
 	t.Parallel()
 
+	ctx := t.Context()
+
 	paymentDB := NewKVTestDB(t)
 
 	// Create a sequence number for duplicate payments that will not collide
@@ -175,7 +177,7 @@ func TestKVStoreDeleteNonInFlight(t *testing.T) {
 	}
 
 	// Delete all failed payments.
-	numPayments, err := paymentDB.DeletePayments(true, false)
+	numPayments, err := paymentDB.DeletePayments(ctx, true, false)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, numPayments)
 
@@ -211,7 +213,7 @@ func TestKVStoreDeleteNonInFlight(t *testing.T) {
 	}
 
 	// Now delete all payments except in-flight.
-	numPayments, err = paymentDB.DeletePayments(false, false)
+	numPayments, err = paymentDB.DeletePayments(ctx, false, false)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, numPayments)
 

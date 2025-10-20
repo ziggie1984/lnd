@@ -1160,11 +1160,10 @@ func (s *SQLStore) Fail(paymentHash lntypes.Hash,
 // DeletePayments deletes all payments from the DB given the specified flags.
 //
 // TODO(ziggie): batch and use iterator instead.
-func (s *SQLStore) DeletePayments(failedOnly, failedHtlcsOnly bool) (int,
-	error) {
+func (s *SQLStore) DeletePayments(ctx context.Context, failedOnly,
+	failedHtlcsOnly bool) (int, error) {
 
 	var numPayments int
-	ctx := context.TODO()
 
 	extractCursor := func(
 		row sqlc.FilterPaymentsRow) int64 {

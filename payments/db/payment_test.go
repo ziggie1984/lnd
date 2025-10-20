@@ -117,6 +117,8 @@ type payment struct {
 func createTestPayments(t *testing.T, p DB, payments []*payment) {
 	t.Helper()
 
+	ctx := t.Context()
+
 	attemptID := uint64(0)
 
 	for i := 0; i < len(payments); i++ {
@@ -137,7 +139,7 @@ func createTestPayments(t *testing.T, p DB, payments []*payment) {
 		attemptID++
 
 		// Init the payment.
-		err = p.InitPayment(info.PaymentIdentifier, info)
+		err = p.InitPayment(ctx, info.PaymentIdentifier, info)
 		require.NoError(t, err, "unable to send htlc message")
 
 		// Register and fail the first attempt for all payments.
@@ -551,6 +553,8 @@ func testDeleteFailedAttempts(t *testing.T, keepFailedPaymentAttempts bool) {
 func TestMPPRecordValidation(t *testing.T) {
 	t.Parallel()
 
+	ctx := t.Context()
+
 	paymentDB := NewTestDB(t)
 
 	preimg, err := genPreimage(t)
@@ -567,7 +571,7 @@ func TestMPPRecordValidation(t *testing.T) {
 	require.NoError(t, err, "unable to generate htlc message")
 
 	// Init the payment.
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	require.NoError(t, err, "unable to send htlc message")
 
 	// Create three unique attempts we'll use for the test, and
@@ -625,7 +629,7 @@ func TestMPPRecordValidation(t *testing.T) {
 
 	require.NoError(t, err, "unable to generate htlc message")
 
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	require.NoError(t, err, "unable to send htlc message")
 
 	attempt.Route.FinalHop().MPP = nil
@@ -1416,6 +1420,8 @@ func TestDeletePayments(t *testing.T) {
 func TestSwitchDoubleSend(t *testing.T) {
 	t.Parallel()
 
+	ctx := t.Context()
+
 	paymentDB := NewTestDB(t)
 
 	preimg, err := genPreimage(t)
@@ -1428,7 +1434,7 @@ func TestSwitchDoubleSend(t *testing.T) {
 
 	// Sends base htlc message which initiate base status and move it to
 	// StatusInFlight and verifies that it was changed.
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	require.NoError(t, err, "unable to send htlc message")
 
 	assertPaymentIndex(t, paymentDB, info.PaymentIdentifier)
@@ -1442,7 +1448,7 @@ func TestSwitchDoubleSend(t *testing.T) {
 	// Try to initiate double sending of htlc message with the same
 	// payment hash, should result in error indicating that payment has
 	// already been sent.
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	require.ErrorIs(t, err, ErrPaymentExists)
 
 	// Record an attempt.
@@ -1460,7 +1466,7 @@ func TestSwitchDoubleSend(t *testing.T) {
 	)
 
 	// Sends base htlc message which initiate StatusInFlight.
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	if !errors.Is(err, ErrPaymentInFlight) {
 		t.Fatalf("payment control wrong behaviour: " +
 			"double sending must trigger ErrPaymentInFlight error")
@@ -1483,7 +1489,7 @@ func TestSwitchDoubleSend(t *testing.T) {
 		t, paymentDB, info.PaymentIdentifier, info, nil, htlc,
 	)
 
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	if !errors.Is(err, ErrAlreadyPaid) {
 		t.Fatalf("unable to send htlc message: %v", err)
 	}
@@ -1507,7 +1513,7 @@ func TestSwitchFail(t *testing.T) {
 	require.NoError(t, err)
 
 	// Sends base htlc message which initiate StatusInFlight.
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	require.NoError(t, err, "unable to send htlc message")
 
 	assertPaymentIndex(t, paymentDB, info.PaymentIdentifier)
@@ -1539,7 +1545,7 @@ func TestSwitchFail(t *testing.T) {
 
 	// Sends the htlc again, which should succeed since the prior payment
 	// failed.
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	require.NoError(t, err, "unable to send htlc message")
 
 	// Check that our index has been updated, and the old index has been
@@ -1634,7 +1640,7 @@ func TestSwitchFail(t *testing.T) {
 
 	// Attempt a final payment, which should now fail since the prior
 	// payment succeed.
-	err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 	if !errors.Is(err, ErrAlreadyPaid) {
 		t.Fatalf("unable to send htlc message: %v", err)
 	}
@@ -1644,6 +1650,8 @@ func TestSwitchFail(t *testing.T) {
 // flight HTLCs for a single payment.
 func TestMultiShard(t *testing.T) {
 	t.Parallel()
+
+	ctx := t.Context()
 
 	// We will register three HTLC attempts, and always fail the second
 	// one. We'll generate all combinations of settling/failing the first
@@ -1671,7 +1679,7 @@ func TestMultiShard(t *testing.T) {
 		info := genPaymentCreationInfo(t, rhash)
 
 		// Init the payment, moving it to the StatusInFlight state.
-		err = paymentDB.InitPayment(info.PaymentIdentifier, info)
+		err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
 		require.NoError(t, err)
 
 		assertPaymentIndex(t, paymentDB, info.PaymentIdentifier)
@@ -2301,7 +2309,7 @@ func TestQueryPayments(t *testing.T) {
 
 				// Create a new payment entry in the database.
 				err = paymentDB.InitPayment(
-					info.PaymentIdentifier, info,
+					ctx, info.PaymentIdentifier, info,
 				)
 				require.NoError(t, err)
 			}

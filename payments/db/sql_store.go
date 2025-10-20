@@ -683,10 +683,8 @@ func (s *SQLStore) DeleteFailedAttempts(paymentHash lntypes.Hash) error {
 // InitPayment initializes a payment.
 //
 // This is part of the DB interface.
-func (s *SQLStore) InitPayment(paymentHash lntypes.Hash,
+func (s *SQLStore) InitPayment(ctx context.Context, paymentHash lntypes.Hash,
 	paymentCreationInfo *PaymentCreationInfo) error {
-
-	ctx := context.TODO()
 
 	// Create the payment in the database.
 	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {

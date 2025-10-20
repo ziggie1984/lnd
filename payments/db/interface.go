@@ -64,7 +64,8 @@ type PaymentControl interface {
 	InitPayment(context.Context, lntypes.Hash, *PaymentCreationInfo) error
 
 	// RegisterAttempt atomically records the provided HTLCAttemptInfo.
-	RegisterAttempt(lntypes.Hash, *HTLCAttemptInfo) (*MPPayment, error)
+	RegisterAttempt(context.Context, lntypes.Hash,
+		*HTLCAttemptInfo) (*MPPayment, error)
 
 	// SettleAttempt marks the given attempt settled with the preimage. If
 	// this is a multi shard payment, this might implicitly mean the

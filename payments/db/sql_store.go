@@ -886,10 +886,9 @@ func (s *SQLStore) insertRouteHops(ctx context.Context, db SQLQueries,
 // RegisterAttempt registers an attempt for a payment.
 //
 // This is part of the DB interface.
-func (s *SQLStore) RegisterAttempt(paymentHash lntypes.Hash,
-	attempt *HTLCAttemptInfo) (*MPPayment, error) {
-
-	ctx := context.TODO()
+func (s *SQLStore) RegisterAttempt(ctx context.Context,
+	paymentHash lntypes.Hash, attempt *HTLCAttemptInfo) (*MPPayment,
+	error) {
 
 	var mpPayment *MPPayment
 

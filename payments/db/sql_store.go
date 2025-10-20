@@ -507,8 +507,8 @@ func (s *SQLStore) QueryPayments(ctx context.Context,
 // hash.
 //
 // This is part of the DB interface.
-func (s *SQLStore) FetchPayment(paymentHash lntypes.Hash) (*MPPayment, error) {
-	ctx := context.TODO()
+func (s *SQLStore) FetchPayment(ctx context.Context,
+	paymentHash lntypes.Hash) (*MPPayment, error) {
 
 	var mpPayment *MPPayment
 

@@ -595,10 +595,8 @@ func (s *SQLStore) FetchInFlightPayments() ([]*MPPayment, error) {
 // DeletePayment deletes a payment from the DB given its payment hash. If
 // failedHtlcsOnly is set, only failed HTLC attempts of the payment will be
 // deleted.
-func (s *SQLStore) DeletePayment(paymentHash lntypes.Hash,
+func (s *SQLStore) DeletePayment(ctx context.Context, paymentHash lntypes.Hash,
 	failedHtlcsOnly bool) error {
-
-	ctx := context.TODO()
 
 	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
 		fetchPayment, err := db.FetchPayment(ctx, paymentHash[:])
@@ -648,7 +646,6 @@ func (s *SQLStore) DeleteFailedAttempts(paymentHash lntypes.Hash) error {
 	if s.keepFailedPaymentAttempts {
 		return nil
 	}
-
 	ctx := context.TODO()
 
 	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {

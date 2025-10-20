@@ -545,8 +545,8 @@ func (s *SQLStore) FetchPayment(ctx context.Context,
 // TODO(ziggie): Add pagination (LIMIT)) to this function?
 //
 // This is part of the DB interface.
-func (s *SQLStore) FetchInFlightPayments() ([]*MPPayment, error) {
-	ctx := context.TODO()
+func (s *SQLStore) FetchInFlightPayments(ctx context.Context) ([]*MPPayment,
+	error) {
 
 	var mpPayments []*MPPayment
 

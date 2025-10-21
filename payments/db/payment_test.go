@@ -148,7 +148,7 @@ func createTestPayments(t *testing.T, p DB, payments []*payment) {
 
 		htlcFailure := HTLCFailUnreadable
 		_, err = p.FailAttempt(
-			info.PaymentIdentifier, attempt.AttemptID,
+			ctx, info.PaymentIdentifier, attempt.AttemptID,
 			&HTLCFailInfo{
 				Reason: htlcFailure,
 			},
@@ -175,7 +175,7 @@ func createTestPayments(t *testing.T, p DB, payments []*payment) {
 		case StatusFailed:
 			htlcFailure := HTLCFailUnreadable
 			_, err = p.FailAttempt(
-				info.PaymentIdentifier, attempt.AttemptID,
+				ctx, info.PaymentIdentifier, attempt.AttemptID,
 				&HTLCFailInfo{
 					Reason: htlcFailure,
 				},
@@ -1579,7 +1579,7 @@ func TestSwitchFail(t *testing.T) {
 
 	htlcReason := HTLCFailUnreadable
 	_, err = paymentDB.FailAttempt(
-		info.PaymentIdentifier, attempt.AttemptID,
+		ctx, info.PaymentIdentifier, attempt.AttemptID,
 		&HTLCFailInfo{
 			Reason: htlcReason,
 		},
@@ -1763,7 +1763,7 @@ func TestMultiShard(t *testing.T) {
 		a := attempts[1]
 		htlcFail := HTLCFailUnreadable
 		_, err = paymentDB.FailAttempt(
-			info.PaymentIdentifier, a.AttemptID,
+			ctx, info.PaymentIdentifier, a.AttemptID,
 			&HTLCFailInfo{
 				Reason: htlcFail,
 			},
@@ -1812,7 +1812,7 @@ func TestMultiShard(t *testing.T) {
 			)
 		} else {
 			_, err := paymentDB.FailAttempt(
-				info.PaymentIdentifier, a.AttemptID,
+				ctx, info.PaymentIdentifier, a.AttemptID,
 				&HTLCFailInfo{
 					Reason: htlcFail,
 				},
@@ -1903,7 +1903,7 @@ func TestMultiShard(t *testing.T) {
 		} else {
 			// Fail the attempt.
 			_, err := paymentDB.FailAttempt(
-				info.PaymentIdentifier, a.AttemptID,
+				ctx, info.PaymentIdentifier, a.AttemptID,
 				&HTLCFailInfo{
 					Reason: htlcFail,
 				},

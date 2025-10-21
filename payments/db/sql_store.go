@@ -1037,10 +1037,8 @@ func (s *SQLStore) SettleAttempt(ctx context.Context, paymentHash lntypes.Hash,
 }
 
 // FailAttempt marks the given attempt failed.
-func (s *SQLStore) FailAttempt(paymentHash lntypes.Hash,
+func (s *SQLStore) FailAttempt(ctx context.Context, paymentHash lntypes.Hash,
 	attemptID uint64, failInfo *HTLCFailInfo) (*MPPayment, error) {
-
-	ctx := context.TODO()
 
 	var mpPayment *MPPayment
 

@@ -991,10 +991,8 @@ func (s *SQLStore) RegisterAttempt(ctx context.Context,
 }
 
 // SettleAttempt marks the given attempt settled with the preimage.
-func (s *SQLStore) SettleAttempt(paymentHash lntypes.Hash,
+func (s *SQLStore) SettleAttempt(ctx context.Context, paymentHash lntypes.Hash,
 	attemptID uint64, settleInfo *HTLCSettleInfo) (*MPPayment, error) {
-
-	ctx := context.TODO()
 
 	var mpPayment *MPPayment
 

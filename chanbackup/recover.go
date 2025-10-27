@@ -1,6 +1,7 @@
 package chanbackup
 
 import (
+	"errors"
 	"net"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -50,6 +51,14 @@ func Recover(backups []Single, restorer ChannelRestorer,
 			backup.FundingOutpoint)
 
 		err := restorer.RestoreChansFromSingles(backup)
+		if errors.Is(err, keychain.ErrCannotDerivePrivKey) {
+			log.Errorf("Could not derive private key for "+
+				"legacy channel revocation root format for "+
+				"ChannelPoint(%v): %v", backup.FundingOutpoint,
+				err)
+
+			continue
+		}
 
 		// If a channel is already present in the channel DB, we can
 		// just continue. No reason to fail a whole set of multi backups

@@ -105,7 +105,7 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 		if err != nil {
 			return nil, fmt.Errorf("could not derive private key "+
 				"for legacy channel revocation root format: "+
-				"%v", err)
+				"%w", err)
 		}
 
 		revRoot, err = chainhash.NewHash(privKey.Serialize())
@@ -125,7 +125,7 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 		)
 		if err != nil {
 			return nil, fmt.Errorf("unable to derive shachain "+
-				"root: %v", err)
+				"root: %w", err)
 		}
 
 		ch := chainhash.Hash(ecdh)

@@ -1308,7 +1308,6 @@ func (p *Brontide) loadActiveChannels(chans []*channeldb.OpenChannel) (
 			return nil, err
 		}
 
-
 		var (
 			shutdownMsg     fn.Option[lnwire.Shutdown]
 			shutdownInfoErr error
@@ -3425,7 +3424,6 @@ func chooseDeliveryScript(upfront, requested lnwire.DeliveryAddress,
 func (p *Brontide) restartCoopClose(lnChan *lnwallet.LightningChannel) (
 	*lnwire.Shutdown, error) {
 
-
 	// If this channel has status ChanStatusCoopBroadcasted and does not
 	// have a closing transaction, then the cooperative close process was
 	// started but never finished. We'll re-create the chanCloser state
@@ -4022,12 +4020,12 @@ func (p *Brontide) initRbfChanCloser(
 		),
 	}
 
-	// For taproot channels, we need to set both LocalMusigSession and 
-	// RemoteMusigSession to handle nonce exchange during RBF cooperative close.
+	// For taproot channels, we need to set both LocalMusigSession and
+	// RemoteMusigSession to handle nonce exchange during RBF cooperative
+	// close.
 	if channel.ChanType().IsTaproot() {
-		musigCloser := NewMusigChanCloser(channel)
-		env.LocalMusigSession = musigCloser
-		env.RemoteMusigSession = musigCloser
+		env.LocalMusigSession = NewMusigChanCloser(channel)
+		env.RemoteMusigSession = NewMusigChanCloser(channel)
 	}
 
 	spendEvent := protofsm.RegisterSpend[chancloser.ProtocolEvent]{
@@ -4341,7 +4339,6 @@ func (p *Brontide) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 
 		return
 	}
-
 
 	switch req.CloseType {
 	// A type of CloseRegular indicates that the user has opted to close
@@ -5372,7 +5369,6 @@ func (p *Brontide) addActiveChannel(c *lnpeer.NewChannel) error {
 		return fmt.Errorf("can't register new channel link(%v) with "+
 			"peer", chanPoint)
 	}
-
 
 	// We're using the old co-op close, so we don't need to init the new RBF
 	// chan closer.

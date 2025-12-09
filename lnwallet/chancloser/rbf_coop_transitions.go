@@ -54,7 +54,7 @@ func sendShutdownEvents(chanID lnwire.ChannelID, chanPoint wire.OutPoint,
 	// nonce - the nonce the remote party will use when they act as closer.
 	if env.IsTaproot() {
 		// If closee nonce not provided, generate one now. Note how we
-		// generate it usingt he RemoteMusigSession, as that'll set our
+		// generate it using the RemoteMusigSession, as that'll set our
 		// localNonce, we'll receive their remoteNonce for this session
 		// once we get their ClosingComplete message.
 		if localCloseeNonce.IsNone() {
@@ -1342,7 +1342,7 @@ func createClosingSigMessage(env *Environment, wireSig lnwire.Sig,
 			)
 		}
 
-		// Generate our next closee nonce for the next RBF iteration
+		// Generate our next closee nonce for the next RBF iteration.
 		// This is the nonce the closer should use for our closee
 		// signature in the next RBF round. We always include this since
 		// RBF could occur.
@@ -1938,9 +1938,9 @@ func (l *RemoteCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 
 		var remoteSig input.Signature
 
-		// For taproot channels, add MusigSession options if available
+		// For taproot channels, add MusigSession options if available.
 		// When we're the closee (sending closing_sig), we use
-		// RemoteMusigSession
+		// RemoteMusigSession.
 		switch {
 		case env.IsTaproot():
 			// First, process the remote taproot signature which
@@ -2005,7 +2005,6 @@ func (l *RemoteCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 			lnutils.SpewLogClosure(closeTx),
 		)
 
-		// Create the ClosingSig response message
 		closingSigMsg, err := createClosingSigMessage(
 			env, wireSig, localSig, l.LocalDeliveryScript,
 			l.RemoteDeliveryScript, msg.SigMsg.FeeSatoshis,

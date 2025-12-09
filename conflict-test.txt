@@ -1,6 +1,12 @@
   Line 1: This is the same
   Line 2: This is the same
+<<<<<<< HEAD
   Line 3: RELEASE BRANCH VERSION
   Line 4: This is the same
   Line 5: This is the same
 
+=======
+  Line 3: MASTER BRANCH VERSION - THIS CONFLICTS!
+  Line 4: This is the same
+  Line 5: This is the same
+>>>>>>> c83563673 (test: add conflict-test file with conflicting line 3)

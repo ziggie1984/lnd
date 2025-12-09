@@ -92,8 +92,6 @@ jobs:
           pull_description: |-
             Backport of #${pull_number}
 
-            Original PR: ${pull_url}
-
             ---
 
             ${pull_description}

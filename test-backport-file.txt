@@ -1,0 +1,7 @@
+# Test File for Backport Workflow
+
+This is a test file to verify the automated backport workflow works correctly.
+
+If this appears in a backport PR, the workflow is functioning as expected!
+
+Test date: 2025-12-09

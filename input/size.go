@@ -792,7 +792,8 @@ const (
 		TaprootHtlcOfferedRemoteTimeoutScriptSize + 1 +
 		TaprootBaseControlBlockWitnessSize + 32
 
-	// TaprootHtlcOfferedRemoteTimeoutWitnessSizeFinal: 174 bytes (production scripts)
+	// TaprootHtlcOfferedRemoteTimeoutWitnessSizeFinal: 174 bytes
+	// (production scripts).
 	TaprootHtlcOfferedRemoteTimeoutWitnessSizeFinal = 1 + 1 + 65 + 1 +
 		TaprootHtlcOfferedRemoteTimeoutScriptSizeFinal + 1 +
 		TaprootBaseControlBlockWitnessSize + 32

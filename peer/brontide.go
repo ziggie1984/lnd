@@ -5367,7 +5367,8 @@ func (p *Brontide) addActiveChannel(c *lnpeer.NewChannel) error {
 		func(ts htlcswitch.AuxTrafficShaper) {
 			val := p.createHtlcValidator(c.OpenChannel, ts)
 			chanOpts = append(
-				chanOpts, lnwallet.WithAuxHtlcValidator(val),
+				chanOpts,
+				lnwallet.WithAuxHtlcValidator(val),
 			)
 		},
 	)

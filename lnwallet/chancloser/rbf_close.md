@@ -188,24 +188,32 @@ Here's how nonces flow through an RBF cooperative close with taproot:
 
 2. **First Close Attempt** (Alice as closer):
    - Alice sends `closing_complete`:
-     - Uses Bob's nonce NB (from shutdown) to create her closer signature
-     - Includes `PartialSigWithNonce` with her next closee nonce `NA2`
+     - Uses Bob's closee nonce NB (from his shutdown) as the closee nonce
+     - Generates her own closer nonce NC locally
+     - Signs with aggregate nonce R = NB + NC
+     - Includes `PartialSigWithNonce` = partial_sig (32 bytes) + closer nonce NC (66 bytes)
    - Bob sends `closing_sig`:
-     - Uses Alice's nonce NA (from shutdown) to create his closee signature
-     - Includes `NextCloseeNonce` with his next closee nonce `NB2`
+     - Extracts Alice's closer nonce NC from `PartialSigWithNonce`
+     - Uses his own closee nonce NB (from his shutdown)
+     - Signs with aggregate nonce R = NC + NB
+     - Includes `PartialSig` (32 bytes) + `NextCloseeNonce` NB2 for future RBF
 
 3. **RBF Iteration** (Bob as closer):
    - Bob sends `closing_complete`:
-     - Uses Alice's nonce NA2 (from previous `PartialSigWithNonce`) to create
-       his closer signature
-     - Includes `PartialSigWithNonce` with his next closee nonce `NB3`
+     - Uses Alice's next closee nonce NA2 (from her previous `NextCloseeNonce`) as closee nonce
+     - Generates his own closer nonce NC2 locally
+     - Signs with aggregate nonce R = NA2 + NC2
+     - Includes `PartialSigWithNonce` = partial_sig + closer nonce NC2
    - Alice sends `closing_sig`:
-     - Uses Bob's nonce NB2 (from previous `NextCloseeNonce`) to create her
-       closee signature
-     - Includes `NextCloseeNonce` with her next closee nonce `NA3`
+     - Extracts Bob's closer nonce NC2 from `PartialSigWithNonce`
+     - Uses her own closee nonce NA2 (from her previous `NextCloseeNonce`)
+     - Signs with aggregate nonce R = NC2 + NA2
+     - Includes `PartialSig` + `NextCloseeNonce` NA3 for future RBF
 
-The pattern continues with each party using the nonce they received in the
-previous round.
+The pattern continues: the closer always uses the peer's closee nonce (from
+shutdown or previous NextCloseeNonce) combined with a fresh local closer nonce.
+The closee extracts the closer nonce from PartialSigWithNonce and combines it
+with their own closee nonce.
 
 ## Example Scenarios
 
@@ -267,8 +275,8 @@ optimizes nonce delivery:
 **ClosingComplete (from Closer)**:
 - Uses `PartialSigWithNonce` (98 bytes total):
   - The partial signature (32 bytes)
-  - The sender's next closee nonce (66 bytes)
-- Bundles the nonce because the closee hasn't seen it yet
+  - The sender's closer nonce (66 bytes)
+- Bundles the closer nonce because the closee hasn't seen it yet
 - TLV types 5, 6, 7 (distinct from non-taproot types 1, 2, 3)
 
 **ClosingSig (from Closee)**:
@@ -301,7 +309,7 @@ The following messages have been extended with optional TLV fields for taproot:
 - Type 8: `shutdown_nonce` - Sender's closee nonce for cooperative close signing
 
 **closing_complete**:
-- Types 5, 6, 7: `PartialSigWithNonce` - Partial signature with embedded next closee nonce
+- Types 5, 6, 7: `PartialSigWithNonce` - Partial signature with embedded closer nonce
   - Type 5: `closer_no_closee` (closer has output, closee is dust)
   - Type 6: `no_closer_closee` (closer is dust, closee has output)
   - Type 7: `closer_and_closee` (both have outputs)
@@ -318,7 +326,7 @@ For taproot channels:
 - ClosingComplete messages MUST use PartialSigWithNonce (includes next nonce
   bundled with signature)
 - ClosingSig messages MUST use PartialSig with separate NextCloseeNonce field
-- Terminal offers (final RBF attempts) MAY omit next nonces to signal finality
+- ClosingSig messages MUST always include NextCloseeNonce for RBF readiness
 
 ### Implementation Notes for Nonce Handling
 
@@ -327,23 +335,28 @@ depending on our role:
 
 **When we're the Closer (LocalMusigSession)**:
 1. During `ShutdownReceived`: Store their closee nonce in `NonceState.RemoteCloseeNonce`
-2. During `SendOfferEvent`: Call `initLocalMusigCloseeNonce` with stored closee nonce
-3. During `LocalSigReceived` (when receiving their ClosingSig):
-   - Use the CURRENT `NonceState.RemoteCloseeNonce` for signature verification
-   - AFTER verification succeeds, update with `NextCloseeNonce` for future RBF
+2. During `SendOfferEvent`: Call `initLocalMusigCloseeNonce` with stored closee nonce,
+   generate JIT closer nonce via `ClosingNonce()`, sign via `ProposalClosingOpts()`
+3. Store the full `MusigPartialSig` in `LocalOfferSent` state to avoid re-signing
+4. During `LocalSigReceived` (when receiving their ClosingSig):
+   - Use the stored `MusigPartialSig` via `CombineClosingOpts()` — no second signing
+   - AFTER `CompleteCooperativeClose` succeeds, call `InvalidateNonce()` to force
+     fresh nonce generation for the next RBF round
+   - Update `NonceState.RemoteCloseeNonce` with `NextCloseeNonce` for future RBF
 
 **When we're the Closee (RemoteMusigSession)**:
-1. Our closee nonce was sent in our `shutdown` message
-2. During `OfferReceivedEvent`: Receive their JIT closer nonce in `ClosingComplete`
-3. Call `initRemoteMusigCloserNonce` with their closer nonce before signing
+1. Our closee nonce was generated during shutdown and sent in the `Shutdown` message
+2. During `OfferReceivedEvent`: Receive their JIT closer nonce in `ClosingComplete`,
+   call `initRemoteMusigCloserNonce`, then sign via `ProposalClosingOpts()`
+3. After signing, call `InvalidateNonce()` before generating the next closee nonce
+4. `createClosingSigMessage` calls `ClosingNonce()` which generates a fresh nonce
+   for `NextCloseeNonce` in `ClosingSig`
 
-**Critical Ordering Requirement**: The `NextCloseeNonce` from `ClosingSig` must NOT
-be applied until AFTER the current signature verification completes. Premature
-rotation causes signature combination failure.
-
-The nonce from `PartialSigWithNonce` in `closing_complete` is stored but not
-immediately used with `InitRemoteNonce` - it's used when we need to sign as the
-closee in the next round.
+**Nonce Safety**: Each RBF round uses a unique nonce. The `InvalidateNonce()` call
+clears the cached nonce after signing, ensuring `ClosingNonce()` generates fresh
+on the next round. The closer's `MusigPartialSig` is stored in state so
+`LocalOfferSent` can combine signatures without calling `CreateCloseProposal` a
+second time (which would reuse the nonce).
 
 ### Helper Function Reference
 

@@ -91,8 +91,7 @@ func testOpenChannelAfterReorg(ht *lntest.HarnessTest) {
 	// open.
 	block := ht.MineBlocksAndAssertNumTxes(10, 1)[0]
 	ht.AssertTxInBlock(block, *fundingTxID)
-	_, err = tempMiner.Client.Generate(15)
-	require.NoError(ht, err, "unable to generate blocks")
+	tempMiner.GenerateBlocks(15)
 
 	// Ensure the chain lengths are what we expect, with the temp miner
 	// being 5 blocks ahead.
@@ -136,8 +135,7 @@ func testOpenChannelAfterReorg(ht *lntest.HarnessTest) {
 
 	// This should have caused a reorg, and Alice should sync to the longer
 	// chain, where the funding transaction is not confirmed.
-	_, tempMinerHeight, err := tempMiner.Client.GetBestBlock()
-	require.NoError(ht, err, "unable to get current blockheight")
+	_, tempMinerHeight := tempMiner.GetBestBlock()
 	ht.WaitForNodeBlockHeight(alice, tempMinerHeight)
 
 	// Since the fundingtx was reorged out, Alice should now have no edges
@@ -1047,8 +1045,7 @@ func testPendingChannelAfterReorg(ht *lntest.HarnessTest) {
 
 	// We now cause a fork, by letting our original miner mine 1 blocks,
 	// and our new miner mine 3.
-	_, err := tempMiner.Client.Generate(3)
-	require.NoError(ht, err, "unable to generate blocks on temp miner")
+	tempMiner.GenerateBlocks(3)
 
 	// Ensure the chain lengths are what we expect, with the temp miner
 	// being 2 blocks ahead.
@@ -1073,8 +1070,7 @@ func testPendingChannelAfterReorg(ht *lntest.HarnessTest) {
 
 	// This should have caused a reorg, and Alice should sync to the longer
 	// chain, where the funding transaction is not confirmed.
-	_, tempMinerHeight, err := tempMiner.Client.GetBestBlock()
-	require.NoError(ht, err, "unable to get current blockheight")
+	_, tempMinerHeight := tempMiner.GetBestBlock()
 	ht.WaitForNodeBlockHeight(alice, tempMinerHeight)
 
 	// After the reorg, the funding transaction's confirmation is removed,

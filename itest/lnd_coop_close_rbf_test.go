@@ -245,11 +245,11 @@ func testCoopCloseRBFWithReorg(ht *lntest.HarnessTest) {
 	// because we haven't reached full confirmation yet.
 	bestBlockHash := block2.Header.BlockHash()
 	require.NoError(
-		ht, ht.Miner().Client.InvalidateBlock(&bestBlockHash),
+		ht, ht.Miner().InvalidateBlock(&bestBlockHash),
 	)
 	bestBlockHash = block1.Header.BlockHash()
 	require.NoError(
-		ht, ht.Miner().Client.InvalidateBlock(&bestBlockHash),
+		ht, ht.Miner().InvalidateBlock(&bestBlockHash),
 	)
 
 	_, bestHeight = ht.GetBestBlock()

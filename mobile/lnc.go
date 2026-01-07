@@ -14,11 +14,17 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/golang/protobuf/proto"
 	"github.com/lightninglabs/lightning-node-connect/mailbox"
-	"github.com/lightninglabs/lightning-terminal/litclient"
-	"github.com/lightninglabs/lightning-terminal/perms"
 	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/autopilotrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/verrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/wtclientrpc"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 	"gopkg.in/macaroon-bakery.v2/bakery/checkers"
@@ -30,7 +36,7 @@ var (
 	// time.
 	initMu sync.Mutex
 
-	permsMgr *perms.Manager
+	permsMgr *PermissionsManager
 
 	jsonCBRegex = regexp.MustCompile(`(\w+)\.(\w+)\.(\w+)`)
 
@@ -101,7 +107,7 @@ func initGlobals() error {
 	}
 
 	var err error
-	permsMgr, err = perms.NewManager(true)
+	permsMgr, err = NewPermissionsManager()
 
 	return err
 }
@@ -143,9 +149,19 @@ func InitLNC(nameSpace, debugLevel string) error {
 			return err
 		}
 
-		for _, registration := range litclient.Registrations {
-			registration(registry)
-		}
+		// Register LND JSON callbacks directly
+		lnrpc.RegisterLightningJSONCallbacks(registry)
+		lnrpc.RegisterStateJSONCallbacks(registry)
+		lnrpc.RegisterWalletUnlockerJSONCallbacks(registry)
+		autopilotrpc.RegisterAutopilotJSONCallbacks(registry)
+		chainrpc.RegisterChainNotifierJSONCallbacks(registry)
+		chainrpc.RegisterChainKitJSONCallbacks(registry)
+		invoicesrpc.RegisterInvoicesJSONCallbacks(registry)
+		routerrpc.RegisterRouterJSONCallbacks(registry)
+		signrpc.RegisterSignerJSONCallbacks(registry)
+		verrpc.RegisterVersionerJSONCallbacks(registry)
+		walletrpc.RegisterWalletKitJSONCallbacks(registry)
+		wtclientrpc.RegisterWatchtowerClientJSONCallbacks(registry)
 
 		interceptorLogsInitialize = true
 	}
@@ -388,7 +404,7 @@ func InvokeRPC(nameSpace string, rpcName string, requestJSON string,
 
 	method, ok := registry[rpcName]
 	if !ok {
-		return fmt.Errorf("rpc with name " + rpcName + " not found")
+		return fmt.Errorf("rpc with name %s not found", rpcName)
 	}
 
 	go func() {

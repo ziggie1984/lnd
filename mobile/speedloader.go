@@ -111,9 +111,15 @@ func createService(workingDir string, log *Logger) (*channeldb.DB, *graphdb.Chan
 		return nil, nil, err
 	}
 
-	graphDB, err := graphdb.NewChannelGraph(&graphdb.Config{
-		KVDB: backend,
-	})
+	kvStore, err := graphdb.NewKVStore(backend)
+	if err != nil {
+		log.Printf("unable to create graphdb kv store: %v", err)
+		chanDB.Close()
+		backend.Close()
+		return nil, nil, err
+	}
+
+	graphDB, err := graphdb.NewChannelGraph(kvStore)
 	if err != nil {
 		log.Printf("unable to create graphdb: %v", err)
 		chanDB.Close()
@@ -240,20 +246,20 @@ type walkFunc func(keys [][]byte, k, v []byte, seq uint64) error
 
 type skipFunc func(keys [][]byte, k, v []byte) bool
 
-func ourNode(graphDB *graphdb.ChannelGraph) (*models.LightningNode, error) {
-	node, err := graphDB.SourceNode()
+func ourNode(ctx context.Context, graphDB *graphdb.ChannelGraph) (*models.Node, error) {
+	node, err := graphDB.SourceNode(ctx)
 	if err == graphdb.ErrSourceNodeNotSet || err == graphdb.ErrGraphNotFound {
 		return nil, nil
 	}
 	return node, err
 }
 
-func ourData(graphDB *graphdb.ChannelGraph, ourNode *models.LightningNode, log *Logger) (
-	[]*models.LightningNode, []*models.ChannelEdgeInfo, []*models.ChannelEdgePolicy, error) {
-	nodeMap := make(map[string]*models.LightningNode)
+func ourData(ctx context.Context, graphDB *graphdb.ChannelGraph, ourNode *models.Node, log *Logger) (
+	[]*models.Node, []*models.ChannelEdgeInfo, []*models.ChannelEdgePolicy, error) {
+	nodeMap := make(map[string]*models.Node)
 	var edges []*models.ChannelEdgeInfo
 	var policies []*models.ChannelEdgePolicy
-	var nodes []*models.LightningNode
+	var nodes []*models.Node
 
 	select {
 	case <-globalCtx.Done():
@@ -261,7 +267,7 @@ func ourData(graphDB *graphdb.ChannelGraph, ourNode *models.LightningNode, log *
 		log.Println("Cancelling ourData")
 		return nodes, edges, policies, globalCtx.Err()
 	default:
-		err := graphDB.ForEachNodeChannel(ourNode.PubKeyBytes, func(
+		err := graphDB.ForEachNodeChannel(ctx, ourNode.PubKeyBytes, func(
 			channelEdgeInfo *models.ChannelEdgeInfo,
 			toPolicy *models.ChannelEdgePolicy,
 			fromPolicy *models.ChannelEdgePolicy) error {
@@ -269,7 +275,7 @@ func ourData(graphDB *graphdb.ChannelGraph, ourNode *models.LightningNode, log *
 			if toPolicy == nil || fromPolicy == nil {
 				return nil
 			}
-			nodeMap[hex.EncodeToString(toPolicy.ToNode[:])] = &models.LightningNode{
+			nodeMap[hex.EncodeToString(toPolicy.ToNode[:])] = &models.Node{
 				PubKeyBytes: toPolicy.ToNode,
 			}
 			edges = append(edges, channelEdgeInfo)
@@ -280,7 +286,7 @@ func ourData(graphDB *graphdb.ChannelGraph, ourNode *models.LightningNode, log *
 				policies = append(policies, fromPolicy)
 			}
 			return nil
-		})
+		}, func() {})
 
 		if err != nil {
 			return nil, nil, nil, err
@@ -292,7 +298,7 @@ func ourData(graphDB *graphdb.ChannelGraph, ourNode *models.LightningNode, log *
 	}
 }
 
-func putOurData(graphKV *graphdb.KVStore, node *models.LightningNode, nodes []*models.LightningNode,
+func putOurData(ctx context.Context, graphKV *graphdb.KVStore, node *models.Node, nodes []*models.Node,
 	edges []*models.ChannelEdgeInfo, policies []*models.ChannelEdgePolicy, log *Logger) error {
 
 	select {
@@ -301,24 +307,24 @@ func putOurData(graphKV *graphdb.KVStore, node *models.LightningNode, nodes []*m
 		log.Println("Cancelling putOurData")
 		return globalCtx.Err()
 	default:
-		err := graphKV.SetSourceNode(node)
+		err := graphKV.SetSourceNode(ctx, node)
 		if err != nil {
 			return fmt.Errorf("graph.SetSourceNode(%x): %w", node.PubKeyBytes, err)
 		}
 		for _, n := range nodes {
-			err = graphKV.AddLightningNode(n)
+			err = graphKV.AddNode(ctx, n)
 			if err != nil {
-				return fmt.Errorf("graph.AddLightningNode(%x): %w", n.PubKeyBytes, err)
+				return fmt.Errorf("graph.AddNode(%x): %w", n.PubKeyBytes, err)
 			}
 		}
 		for _, edge := range edges {
-			err = graphKV.AddChannelEdge(edge)
+			err = graphKV.AddChannelEdge(ctx, edge)
 			if err != nil && err != graphdb.ErrEdgeAlreadyExist {
 				return fmt.Errorf("graph.AddChannelEdge(%x): %w", edge.ChannelID, err)
 			}
 		}
 		for _, policy := range policies {
-			_, _, err = graphKV.UpdateEdgePolicy(policy)
+			_, _, err = graphKV.UpdateEdgePolicy(ctx, policy)
 			if err != nil {
 				return fmt.Errorf("graph.UpdateEdgePolicy(): %w", err)
 			}
@@ -826,7 +832,7 @@ func GossipSync(serviceUrl string, cacheDir string, dataDir string, networkType 
 			}
 			return append(path, string(key))
 		}
-		ourNode, err := ourNode(destGraphDB)
+		ourNode, err := ourNode(globalCtx, destGraphDB)
 		if err != nil {
 			callback.OnError(err)
 			return
@@ -848,14 +854,14 @@ func GossipSync(serviceUrl string, cacheDir string, dataDir string, networkType 
 			//errors.New("source node was set before sync transaction, rolling back").Error()
 		}
 		if ourNode != nil {
-			channelNodes, channels, policies, err := ourData(destGraphDB, ourNode, log)
+			channelNodes, channels, policies, err := ourData(globalCtx, destGraphDB, ourNode, log)
 			if err != nil {
 				callback.OnError(err)
 				return
 			}
 
 			// add our data to the source db.
-			if err := putOurData(sourceGraphKV, ourNode, channelNodes, channels, policies, log); err != nil {
+			if err := putOurData(globalCtx, sourceGraphKV, ourNode, channelNodes, channels, policies, log); err != nil {
 				callback.OnError(err)
 				return
 			}

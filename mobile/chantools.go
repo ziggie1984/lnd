@@ -14,8 +14,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/chantools/btc"
-	"github.com/lightninglabs/chantools/lnd"
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -40,7 +38,7 @@ type targetAddr struct {
 	pubKey     *btcec.PublicKey
 	path       string
 	keyDesc    *keychain.KeyDescriptor
-	vouts      []*btc.Vout
+	vouts      []*Vout
 	script     []byte
 	scriptTree *input.CommitScriptTree
 }
@@ -74,7 +72,7 @@ func SweepRemoteClosed(seedPhrase string, apiURL,
 	}
 
 	var estimator input.TxWeightEstimator
-	sweepScript, err := lnd.PrepareWalletAddress(
+	sweepScript, err := PrepareWalletAddress(
 		sweepAddr, chainParams, &estimator, extendedKey, "sweep",
 	)
 	if err != nil {
@@ -91,12 +89,12 @@ func SweepRemoteClosed(seedPhrase string, apiURL,
 		path := fmt.Sprintf("m/1017'/%d'/%d'/0/%d",
 			chainParams.HDCoinType, keychain.KeyFamilyPaymentBase,
 			index)
-		parsedPath, err := lnd.ParsePath(path)
+		parsedPath, err := ParsePath(path)
 		if err != nil {
 			return "", fmt.Errorf("error parsing path: %w", err)
 		}
 
-		hdKey, err := lnd.DeriveChildren(
+		hdKey, err := DeriveChildren(
 			extendedKey, parsedPath,
 		)
 		if err != nil {
@@ -145,7 +143,7 @@ func SweepRemoteClosed(seedPhrase string, apiURL,
 				return "", fmt.Errorf("error parsing tx hash: %w",
 					err)
 			}
-			pkScript, err := lnd.GetWitnessAddrScript(
+			pkScript, err := GetWitnessAddrScript(
 				target.addr, chainParams,
 			)
 			if err != nil {
@@ -256,7 +254,7 @@ func SweepRemoteClosed(seedPhrase string, apiURL,
 
 	// Sign the transaction now.
 	var (
-		signer = &lnd.Signer{
+		signer = &Signer{
 			ExtendedKey: extendedKey,
 			ChainParams: chainParams,
 		}
@@ -326,7 +324,7 @@ func SweepRemoteClosed(seedPhrase string, apiURL,
 }
 
 func queryAddressBalances(pubKey *btcec.PublicKey, path string,
-	keyDesc *keychain.KeyDescriptor, api *btc.ExplorerAPI) ([]*targetAddr,
+	keyDesc *keychain.KeyDescriptor, api *ExplorerAPI) ([]*targetAddr,
 	error) {
 
 	var targets []*targetAddr
@@ -355,7 +353,7 @@ func queryAddressBalances(pubKey *btcec.PublicKey, path string,
 		return nil
 	}
 
-	p2wkh, err := lnd.P2WKHAddr(pubKey, chainParams)
+	p2wkh, err := P2WKHAddr(pubKey, chainParams)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +361,7 @@ func queryAddressBalances(pubKey *btcec.PublicKey, path string,
 		return nil, err
 	}
 
-	p2anchor, script, err := lnd.P2AnchorStaticRemote(pubKey, chainParams)
+	p2anchor, script, err := P2AnchorStaticRemote(pubKey, chainParams)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +369,7 @@ func queryAddressBalances(pubKey *btcec.PublicKey, path string,
 		return nil, err
 	}
 
-	p2tr, scriptTree, err := lnd.P2TaprootStaticRemote(pubKey, chainParams)
+	p2tr, scriptTree, err := P2TaprootStaticRemote(pubKey, chainParams)
 	if err != nil {
 		return nil, err
 	}
@@ -382,21 +380,21 @@ func queryAddressBalances(pubKey *btcec.PublicKey, path string,
 	return targets, nil
 }
 
-func newExplorerAPI(apiURL string) *btc.ExplorerAPI {
+func newExplorerAPI(apiURL string) *ExplorerAPI {
 	// Override for testnet if default is used.
 	if apiURL == defaultAPIURL &&
 		chainParams.Name == chaincfg.TestNet3Params.Name {
 
-		return &btc.ExplorerAPI{BaseURL: defaultTestnetAPIURL}
+		return &ExplorerAPI{BaseURL: defaultTestnetAPIURL}
 	}
 
 	// Also override for regtest if default is used.
 	if apiURL == defaultAPIURL &&
 		chainParams.Name == chaincfg.RegressionNetParams.Name {
 
-		return &btc.ExplorerAPI{BaseURL: defaultRegtestAPIURL}
+		return &ExplorerAPI{BaseURL: defaultRegtestAPIURL}
 	}
 
 	// Otherwise use the provided URL.
-	return &btc.ExplorerAPI{BaseURL: apiURL}
+	return &ExplorerAPI{BaseURL: apiURL}
 }

@@ -1,6 +1,3 @@
-//go:build mobile
-// +build mobile
-
 package lndmobile
 
 import (
@@ -19,7 +16,7 @@ var (
 func SetupLoggers(root *build.RotatingLogWriter, intercept Interceptor) {
 	// Create a SubLoggerManager to wrap the RotatingLogWriter
 	subLoggerManager := build.NewSubLoggerManager()
-	
+
 	genLogger := genSubLogger(subLoggerManager, intercept)
 
 	log = build.NewSubLogger(Subsystem, genLogger)

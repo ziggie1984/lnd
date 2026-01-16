@@ -744,6 +744,10 @@ var allTestCases = []*lntest.TestCase{
 		TestFunc: testCoopCloseRBFWithReorg,
 	},
 	{
+		Name:     "waiting close blocks til closed",
+		TestFunc: testWaitingCloseBlocksTilClosed,
+	},
+	{
 		Name:     "bump fee low budget",
 		TestFunc: testBumpFeeLowBudget,
 	},

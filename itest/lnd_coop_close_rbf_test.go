@@ -327,3 +327,172 @@ func testCoopCloseRBFWithReorg(ht *lntest.HarnessTest) {
 
 	ht.Logf("Successfully verified closing txid: %s", expectedClosingTxid)
 }
+
+// testWaitingCloseBlocksTilClosed tests the blocks_til_closed field in
+// waiting_close_channels, verifying it correctly reports the remaining
+// confirmations until the channel is considered fully closed. It also tests
+// that the field resets correctly after a chain reorg removes the closing
+// transaction's confirmations.
+func testWaitingCloseBlocksTilClosed(ht *lntest.HarnessTest) {
+	// Skip this test for neutrino backend as we can't trigger reorgs.
+	if ht.IsNeutrinoBackend() {
+		ht.Skipf("skipping reorg test for neutrino backend")
+	}
+
+	// Force cooperative close to require 3 confirmations for predictable
+	// testing.
+	const requiredConfs uint32 = 3
+	closeConfsFlag := fmt.Sprintf(
+		"--dev.force-channel-close-confs=%d", requiredConfs,
+	)
+
+	// Create two nodes with the forced close confirmation count.
+	alice := ht.NewNodeWithCoins("Alice", []string{closeConfsFlag})
+	bob := ht.NewNode("Bob", []string{closeConfsFlag})
+	ht.EnsureConnected(alice, bob)
+
+	// Open a channel between Alice and Bob.
+	chanPoint := ht.OpenChannel(alice, bob, lntest.OpenChannelParams{
+		Amt: btcutil.Amount(1_000_000),
+	})
+
+	// Initiate a cooperative close.
+	closeClient := alice.RPC.CloseChannel(&lnrpc.CloseChannelRequest{
+		ChannelPoint: chanPoint,
+	})
+
+	// Wait for the close to be pending.
+	closeUpdate, err := ht.ReceiveCloseChannelUpdate(closeClient)
+	require.NoError(ht, err)
+
+	closePending := closeUpdate.GetClosePending()
+	closeTxid, err := chainhash.NewHash(closePending.Txid)
+	require.NoError(ht, err)
+
+	// Get the closing tx from mempool.
+	closeTx := ht.AssertTxInMempool(*closeTxid)
+
+	// The channel should now be in waiting close state. Since the closing
+	// tx is not yet confirmed, blocks_til_closed should equal the required
+	// confirmations.
+	waitingClose := ht.AssertNumWaitingClose(alice, 1)
+	require.Len(ht, waitingClose, 1)
+	require.Equal(
+		ht, requiredConfs, waitingClose[0].BlocksTilClosed,
+		"expected blocks_til_closed to equal required confs when "+
+			"unconfirmed",
+	)
+
+	// Mine one block to get the first confirmation.
+	block1 := ht.Miner().MineBlockWithTxes(
+		[]*btcutil.Tx{btcutil.NewTx(closeTx)},
+	)
+
+	// Now blocks_til_closed should be requiredConfs - 1 = 2.
+	err = wait.NoError(func() error {
+		resp := alice.RPC.PendingChannels()
+		if len(resp.WaitingCloseChannels) != 1 {
+			return fmt.Errorf("expected 1 waiting close channel, "+
+				"got %d", len(resp.WaitingCloseChannels))
+		}
+		blocks := resp.WaitingCloseChannels[0].BlocksTilClosed
+		expected := requiredConfs - 1
+		if blocks != expected {
+			return fmt.Errorf("expected blocks_til_closed=%d, "+
+				"got %d", expected, blocks)
+		}
+		return nil
+	}, defaultTimeout)
+	require.NoError(ht, err)
+
+	// Mine another block.
+	block2 := ht.MineEmptyBlocks(1)[0]
+
+	// Now blocks_til_closed should be 1.
+	err = wait.NoError(func() error {
+		resp := alice.RPC.PendingChannels()
+		if len(resp.WaitingCloseChannels) != 1 {
+			return fmt.Errorf("expected 1 waiting close channel, "+
+				"got %d", len(resp.WaitingCloseChannels))
+		}
+		blocks := resp.WaitingCloseChannels[0].BlocksTilClosed
+		if blocks != 1 {
+			return fmt.Errorf("expected blocks_til_closed=1, "+
+				"got %d", blocks)
+		}
+		return nil
+	}, defaultTimeout)
+	require.NoError(ht, err)
+
+	// Now test the reorg scenario. Trigger a reorg that removes the last
+	// 2 blocks containing the closing tx confirmations.
+	ht.Logf("Triggering reorg to remove closing tx confirmations")
+
+	bestBlockHash := block2.Header.BlockHash()
+	require.NoError(
+		ht, ht.Miner().Client.InvalidateBlock(&bestBlockHash),
+	)
+	bestBlockHash = block1.Header.BlockHash()
+	require.NoError(
+		ht, ht.Miner().Client.InvalidateBlock(&bestBlockHash),
+	)
+
+	// Mine 3 empty blocks to create a longer chain without the closing
+	// tx. This should remove the closing tx's confirmations.
+	ht.MineEmptyBlocks(3)
+
+	// Wait for Alice to sync to the new chain.
+	_, bestHeight := ht.GetBestBlock()
+	ht.WaitForNodeBlockHeight(alice, bestHeight)
+
+	// After the reorg, the closing tx is no longer confirmed.
+	// blocks_til_closed should reset to requiredConfs.
+	err = wait.NoError(func() error {
+		resp := alice.RPC.PendingChannels()
+		if len(resp.WaitingCloseChannels) != 1 {
+			return fmt.Errorf("expected 1 waiting close channel, "+
+				"got %d", len(resp.WaitingCloseChannels))
+		}
+		blocks := resp.WaitingCloseChannels[0].BlocksTilClosed
+		if blocks != requiredConfs {
+			return fmt.Errorf("expected blocks_til_closed=%d "+
+				"after reorg, got %d", requiredConfs, blocks)
+		}
+		return nil
+	}, defaultTimeout)
+	require.NoError(ht, err)
+
+	ht.Logf("blocks_til_closed correctly reset to %d after reorg",
+		requiredConfs)
+
+	// Now mine the closing tx again and verify countdown resumes.
+	ht.Miner().MineBlockWithTxes([]*btcutil.Tx{btcutil.NewTx(closeTx)})
+
+	// blocks_til_closed should now be requiredConfs - 1 = 2.
+	err = wait.NoError(func() error {
+		resp := alice.RPC.PendingChannels()
+		if len(resp.WaitingCloseChannels) != 1 {
+			return fmt.Errorf("expected 1 waiting close channel, "+
+				"got %d", len(resp.WaitingCloseChannels))
+		}
+		blocks := resp.WaitingCloseChannels[0].BlocksTilClosed
+		expected := requiredConfs - 1
+		if blocks != expected {
+			return fmt.Errorf("expected blocks_til_closed=%d, "+
+				"got %d", expected, blocks)
+		}
+		return nil
+	}, defaultTimeout)
+	require.NoError(ht, err)
+
+	// Mine the remaining blocks to fully close.
+	ht.MineEmptyBlocks(int(requiredConfs) - 1)
+
+	// The channel should now be fully closed.
+	ht.AssertNumWaitingClose(alice, 0)
+
+	closedChans := alice.RPC.ClosedChannels(&lnrpc.ClosedChannelsRequest{})
+	require.Len(ht, closedChans.Channels, 1)
+
+	ht.Logf("Channel successfully closed after reorg recovery")
+}

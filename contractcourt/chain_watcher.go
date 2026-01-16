@@ -760,6 +760,17 @@ func (c *chainWatcher) processDetectedSpend(
 	numConfs := c.requiredConfsForSpend()
 	txid := spend.SpenderTxHash
 
+	// Record the close confirmation height. This is the height at which
+	// the closing tx was first included in a block. We store this so we
+	// can report the remaining confirmations to the user.
+	err := c.cfg.chanState.MarkCloseConfirmationHeight(
+		uint32(spend.SpendingHeight),
+	)
+	if err != nil {
+		log.Warnf("ChannelPoint(%v): unable to mark close confirmation "+
+			"height: %v", c.cfg.chanState.FundingOutpoint, err)
+	}
+
 	newConfNtfn, err := c.cfg.notifier.RegisterConfirmationsNtfn(
 		txid, spend.SpendingTx.TxOut[0].PkScript, numConfs,
 		uint32(spend.SpendingHeight),
@@ -931,8 +942,17 @@ func (c *chainWatcher) closeObserver() {
 			confNtfn = nil
 			pendingSpend = nil
 
-			spendNtfn.Cancel()
+			// Reset the close confirmation height since the spend
+			// was reorged out.
 			var err error
+			err = c.cfg.chanState.MarkCloseConfirmationHeight(0)
+			if err != nil {
+				log.Warnf("ChannelPoint(%v): unable to reset "+
+					"close confirmation height: %v",
+					c.cfg.chanState.FundingOutpoint, err)
+			}
+
+			spendNtfn.Cancel()
 			spendNtfn, err = registerForSpend()
 			if err != nil {
 				log.Errorf("Unable to re-register for "+

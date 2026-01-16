@@ -18427,7 +18427,19 @@ type PendingChannelsResponse_WaitingCloseChannel struct {
 	ClosingTxid string `protobuf:"bytes,4,opt,name=closing_txid,json=closingTxid,proto3" json:"closing_txid,omitempty"`
 	// The raw hex encoded bytes of the closing transaction. Included if
 	// include_raw_tx in the request is true.
-	ClosingTxHex  string `protobuf:"bytes,5,opt,name=closing_tx_hex,json=closingTxHex,proto3" json:"closing_tx_hex,omitempty"`
+	ClosingTxHex string `protobuf:"bytes,5,opt,name=closing_tx_hex,json=closingTxHex,proto3" json:"closing_tx_hex,omitempty"`
+	// Remaining number of confirmations until the channel closure is
+	// considered final and removed from waiting close. Channel closes
+	// require multiple confirmations for reorg protection — the exact
+	// number scales with channel capacity. A closing transaction that
+	// gets reorganized out of the chain resets this counter. When the
+	// closing transaction is not yet confirmed, this value equals the
+	// total number of confirmations required.
+	BlocksTilCloseConfirmed uint32 `protobuf:"varint,6,opt,name=blocks_til_close_confirmed,json=blocksTilCloseConfirmed,proto3" json:"blocks_til_close_confirmed,omitempty"`
+	// The block height at which the closing transaction was first confirmed.
+	// This will be zero if the closing transaction has not yet confirmed, or
+	// if this information is not available for older channels.
+	CloseHeight   uint32 `protobuf:"varint,7,opt,name=close_height,json=closeHeight,proto3" json:"close_height,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -18495,6 +18507,20 @@ func (x *PendingChannelsResponse_WaitingCloseChannel) GetClosingTxHex() string {
 		return x.ClosingTxHex
 	}
 	return ""
+}
+
+func (x *PendingChannelsResponse_WaitingCloseChannel) GetBlocksTilCloseConfirmed() uint32 {
+	if x != nil {
+		return x.BlocksTilCloseConfirmed
+	}
+	return 0
+}
+
+func (x *PendingChannelsResponse_WaitingCloseChannel) GetCloseHeight() uint32 {
+	if x != nil {
+		return x.CloseHeight
+	}
+	return 0
 }
 
 type PendingChannelsResponse_Commitments struct {
@@ -19407,7 +19433,7 @@ const file_lightning_proto_rawDesc = "" +
 	"\x13blocks_til_maturity\x18\x05 \x01(\x05R\x11blocksTilMaturity\x12\x14\n" +
 	"\x05stage\x18\x06 \x01(\rR\x05stage\">\n" +
 	"\x16PendingChannelsRequest\x12$\n" +
-	"\x0einclude_raw_tx\x18\x01 \x01(\bR\fincludeRawTx\"\x80\x15\n" +
+	"\x0einclude_raw_tx\x18\x01 \x01(\bR\fincludeRawTx\"\xe0\x15\n" +
 	"\x17PendingChannelsResponse\x12.\n" +
 	"\x13total_limbo_balance\x18\x01 \x01(\x03R\x11totalLimboBalance\x12e\n" +
 	"\x15pending_open_channels\x18\x02 \x03(\v21.lnrpc.PendingChannelsResponse.PendingOpenChannelR\x13pendingOpenChannels\x12j\n" +
@@ -19439,13 +19465,15 @@ const file_lightning_proto_rawDesc = "" +
 	"fee_per_kw\x18\x06 \x01(\x03R\bfeePerKw\x122\n" +
 	"\x15funding_expiry_blocks\x18\x03 \x01(\x05R\x13fundingExpiryBlocks\x12<\n" +
 	"\x1aconfirmations_until_active\x18\a \x01(\rR\x18confirmationsUntilActive\x12/\n" +
-	"\x13confirmation_height\x18\b \x01(\rR\x12confirmationHeightJ\x04\b\x02\x10\x03\x1a\x9a\x02\n" +
+	"\x13confirmation_height\x18\b \x01(\rR\x12confirmationHeightJ\x04\b\x02\x10\x03\x1a\xfa\x02\n" +
 	"\x13WaitingCloseChannel\x12G\n" +
 	"\achannel\x18\x01 \x01(\v2-.lnrpc.PendingChannelsResponse.PendingChannelR\achannel\x12#\n" +
 	"\rlimbo_balance\x18\x02 \x01(\x03R\flimboBalance\x12L\n" +
 	"\vcommitments\x18\x03 \x01(\v2*.lnrpc.PendingChannelsResponse.CommitmentsR\vcommitments\x12!\n" +
 	"\fclosing_txid\x18\x04 \x01(\tR\vclosingTxid\x12$\n" +
-	"\x0eclosing_tx_hex\x18\x05 \x01(\tR\fclosingTxHex\x1a\xa3\x02\n" +
+	"\x0eclosing_tx_hex\x18\x05 \x01(\tR\fclosingTxHex\x12;\n" +
+	"\x1ablocks_til_close_confirmed\x18\x06 \x01(\rR\x17blocksTilCloseConfirmed\x12!\n" +
+	"\fclose_height\x18\a \x01(\rR\vcloseHeight\x1a\xa3\x02\n" +
 	"\vCommitments\x12\x1d\n" +
 	"\n" +
 	"local_txid\x18\x01 \x01(\tR\tlocalTxid\x12\x1f\n" +

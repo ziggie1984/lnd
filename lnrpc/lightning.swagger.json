@@ -3455,6 +3455,16 @@
         "closing_tx_hex": {
           "type": "string",
           "description": "The raw hex encoded bytes of the closing transaction. Included if\ninclude_raw_tx in the request is true."
+        },
+        "blocks_til_close_confirmed": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Remaining number of confirmations until the channel closure is\nconsidered final and removed from waiting close. Channel closes\nrequire multiple confirmations for reorg protection — the exact\nnumber scales with channel capacity. A closing transaction that\ngets reorganized out of the chain resets this counter. When the\nclosing transaction is not yet confirmed, this value equals the\ntotal number of confirmations required."
+        },
+        "close_height": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The block height at which the closing transaction was first confirmed.\nThis will be zero if the closing transaction has not yet confirmed, or\nif this information is not available for older channels."
         }
       }
     },

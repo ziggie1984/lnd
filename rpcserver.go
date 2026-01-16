@@ -4257,6 +4257,12 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 		return nil, 0, err
 	}
 
+	// Get the current block height for calculating remaining confirmations.
+	_, currentHeight, err := r.server.cc.ChainIO.GetBestBlock()
+	if err != nil {
+		return nil, 0, err
+	}
+
 	result := make(waitingCloseChannels, 0)
 	limboBalance := int64(0)
 
@@ -4418,12 +4424,46 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 			}
 		}
 
+		// Calculate remaining confirmations until the channel closure
+		// is considered resolved/confirmed.
+		requiredConfs := lnwallet.CloseConfsForCapacity(
+			waitingClose.Capacity,
+		)
+		if r.cfg.Dev != nil {
+			requiredConfs = r.cfg.Dev.ChannelCloseConfs().
+				UnwrapOr(requiredConfs)
+		}
+
+		blocksTilCloseConfirmed := fn.ElimOption(
+			waitingClose.CloseConfirmationHeight,
+			func() uint32 {
+				// The closing tx is not yet confirmed, show
+				// all required confirmations.
+				return requiredConfs
+			},
+			func(closeConfHeight uint32) uint32 {
+				// The closing tx has at least one
+				// confirmation. Calculate how many more are
+				// needed.
+				targetHeight := closeConfHeight +
+					requiredConfs - 1
+				if uint32(currentHeight) >= targetHeight {
+					return 0
+				}
+
+				return targetHeight - uint32(currentHeight)
+			},
+		)
+
 		waitingCloseResp := &lnrpc.PendingChannelsResponse_WaitingCloseChannel{
-			Channel:      channel,
-			LimboBalance: channel.LocalBalance,
-			Commitments:  &commitments,
-			ClosingTxid:  closingTxid,
-			ClosingTxHex: closingTxHex,
+			Channel:                 channel,
+			LimboBalance:            channel.LocalBalance,
+			Commitments:             &commitments,
+			ClosingTxid:             closingTxid,
+			ClosingTxHex:            closingTxHex,
+			BlocksTilCloseConfirmed: blocksTilCloseConfirmed,
+			CloseHeight: waitingClose.CloseConfirmationHeight.
+				UnwrapOr(0),
 		}
 
 		// A close tx has been broadcasted, all our balance will be in

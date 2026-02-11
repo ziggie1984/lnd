@@ -10,4 +10,9 @@ type Config struct {
 	BusyTimeout    time.Duration `long:"busytimeout" description:"The maximum amount of time to wait for a database connection to become available for a query."`
 	MaxConnections int           `long:"maxconnections" description:"The maximum number of open connections to the database. Set to zero for unlimited."`
 	PragmaOptions  []string      `long:"pragmaoptions" description:"A list of pragma options to set on a database connection. For example, 'auto_vacuum=incremental'. Note that the flag must be specified multiple times if multiple options are to be set."`
+
+	// WithTxLevelLock when set will use a Go-level sync.RWMutex to
+	// serialize write transactions, preventing SQLITE_BUSY errors from
+	// concurrent writers on the same database instance.
+	WithTxLevelLock bool
 }

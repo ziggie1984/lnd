@@ -277,10 +277,11 @@ func GetPostgresConfigKVDB(cfg *sqldb.PostgresConfig) *postgres.Config {
 // GetSqliteConfigKVDB converts a sqldb.SqliteConfig to a kvdb sqlite.Config.
 func GetSqliteConfigKVDB(cfg *sqldb.SqliteConfig) *sqlite.Config {
 	return &sqlite.Config{
-		Timeout:        cfg.Timeout,
-		BusyTimeout:    cfg.BusyTimeout,
-		MaxConnections: cfg.MaxConnections,
-		PragmaOptions:  cfg.PragmaOptions,
+		Timeout:         cfg.Timeout,
+		BusyTimeout:     cfg.BusyTimeout,
+		MaxConnections:  cfg.MaxConnections,
+		PragmaOptions:   cfg.PragmaOptions,
+		WithTxLevelLock: cfg.TxLevelLock,
 	}
 }
 

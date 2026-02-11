@@ -14277,8 +14277,11 @@ type ListPaymentsRequest struct {
 	// If set, returns all payments with a creation date less than or equal to
 	// it. Measured in seconds since the unix epoch.
 	CreationDateEnd uint64 `protobuf:"varint,7,opt,name=creation_date_end,json=creationDateEnd,proto3" json:"creation_date_end,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// If set, omit hop-level route data for HTLC attempts to reduce query
+	// cost and response size.
+	OmitHops      bool `protobuf:"varint,8,opt,name=omit_hops,json=omitHops,proto3" json:"omit_hops,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListPaymentsRequest) Reset() {
@@ -14358,6 +14361,13 @@ func (x *ListPaymentsRequest) GetCreationDateEnd() uint64 {
 		return x.CreationDateEnd
 	}
 	return 0
+}
+
+func (x *ListPaymentsRequest) GetOmitHops() bool {
+	if x != nil {
+		return x.OmitHops
+	}
+	return false
 }
 
 type ListPaymentsResponse struct {
@@ -19922,7 +19932,7 @@ const file_lightning_proto_rawDesc = "" +
 	"\tIN_FLIGHT\x10\x00\x12\r\n" +
 	"\tSUCCEEDED\x10\x01\x12\n" +
 	"\n" +
-	"\x06FAILED\x10\x02\"\xb4\x02\n" +
+	"\x06FAILED\x10\x02\"\xd1\x02\n" +
 	"\x13ListPaymentsRequest\x12-\n" +
 	"\x12include_incomplete\x18\x01 \x01(\bR\x11includeIncomplete\x12!\n" +
 	"\findex_offset\x18\x02 \x01(\x04R\vindexOffset\x12!\n" +
@@ -19930,7 +19940,8 @@ const file_lightning_proto_rawDesc = "" +
 	"\breversed\x18\x04 \x01(\bR\breversed\x120\n" +
 	"\x14count_total_payments\x18\x05 \x01(\bR\x12countTotalPayments\x12.\n" +
 	"\x13creation_date_start\x18\x06 \x01(\x04R\x11creationDateStart\x12*\n" +
-	"\x11creation_date_end\x18\a \x01(\x04R\x0fcreationDateEnd\"\xca\x01\n" +
+	"\x11creation_date_end\x18\a \x01(\x04R\x0fcreationDateEnd\x12\x1b\n" +
+	"\tomit_hops\x18\b \x01(\bR\bomitHops\"\xca\x01\n" +
 	"\x14ListPaymentsResponse\x12*\n" +
 	"\bpayments\x18\x01 \x03(\v2\x0e.lnrpc.PaymentR\bpayments\x12,\n" +
 	"\x12first_index_offset\x18\x02 \x01(\x04R\x10firstIndexOffset\x12*\n" +

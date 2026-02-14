@@ -66,7 +66,7 @@ func CreateClaimTransaction(endpoint string, id string, claimLeaf string, refund
 	return nil
 }
 
-func CreateReverseClaimTransaction(endpoint string, id string, claimLeaf string, refundLeaf string, privateKey string, servicePubKey string, preimageHex string, transactionHex string, lockupAddress string, destinationAddress string, feeRate int32, isTestnet bool) error {
+func CreateReverseClaimTransaction(endpoint string, id string, claimLeaf string, refundLeaf string, privateKey string, servicePubKey string, preimageHex string, transactionHex string, lockupAddress string, destinationAddress string, feeRate int32, receiveAmount int64, isTestnet bool) error {
 	var toCurrency = boltz.CurrencyBtc
 	var network *boltz.Network
 	if isTestnet {
@@ -112,7 +112,7 @@ func CreateReverseClaimTransaction(endpoint string, id string, claimLeaf string,
 		return fmt.Errorf("Error constructing lockup tx %s", err)
 	}
 
-	vout, _, err := lockupTransaction.FindVout(network, lockupAddress)
+	vout, inputValue, err := lockupTransaction.FindVout(network, lockupAddress)
 	if err != nil {
 		return fmt.Errorf("Error finding vout %s", err)
 	}
@@ -122,7 +122,16 @@ func CreateReverseClaimTransaction(endpoint string, id string, claimLeaf string,
 		return fmt.Errorf("Error decoding preimage hex string: %w", err)
 	}
 
-	satPerVbyte := float64(feeRate)
+	var satPerVbyte float64
+	if receiveAmount > 0 && inputValue > uint64(receiveAmount) {
+		// Use fee budget approach: back-calculate the rate from the desired
+		// receive amount so the claim tx output matches exactly.
+		// 111 vbytes is the cooperative Taproot claim size estimate.
+		feeBudget := inputValue - uint64(receiveAmount)
+		satPerVbyte = float64(feeBudget) / 111.0
+	} else {
+		satPerVbyte = float64(feeRate)
+	}
 	claimTransaction, _, err := boltz.ConstructTransaction(
 		network,
 		boltz.CurrencyBtc,

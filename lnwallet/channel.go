@@ -6885,7 +6885,7 @@ func GetSignedCommitTx(inputs SignedCommitTxInputs,
 		musigSession := NewPartialMusigSession(
 			*localNonce, inputs.OurKey, inputs.TheirKey, signer,
 			inputs.SignDesc.Output, LocalMusigCommit,
-			tapscriptTweak,
+			tapscriptTweak, fn.None[io.Reader](),
 		)
 
 		var remoteSig lnwire.PartialSigWithNonce
@@ -10261,13 +10261,14 @@ func (lc *LightningChannel) InitRemoteMusigNonces(remoteNonce *musig2.Nonces,
 	// TODO(roasbeef): propagate rename of signing and verification nonces
 
 	sessionCfg := &MusigSessionCfg{
-		LocalKey:       localChanCfg.MultiSigKey,
-		RemoteKey:      remoteChanCfg.MultiSigKey,
-		LocalNonce:     *localNonce,
-		RemoteNonce:    *remoteNonce,
-		Signer:         lc.Signer,
-		InputTxOut:     &lc.fundingOutput,
-		TapscriptTweak: lc.channelState.TapscriptRoot,
+		LocalKey:        localChanCfg.MultiSigKey,
+		RemoteKey:       remoteChanCfg.MultiSigKey,
+		LocalNonce:      *localNonce,
+		RemoteNonce:     *remoteNonce,
+		Signer:          lc.Signer,
+		InputTxOut:      &lc.fundingOutput,
+		TapscriptTweak:  lc.channelState.TapscriptRoot,
+		CustomNonceRand: lc.opts.customSigningRand,
 	}
 	lc.musigSessions = NewMusigPairSession(
 		sessionCfg,

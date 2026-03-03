@@ -70,6 +70,10 @@ const (
 	// This MUST be a smaller value than the pingInterval.
 	pingTimeout = 30 * time.Second
 
+	// tellTimeout is the amount of time we will wait for a response to a
+	// tell.
+	tellTimeout = 30 * time.Second
+
 	// idleTimeout is the duration of inactivity before we time out a peer.
 	idleTimeout = 5 * time.Minute
 
@@ -310,6 +314,13 @@ type Config struct {
 	// SpawnOnionActor is a factory function that spawns a per-peer onion
 	// message actor. If nil, onion messaging is disabled.
 	SpawnOnionActor onionmessage.OnionActorFactory
+
+	// OnionActorOpts returns ActorOptions for the onion peer actor
+	// being spawned for the given peer. This allows per-peer
+	// customization of mailbox size, drop predicates, etc.
+	OnionActorOpts func(peerPubKey [33]byte) []actor.ActorOption[
+		*onionmessage.Request, *onionmessage.Response,
+	]
 
 	// ActorSystem is the actor system tasked with managing actors.
 	ActorSystem *actor.ActorSystem
@@ -930,8 +941,25 @@ func (p *Brontide) Start() error {
 		p.log.Infof("Remote peer supports onion messages, " +
 			"spawning onion message actor")
 
+		// Fetch per-peer actor options. The OnionActorOpts
+		// callback is the extension point for per-peer
+		// customization of the drop predicate (e.g. choosing
+		// RED thresholds based on channel capacity or routing
+		// importance). Today the callback returns identical
+		// defaults for every peer; to differentiate, supply a
+		// callback that inspects peerPubKey and returns
+		// tailored options via
+		// onionmessage.DefaultOnionActorOpts with a
+		// peer-specific DropCheckFunc.
+		var opts []actor.ActorOption[
+			*onionmessage.Request, *onionmessage.Response,
+		]
+		if p.cfg.OnionActorOpts != nil {
+			opts = p.cfg.OnionActorOpts(p.PubKey())
+		}
+
 		ref, spawnErr := p.cfg.SpawnOnionActor(
-			p.cfg.ActorSystem, p.PubKey(),
+			p.cfg.ActorSystem, p.PubKey(), opts...,
 		)
 		if spawnErr != nil {
 			return fmt.Errorf("unable to spawn onion peer "+
@@ -2310,7 +2338,16 @@ out:
 					// TODO(elle): thread contexts through
 					// the peer system properly so that a
 					// parent context can be passed in here.
-					ctx := context.TODO()
+
+					// Use a timeout context to prevent
+					// the readHandler from blocking
+					// indefinitely if the actor's mailbox
+					// is full.
+					ctx, cancel := context.WithTimeout(
+						context.Background(),
+						tellTimeout,
+					)
+					defer cancel()
 
 					req := onionmessage.NewRequest(*msg)
 					ref.Tell(ctx, req)

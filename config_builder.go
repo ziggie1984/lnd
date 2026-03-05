@@ -30,6 +30,7 @@ import (
 	"github.com/lightninglabs/neutrino/pushtx"
 	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/chainparams"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
@@ -1237,8 +1238,28 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 
 		// With the DB ready and migrations applied, we can now create
 		// the base DB and transaction executor for the native SQL
-		// invoice store.
+		// stores.
 		baseDB := dbs.NativeSQLStore.GetBaseDB()
+
+		// Validate that the database was initialised for the same
+		// network as the currently active network. This catches cases
+		// where a user accidentally reuses a database (e.g. via a
+		// postgres DSN or by copying a file) across different networks
+		// (e.g. mainnet → testnet), which would otherwise lead to
+		// silent data corruption. This check applies to all native SQL
+		// backends.
+		chainParamsStore := chainparams.NewStore(baseDB)
+		err = chainParamsStore.ValidateNetwork(
+			ctx, d.cfg.ActiveNetParams.Params,
+		)
+		if err != nil {
+			cleanUp()
+			d.logger.Error(err)
+
+			return nil, nil, err
+		}
+
+		// Create the invoice store.
 		invoiceExecutor := sqldb.NewTransactionExecutor(
 			baseDB, func(tx *sql.Tx) invoices.SQLInvoiceQueries {
 				return baseDB.WithTx(tx)
@@ -1251,6 +1272,7 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 
 		dbs.InvoiceDB = sqlInvoiceDB
 
+		// Create the graph store.
 		graphExecutor := sqldb.NewTransactionExecutor(
 			baseDB, func(tx *sql.Tx) graphdb.SQLQueries {
 				return baseDB.WithTx(tx)
@@ -1272,6 +1294,7 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 			return nil, nil, err
 		}
 
+		// Create the payments store.
 		paymentsExecutor := sqldb.NewTransactionExecutor(
 			baseDB, func(tx *sql.Tx) paymentsdb.SQLQueries {
 				return baseDB.WithTx(tx)

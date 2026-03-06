@@ -31,11 +31,9 @@ type ChannelGraph struct {
 	started atomic.Bool
 	stopped atomic.Bool
 
-	// cacheLoaded is true if the initial graphCache population has
-	// finished. We use this to ensure that when performing any reads,
-	// we only read from the graphCache if it has been fully populated.
-	cacheLoaded atomic.Bool
-	graphCache  *GraphCache
+	opts *chanGraphOptions
+
+	cache *graphCacheState
 
 	db Store
 	*topologyManager
@@ -55,6 +53,7 @@ func NewChannelGraph(v1Store Store,
 	}
 
 	g := &ChannelGraph{
+		opts:            opts,
 		db:              v1Store,
 		topologyManager: newTopologyManager(),
 		quit:            make(chan struct{}),
@@ -63,7 +62,7 @@ func NewChannelGraph(v1Store Store,
 	// The graph cache can be turned off (e.g. for mobile users) for a
 	// speed/memory usage tradeoff.
 	if opts.useGraphCache {
-		g.graphCache = NewGraphCache(opts.preAllocCacheNumNodes)
+		g.cache = newGraphCacheState(opts.preAllocCacheNumNodes)
 	}
 
 	return g, nil
@@ -82,8 +81,21 @@ func (c *ChannelGraph) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = fn.Some(cancel)
 
-	if err := c.populateCache(ctx); err != nil {
-		return fmt.Errorf("could not populate the graph cache: %w", err)
+	if c.opts.asyncGraphCachePopulation {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+
+			if err := c.populateCache(ctx); err != nil {
+				log.Criticalf("Could not populate the "+
+					"graph cache: %v", err)
+			}
+		}()
+	} else {
+		if err := c.populateCache(ctx); err != nil {
+			return fmt.Errorf("could not populate the graph "+
+				"cache: %w", err)
+		}
 	}
 
 	c.wg.Add(1)
@@ -167,11 +179,20 @@ func (c *ChannelGraph) handleTopologySubscriptions(ctx context.Context) {
 
 // populateCache loads the entire channel graph into the in-memory graph cache.
 func (c *ChannelGraph) populateCache(ctx context.Context) error {
-	if c.graphCache == nil {
+	if c.cache == nil {
 		log.Info("In-memory channel graph cache disabled")
 
 		return nil
 	}
+
+	c.cache.beginPopulation()
+
+	loaded := false
+	defer func() {
+		c.cache.finishPopulation(loaded)
+	}()
+
+	cache := c.cache.graphCache
 
 	startTime := time.Now()
 	log.Info("Populating in-memory channel graph, this might take a " +
@@ -186,7 +207,7 @@ func (c *ChannelGraph) populateCache(ctx context.Context) error {
 			func(node route.Vertex,
 				features *lnwire.FeatureVector) error {
 
-				c.graphCache.AddNodeFeatures(node, features)
+				cache.AddNodeFeatures(node, features)
 
 				return nil
 			}, func() {},
@@ -203,7 +224,7 @@ func (c *ChannelGraph) populateCache(ctx context.Context) error {
 				policy1,
 				policy2 *models.CachedEdgePolicy) error {
 
-				c.graphCache.AddChannel(info, policy1, policy2)
+				cache.AddChannel(info, policy1, policy2)
 
 				return nil
 			}, func() {},
@@ -215,10 +236,10 @@ func (c *ChannelGraph) populateCache(ctx context.Context) error {
 		}
 	}
 
-	c.cacheLoaded.Store(true)
+	loaded = true
 
 	log.Infof("Finished populating in-memory channel graph (took %v, %s)",
-		time.Since(startTime), c.graphCache.Stats())
+		time.Since(startTime), cache.Stats())
 
 	return nil
 }
@@ -237,8 +258,8 @@ func (c *ChannelGraph) ForEachNodeDirectedChannel(ctx context.Context,
 	node route.Vertex, cb func(channel *DirectedChannel) error,
 	reset func()) error {
 
-	if c.graphCache != nil && c.cacheLoaded.Load() {
-		return c.graphCache.ForEachChannel(node, cb)
+	if c.cache != nil && c.cache.isLoaded() {
+		return c.cache.graphCache.ForEachChannel(node, cb)
 	}
 
 	// TODO(elle): once the no-cache path needs to support
@@ -258,8 +279,8 @@ func (c *ChannelGraph) ForEachNodeDirectedChannel(ctx context.Context,
 func (c *ChannelGraph) FetchNodeFeatures(ctx context.Context,
 	node route.Vertex) (*lnwire.FeatureVector, error) {
 
-	if c.graphCache != nil && c.cacheLoaded.Load() {
-		return c.graphCache.GetFeatures(node), nil
+	if c.cache != nil && c.cache.isLoaded() {
+		return c.cache.graphCache.GetFeatures(node), nil
 	}
 
 	return c.db.FetchNodeFeatures(ctx, lnwire.GossipVersion1, node)
@@ -272,7 +293,7 @@ func (c *ChannelGraph) FetchNodeFeatures(ctx context.Context,
 func (c *ChannelGraph) GraphSession(ctx context.Context,
 	cb func(graph NodeTraverser) error, reset func()) error {
 
-	if c.graphCache != nil && c.cacheLoaded.Load() {
+	if c.cache != nil && c.cache.isLoaded() {
 		return cb(c)
 	}
 
@@ -288,8 +309,8 @@ func (c *ChannelGraph) ForEachNodeCached(ctx context.Context,
 	cb func(ctx context.Context, node route.Vertex, addrs []net.Addr,
 		chans map[uint64]*DirectedChannel) error, reset func()) error {
 
-	if !withAddrs && c.graphCache != nil && c.cacheLoaded.Load() {
-		return c.graphCache.ForEachNode(
+	if !withAddrs && c.cache != nil && c.cache.isLoaded() {
+		return c.cache.graphCache.ForEachNode(
 			func(node route.Vertex,
 				channels map[uint64]*DirectedChannel) error {
 
@@ -315,10 +336,12 @@ func (c *ChannelGraph) AddNode(ctx context.Context,
 		return err
 	}
 
-	if c.graphCache != nil {
-		c.graphCache.AddNodeFeatures(
-			node.PubKeyBytes, node.Features,
-		)
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			cache.AddNodeFeatures(
+				node.PubKeyBytes, node.Features,
+			)
+		})
 	}
 
 	select {
@@ -344,8 +367,10 @@ func (c *ChannelGraph) AddChannelEdge(ctx context.Context,
 		return err
 	}
 
-	if c.graphCache != nil {
-		c.graphCache.AddChannel(models.NewCachedEdge(edge), nil, nil)
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			cache.AddChannel(models.NewCachedEdge(edge), nil, nil)
+		})
 	}
 
 	select {
@@ -368,7 +393,7 @@ func (c *ChannelGraph) MarkEdgeLive(ctx context.Context,
 		return err
 	}
 
-	if c.graphCache != nil {
+	if c.cache != nil {
 		// We need to add the channel back into our graph cache,
 		// otherwise we won't use it for path finding.
 		infos, err := c.db.FetchChanInfos(ctx, v, []uint64{chanID})
@@ -390,9 +415,12 @@ func (c *ChannelGraph) MarkEdgeLive(ctx context.Context,
 			policy2 = models.NewCachedPolicy(info.Policy2)
 		}
 
-		c.graphCache.AddChannel(
-			models.NewCachedEdge(info.Info), policy1, policy2,
-		)
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			cache.AddChannel(
+				models.NewCachedEdge(info.Info),
+				policy1, policy2,
+			)
+		})
 	}
 
 	return nil
@@ -417,13 +445,15 @@ func (c *ChannelGraph) DeleteChannelEdges(ctx context.Context,
 		return err
 	}
 
-	if c.graphCache != nil {
-		for _, info := range infos {
-			c.graphCache.RemoveChannel(
-				info.NodeKey1Bytes, info.NodeKey2Bytes,
-				info.ChannelID,
-			)
-		}
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			for _, info := range infos {
+				cache.RemoveChannel(
+					info.NodeKey1Bytes, info.NodeKey2Bytes,
+					info.ChannelID,
+				)
+			}
+		})
 	}
 
 	return err
@@ -444,13 +474,15 @@ func (c *ChannelGraph) DisconnectBlockAtHeight(ctx context.Context,
 		return nil, err
 	}
 
-	if c.graphCache != nil {
-		for _, edge := range edges {
-			c.graphCache.RemoveChannel(
-				edge.NodeKey1Bytes, edge.NodeKey2Bytes,
-				edge.ChannelID,
-			)
-		}
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			for _, edge := range edges {
+				cache.RemoveChannel(
+					edge.NodeKey1Bytes, edge.NodeKey2Bytes,
+					edge.ChannelID,
+				)
+			}
+		})
 	}
 
 	return edges, nil
@@ -475,20 +507,22 @@ func (c *ChannelGraph) PruneGraph(ctx context.Context,
 		return nil, err
 	}
 
-	if c.graphCache != nil {
-		for _, edge := range edges {
-			c.graphCache.RemoveChannel(
-				edge.NodeKey1Bytes, edge.NodeKey2Bytes,
-				edge.ChannelID,
-			)
-		}
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			for _, edge := range edges {
+				cache.RemoveChannel(
+					edge.NodeKey1Bytes, edge.NodeKey2Bytes,
+					edge.ChannelID,
+				)
+			}
+			for _, node := range nodes {
+				cache.RemoveNode(node)
+			}
+		})
 
-		for _, node := range nodes {
-			c.graphCache.RemoveNode(node)
+		if stats, ok := c.cache.stats(); ok {
+			log.Debugf("Pruned graph, cache now has %s", stats)
 		}
-
-		log.Debugf("Pruned graph, cache now has %s",
-			c.graphCache.Stats())
 	}
 
 	if len(edges) != 0 {
@@ -518,10 +552,12 @@ func (c *ChannelGraph) PruneGraphNodes(ctx context.Context) error {
 		return err
 	}
 
-	if c.graphCache != nil {
-		for _, node := range nodes {
-			c.graphCache.RemoveNode(node)
-		}
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			for _, node := range nodes {
+				cache.RemoveNode(node)
+			}
+		})
 	}
 
 	return nil
@@ -589,8 +625,10 @@ func (c *ChannelGraph) MarkEdgeZombie(ctx context.Context,
 		return err
 	}
 
-	if c.graphCache != nil {
-		c.graphCache.RemoveChannel(pubKey1, pubKey2, chanID)
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			cache.RemoveChannel(pubKey1, pubKey2, chanID)
+		})
 	}
 
 	return nil
@@ -611,10 +649,12 @@ func (c *ChannelGraph) UpdateEdgePolicy(ctx context.Context,
 		return err
 	}
 
-	if c.graphCache != nil {
-		c.graphCache.UpdatePolicy(
-			models.NewCachedPolicy(edge), from, to,
-		)
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			cache.UpdatePolicy(
+				models.NewCachedPolicy(edge), from, to,
+			)
+		})
 	}
 
 	select {
@@ -820,8 +860,8 @@ func NewVersionedGraph(c *ChannelGraph,
 func (c *VersionedGraph) FetchNodeFeatures(ctx context.Context,
 	node route.Vertex) (*lnwire.FeatureVector, error) {
 
-	if c.graphCache != nil {
-		return c.graphCache.GetFeatures(node), nil
+	if c.cache != nil && c.cache.isLoaded() {
+		return c.cache.graphCache.GetFeatures(node), nil
 	}
 
 	return c.db.FetchNodeFeatures(ctx, c.v, node)
@@ -837,8 +877,8 @@ func (c *VersionedGraph) ForEachNodeDirectedChannel(ctx context.Context,
 	node route.Vertex, cb func(channel *DirectedChannel) error,
 	reset func()) error {
 
-	if c.graphCache != nil {
-		return c.graphCache.ForEachChannel(node, cb)
+	if c.cache != nil && c.cache.isLoaded() {
+		return c.cache.graphCache.ForEachChannel(node, cb)
 	}
 
 	return c.db.ForEachNodeDirectedChannel(ctx, c.v, node, cb, reset)
@@ -891,7 +931,7 @@ func (c *VersionedGraph) ChannelView(ctx context.Context) ([]EdgePoint,
 func (c *VersionedGraph) GraphSession(ctx context.Context,
 	cb func(graph NodeTraverser) error, reset func()) error {
 
-	if c.graphCache != nil {
+	if c.cache != nil && c.cache.isLoaded() {
 		return cb(c)
 	}
 
@@ -951,8 +991,10 @@ func (c *VersionedGraph) DeleteNode(ctx context.Context,
 		return err
 	}
 
-	if c.graphCache != nil {
-		c.graphCache.RemoveNode(nodePub)
+	if c.cache != nil {
+		c.cache.applyUpdate(func(cache *GraphCache) {
+			cache.RemoveNode(nodePub)
+		})
 	}
 
 	return nil
@@ -1096,7 +1138,13 @@ func MakeTestGraph(t testing.TB,
 
 	store := NewTestDB(t)
 
-	graph, err := NewChannelGraph(store, opts...)
+	// Default to synchronous cache population in tests so that the
+	// cache is fully loaded before the test proceeds.
+	allOpts := append(
+		[]ChanGraphOption{WithSyncGraphCachePopulation()}, opts...,
+	)
+
+	graph, err := NewChannelGraph(store, allOpts...)
 	require.NoError(t, err)
 	require.NoError(t, graph.Start())
 

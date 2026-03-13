@@ -937,3 +937,55 @@ func TestExtractIntentFromSendRequest(t *testing.T) {
 		})
 	}
 }
+
+// TestMarshallRouteChanCapacity verifies that MarshallRoute correctly sets the
+// ChanCapacity for each hop based on the incoming amount at that hop, not
+// the total route amount. This is a regression test to ensure the
+// incomingAmt is updated per hop.
+func TestMarshallRouteChanCapacity(t *testing.T) {
+	t.Parallel()
+
+	// Build a two-hop route: source -> hop1 -> hop2 -> dest.
+	//
+	// TotalAmount (incoming to hop1) = 1000 msat
+	// hop1.AmtToForward (incoming to hop2) = 900 msat (after fee)
+	const (
+		totalAmtMsat = lnwire.MilliSatoshi(1000)
+		hop1Forward  = lnwire.MilliSatoshi(900)
+		hop2Forward  = lnwire.MilliSatoshi(900)
+	)
+
+	hops := []*route.Hop{
+		{
+			ChannelID:    1,
+			AmtToForward: hop1Forward,
+			PubKeyBytes:  node1,
+		},
+		{
+			ChannelID:    2,
+			AmtToForward: hop2Forward,
+			PubKeyBytes:  node2,
+		},
+	}
+
+	r, err := route.NewRouteFromHops(totalAmtMsat, 100, sourceKey, hops)
+	require.NoError(t, err)
+
+	backend := &RouterBackend{}
+	rpcRoute, err := backend.MarshallRoute(r)
+	require.NoError(t, err)
+	require.Len(t, rpcRoute.Hops, 2)
+
+	// The first hop's capacity should reflect the total incoming amount
+	// (route.TotalAmount), converted to satoshis.
+	require.EqualValues(
+		t, totalAmtMsat.ToSatoshis(), rpcRoute.Hops[0].ChanCapacity,
+	)
+
+	// The second hop's capacity should reflect hop1's forwarded amount, not
+	// the total route amount. Before the fix, both hops incorrectly used
+	// the total route amount.
+	require.EqualValues(
+		t, hop1Forward.ToSatoshis(), rpcRoute.Hops[1].ChanCapacity,
+	)
+}

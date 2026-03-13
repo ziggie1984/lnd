@@ -85,6 +85,14 @@
 
 ## Functional Enhancements
 
+* [Added reorg protection for channel
+  closes](https://github.com/lightningnetwork/lnd/pull/10331). Previously,
+  channel closes were considered final immediately on spend detection with no
+  confirmation waiting. Now, all channel closes require between 3 and 6
+  confirmations, scaled linearly with channel capacity up to the maximum
+  non-wumbo channel size (~0.168 BTC), with wumbo channels always requiring
+  6 confirmations.
+
 ## RPC Additions
 
 * [Added support for coordinator-based MuSig2 signing
@@ -149,6 +157,15 @@
   set, the log file content is included in the encrypted debug package.
 
 ## Breaking Changes
+
+* [Increased MinCLTVDelta from 18 to
+  24](https://github.com/lightningnetwork/lnd/pull/10331) to provide a larger
+  safety margin above the `DefaultFinalCltvRejectDelta` (19 blocks). This
+  affects users who create invoices with custom `cltv_expiry_delta` values
+  between 18-23, which will now require a minimum of 24. The default value of
+  80 blocks for invoice creation remains unchanged, so most users will not be
+  affected. Existing invoices created before the upgrade will continue to work
+  normally.
 
 * The [`GetDebugInfo`](https://github.com/lightningnetwork/lnd/pull/10613) RPC
   no longer returns log file content by default. Clients that rely on the `log`

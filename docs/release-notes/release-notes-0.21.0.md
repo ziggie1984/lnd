@@ -85,12 +85,13 @@
 
 ## Functional Enhancements
 
-* [Improved confirmation scaling for cooperative
-  closes](https://github.com/lightningnetwork/lnd/pull/10331) to provide better
-  reorg protection. Previously, cooperative closes required a minimum of 3
-  confirmations. Now, small channels only require 1 confirmation, while larger
-  channels scale proportionally using the standard 0.16 BTC threshold (matching
-  funding confirmation scaling).
+* [Added reorg protection for channel
+  closes](https://github.com/lightningnetwork/lnd/pull/10331). Previously,
+  channel closes were considered final immediately on spend detection with no
+  confirmation waiting. Now, all channel closes require between 3 and 6
+  confirmations, scaled linearly with channel capacity up to the maximum
+  non-wumbo channel size (~0.168 BTC), with wumbo channels always requiring
+  6 confirmations.
 
 ## RPC Additions
 

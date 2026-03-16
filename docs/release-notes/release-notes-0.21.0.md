@@ -116,6 +116,10 @@
 # Improvements
 ## Functional Updates
 
+* [Allow multiple read-only RPC middleware
+  interceptors](https://github.com/lightningnetwork/lnd/pull/10611) to be
+  registered simultaneously.
+
 * [Added support](https://github.com/lightningnetwork/lnd/pull/9432) for the
   `upfront-shutdown-address` configuration in `lnd.conf`, allowing users to
   specify an address for cooperative channel closures where funds will be sent.

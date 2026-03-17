@@ -32,19 +32,6 @@
   sub-server is still starting. This allows clients to reliably detect the
   transient condition and retry without brittle string matching.
 
-- [Fixed an issue](https://github.com/lightningnetwork/lnd/pull/10399) where the
-  TLS manager would fail to start if only one of the TLS pair files (certificate
-  or key) existed. The manager now correctly regenerates both files when either
-  is missing, preventing "file not found" errors on startup.
-
-- [Fixed race conditions](https://github.com/lightningnetwork/lnd/pull/10420) in
-  the channel graph database. The `Node.PubKey()` and
-  `ChannelEdgeInfo.NodeKey1/NodeKey2()` methods had check-then-act races when
-  caching parsed public keys. Additionally, `DisconnectBlockAtHeight` was
-  accessing the reject and channel caches without proper locking. The caching
-  has been removed from the public key parsing methods, and proper mutex
-  protection has been added to the cache access in `DisconnectBlockAtHeight`.
-
 - [Fixed TLV decoders to reject malformed records with incorrect lengths](https://github.com/lightningnetwork/lnd/pull/10249).
   TLV decoders now strictly enforce fixed-length requirements for Fee (8 bytes),
   Musig2Nonce (66 bytes), ShortChannelID (8 bytes), Vertex (33 bytes), and

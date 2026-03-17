@@ -728,6 +728,10 @@ var allTestCases = []*lntest.TestCase{
 		TestFunc: testGraphMigration,
 	},
 	{
+		Name:     "payment migration",
+		TestFunc: testPaymentMigration,
+	},
+	{
 		Name:     "payment address mismatch",
 		TestFunc: testWrongPaymentAddr,
 	},

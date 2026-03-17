@@ -1269,13 +1269,17 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 			return nil, nil, err
 		}
 
-		// Create the payments DB.
-		//
-		// NOTE:  In the regular build, this will construct a kvdb
-		// backed payments backend. With the test_native_sql tag, it
-		// will build a SQL payments backend.
-		sqlPaymentsDB, err := d.getPaymentsStore(
-			baseDB, dbs.ChanStateDB.Backend,
+		paymentsExecutor := sqldb.NewTransactionExecutor(
+			baseDB, func(tx *sql.Tx) paymentsdb.SQLQueries {
+				return baseDB.WithTx(tx)
+			},
+		)
+
+		sqlPaymentsDB, err := paymentsdb.NewSQLStore(
+			&paymentsdb.SQLStoreConfig{
+				QueryCfg: queryCfg,
+			},
+			paymentsExecutor,
 		)
 		if err != nil {
 			cleanUp()

@@ -942,6 +942,17 @@ func (c *ClosingNegotiation) updateAndValidateCloseTerms(event ProtocolEvent,
 			return err
 		}
 
+		// For taproot channels, extract the NextCloseeNonce from
+		// ClosingSig if present. This will be used for the next RBF
+		// iteration when we act as closer. This is their new closee
+		// nonce.
+		_, nextCloseeNonce := validateAndExtractSigAndNonce(
+			msg.SigMsg, isTaproot,
+		)
+		nextCloseeNonce.WhenSome(func(nonce lnwire.Musig2Nonce) {
+			c.NonceState.RemoteCloseeNonce = fn.Some(nonce)
+		})
+
 		return nil
 	}
 
@@ -1243,11 +1254,19 @@ func (l *LocalCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 			"to remote party, fee_sats=%v", env.ChanPoint,
 			absoluteFee)
 
+		// For taproot channels, stash the full MusigPartialSig so
+		// LocalOfferSent can combine signatures without re-signing.
+		var localMusigSig fn.Option[lnwallet.MusigPartialSig]
+		if musigPartialSig != nil {
+			localMusigSig = fn.Some(*musigPartialSig)
+		}
+
 		return &CloseStateTransition{
 			NextState: &LocalOfferSent{
 				ProposedFee:       absoluteFee,
 				ProposedFeeRate:   msg.TargetFeeRate,
 				LocalSig:          wireSig,
+				LocalMusigSig:     localMusigSig,
 				CloseChannelTerms: l.CloseChannelTerms,
 			},
 			NewEvents: fn.Some(RbfEvent{
@@ -1415,70 +1434,62 @@ func extractTaprootPartialSig(sigs lnwire.TaprootPartialSigs) (
 func prepareClosingSignatures(env *Environment, l *LocalOfferSent,
 	msg *LocalSigReceived, sig lnwire.Sig,
 	closeOpts []lnwallet.ChanCloseOpt,
-) (localSig, remoteSig input.Signature, err error) {
+) (localSig, remoteSig input.Signature,
+	musigOpts []lnwallet.ChanCloseOpt, err error) {
 
 	if env.IsTaproot() {
-		// For taproot channels, we need to reconstruct the
-		// MusigPartialSig from the wire signature. We'll need to create
-		// a new CreateCloseProposal to get the proper MusigPartialSig
-		// that CompleteCooperativeClose expects.
-		rawLocalSig, _, _, err := env.CloseSigner.CreateCloseProposal(
-			l.ProposedFee, l.LocalDeliveryScript,
-			l.RemoteDeliveryScript, closeOpts...,
+		// Use the stored MusigPartialSig from LocalCloseStart rather
+		// than re-signing. This prevents nonce reuse across the two
+		// state transitions within a closer round.
+		storedSig, err := l.LocalMusigSig.UnwrapOrErr(
+			fmt.Errorf("missing stored musig partial sig " +
+				"for taproot channel"),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to recreate "+
-				"local sig: %w", err)
+			return nil, nil, nil, err
 		}
-		localSig = rawLocalSig
 
-		// Extract the partial sig from the message using our helper
-		// function.
+		localPartialSig := storedSig.ToWireSig().PartialSig
+
+		// Extract the remote's partial sig from their ClosingSig.
 		remotePartialSigOpt := extractTaprootPartialSig(
 			msg.SigMsg.TaprootPartialSigs,
 		)
 		if remotePartialSigOpt.IsNone() {
-			return nil, nil, fmt.Errorf("no taproot partial " +
-				"sig found in message")
+			return nil, nil, nil, fmt.Errorf("no taproot " +
+				"partial sig found in message")
 		}
 
 		remotePartialSig := remotePartialSigOpt.UnwrapOr(
 			lnwire.PartialSig{},
 		)
 
-		// We also need our local partial sig in wire format.
-		localMusigSig, ok := rawLocalSig.(*lnwallet.MusigPartialSig)
-		if !ok {
-			return nil, nil, fmt.Errorf("expected local sig to "+
-				"be MusigPartialSig, got %T", rawLocalSig)
-		}
-		localPartialSig := localMusigSig.ToWireSig().PartialSig
-
-		// Use CombineClosingOpts to get the proper signatures.
-		// notlint:ll
-		localCombined, remoteCombined, _, err := env.LocalMusigSession.CombineClosingOpts(
+		// Combine both partial signatures using the musig session
+		// from the original ProposalClosingOpts call.
+		//nolint:ll
+		localCombined, remoteCombined, combinedOpts, err := env.LocalMusigSession.CombineClosingOpts(
 			localPartialSig, remotePartialSig,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to combine "+
-				"closing opts: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to "+
+				"combine closing opts: %w", err)
 		}
 
-		return localCombined, remoteCombined, nil
+		return localCombined, remoteCombined, combinedOpts, nil
 	}
 
 	// For non-taproot channels, convert wire signatures to regular
 	// signatures.
 	remoteSig, err = sig.ToSignature()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	localSig, err = l.LocalSig.ToSignature()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return localSig, remoteSig, nil
+	return localSig, remoteSig, nil, nil
 }
 
 // ProcessEvent implements the state transition function for the
@@ -1509,36 +1520,23 @@ func (l *LocalOfferSent) ProcessEvent(event ProtocolEvent, env *Environment,
 			lnwallet.WithCustomPayer(lntypes.Local),
 		)
 
-		// For taproot channels, we need to initialize the remote's
-		// closee nonce BEFORE calling ProposalClosingOpts. We use the
-		// nonce from NonceState (set during shutdown or from prior
-		// ClosingSig's NextCloseeNonce).
+		// For taproot channels, update NonceState with the new nonce
+		// from ClosingSig for potential future RBF iterations.
 		if env.IsTaproot() {
-			// Initialize the remote nonce from our stored state.
-			// This is the nonce the remote party committed to in
-			// their shutdown message (or their previous ClosingSig).
-			initLocalMusigCloseeNonce(env, l.NonceState.RemoteCloseeNonce)
-
-			// Now that the nonce is initialized, we can safely get
-			// the musig closing options.
-			musigOpts, err := env.LocalMusigSession.ProposalClosingOpts()
-			if err != nil {
-				return nil, fmt.Errorf("failed to get musig "+
-					"closing opts: %w", err)
-			}
-			closeOpts = append(closeOpts, musigOpts...)
-
-			// Update NonceState with the new nonce from ClosingSig
-			// for potential future RBF iterations.
 			l.NonceState.RemoteCloseeNonce = nextCloseeNonce
 		}
 
-		localSig, remoteSig, err := prepareClosingSignatures(
+		// Prepare the closing signatures. For taproot, this uses the
+		// stored MusigPartialSig from LocalCloseStart (no re-signing).
+		// The returned musigOpts contain the musig session needed by
+		// CompleteCooperativeClose.
+		localSig, remoteSig, musigOpts, err := prepareClosingSignatures(
 			env, l, msg, sig, closeOpts,
 		)
 		if err != nil {
 			return nil, err
 		}
+		closeOpts = append(closeOpts, musigOpts...)
 
 		// Now that we have their signature, we'll attempt to validate
 		// it, then extract a valid closing signature from it.
@@ -1548,6 +1546,13 @@ func (l *LocalOfferSent) ProcessEvent(event ProtocolEvent, env *Environment,
 		)
 		if err != nil {
 			return nil, err
+		}
+
+		// Invalidate the closer nonce now that the round is complete.
+		// The next RBF round will generate a fresh nonce in
+		// LocalCloseStart.
+		if env.IsTaproot() {
+			env.LocalMusigSession.InvalidateNonce()
 		}
 
 		// As we're about to broadcast a new version of the co-op close
@@ -2013,6 +2018,13 @@ func (l *RemoteCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 			env.ChanPoint, msg.SigMsg.FeeSatoshis,
 			lnutils.SpewLogClosure(closeTx),
 		)
+
+		// Invalidate the closee nonce that was consumed for signing.
+		// This forces createClosingSigMessage to generate a fresh
+		// nonce for NextCloseeNonce in the next RBF round.
+		if env.IsTaproot() {
+			env.RemoteMusigSession.InvalidateNonce()
+		}
 
 		closingSigMsg, err := createClosingSigMessage(
 			env, wireSig, localSig, l.LocalDeliveryScript,

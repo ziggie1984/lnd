@@ -24,7 +24,6 @@ func SomeShutdownNonce(nonce Musig2Nonce) ShutdownNonceTLV {
 	)
 }
 
-
 // Shutdown is sent by either side in order to initiate the cooperative closure
 // of a channel. This message is sparse as both sides implicitly have the
 // information necessary to construct a transaction that will send the settled

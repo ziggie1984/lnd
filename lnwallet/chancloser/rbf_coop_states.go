@@ -792,6 +792,12 @@ type LocalOfferSent struct {
 
 	// LocalSig is the signature we sent to the remote party.
 	LocalSig lnwire.Sig
+
+	// LocalMusigSig is the full musig partial signature from when we
+	// signed as closer. Stored here so LocalOfferSent can combine
+	// signatures without re-signing, which prevents nonce reuse across
+	// RBF iterations. Only set for taproot channels.
+	LocalMusigSig fn.Option[lnwallet.MusigPartialSig]
 }
 
 // String returns the name of the state for LocalOfferSent, including proposed.

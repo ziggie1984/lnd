@@ -158,8 +158,12 @@ func testCoopCloseRbf(ht *lntest.HarnessTest) {
 
 			// Build node config with commitment type args and RBF
 			// flag.
-			baseArgs := lntest.NodeArgsForCommitType(chanType.commitType)
-			nodeArgs := append(baseArgs, "--protocol.rbf-coop-close")
+			baseArgs := lntest.NodeArgsForCommitType(
+				chanType.commitType,
+			)
+			nodeArgs := append(
+				baseArgs, "--protocol.rbf-coop-close",
+			)
 			cfgs := [][]string{nodeArgs, nodeArgs}
 
 			// For taproot channels, we need to make them private.

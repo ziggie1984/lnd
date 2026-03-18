@@ -3157,31 +3157,26 @@ func (m *strictNonceMusigSession) InitRemoteNonce(nonce *musig2.Nonces) {
 	m.remoteNonce = *nonce
 }
 
+func (m *strictNonceMusigSession) InvalidateNonce() {}
+
 func (m *strictNonceMusigSession) ClosingNonce() (*musig2.Nonces, error) {
 	return &musig2.Nonces{
 		PubNonce: [66]byte{1, 2, 3},
 	}, nil
 }
 
-// TestLocalOfferSentNonceInitOrder verifies that when processing a
-// LocalSigReceived event in the LocalOfferSent state, the NextCloseeNonce from
-// ClosingSig is properly initialized via initLocalMusigCloseeNonce BEFORE
-// calling ProposalClosingOpts. This is critical for taproot channels because
-// ProposalClosingOpts requires the remote nonce to be set to create a valid
-// MuSig2 session.
-//
-// This test catches the bug where ProposalClosingOpts was called before the
-// nonce was initialized, causing "final signature is invalid" errors during
-// cooperative close.
-func TestLocalOfferSentNonceInitOrder(t *testing.T) {
+// TestLocalOfferSentUsesStoredSig verifies that when processing a
+// LocalSigReceived event in the LocalOfferSent state, the stored
+// LocalMusigSig is used for combining rather than re-signing. This
+// prevents nonce reuse across RBF iterations.
+func TestLocalOfferSentUsesStoredSig(t *testing.T) {
 	t.Parallel()
 
-	// Create a strict mock that will fail if ProposalClosingOpts is called
-	// before InitRemoteNonce.
+	// Create a strict mock that will fail if ProposalClosingOpts is
+	// called — it should NOT be called since we use the stored sig.
 	strictLocalMusig := newStrictNonceMusigSession()
 
-	// The remote's closee nonce from shutdown - this is what should be used
-	// for the current transaction.
+	// The remote's closee nonce from shutdown.
 	remoteCloseeNonceFromShutdown := lnwire.Musig2Nonce{4, 5, 6}
 
 	// Set up the environment with the strict mock.
@@ -3200,16 +3195,17 @@ func TestLocalOfferSentNonceInitOrder(t *testing.T) {
 		},
 	}
 
-	// Create the LocalOfferSent state that we'll be testing.
+	// Create the LocalOfferSent state with a stored musig sig,
+	// simulating what LocalCloseStart would have stored.
 	localOfferSent := &LocalOfferSent{
 		CloseChannelTerms: closeTerms,
 		ProposedFee:       btcutil.Amount(1000),
 		ProposedFeeRate:   chainfee.FeePerKwFloor.FeePerVByte(),
 		LocalSig:          localSchnorrSig,
+		LocalMusigSig:     fn.Some(lnwallet.MusigPartialSig{}),
 	}
 
 	// The environment needs both musig sessions set for taproot path.
-	// IsTaproot() returns true when both sessions are non-nil.
 	env := &Environment{
 		ChanPoint:          randOutPoint(t),
 		LocalMusigSession:  strictLocalMusig,
@@ -3217,7 +3213,6 @@ func TestLocalOfferSentNonceInitOrder(t *testing.T) {
 	}
 
 	// Create a LocalSigReceived event with NextCloseeNonce.
-	// This simulates receiving a ClosingSig from the remote party.
 	nextCloseeNonce := lnwire.Musig2Nonce{10, 11, 12}
 	localSigEvent := &LocalSigReceived{
 		SigMsg: lnwire.ClosingSig{
@@ -3238,42 +3233,28 @@ func TestLocalOfferSentNonceInitOrder(t *testing.T) {
 		},
 	}
 
-	// Process the event. If the fix is correct, InitRemoteNonce will be
-	// called before ProposalClosingOpts.
-	//
-	// We expect a panic or error from the later code because we don't have
-	// a full environment (missing CloseSigner, etc). We use recover to
-	// catch any panics and still check our assertions.
+	// Process the event. We expect it to use CombineClosingOpts with the
+	// stored sig, NOT ProposalClosingOpts + CreateCloseProposal.
 	func() {
 		defer func() {
-			// Recover from any panic - we just want to check that
-			// ProposalClosingOpts was called in the right order.
 			_ = recover()
 		}()
 
 		_, _ = localOfferSent.ProcessEvent(localSigEvent, env)
 	}()
 
-	// The critical assertion: ProposalClosingOpts should NOT have been
-	// called before InitRemoteNonce.
+	// ProposalClosingOpts should NOT have been called — we use the stored
+	// sig directly via CombineClosingOpts.
 	require.False(
 		t, strictLocalMusig.proposalOptsCalledBeforeInit,
-		"ProposalClosingOpts was called before InitRemoteNonce - "+
-			"this would cause 'final signature is invalid' errors",
+		"ProposalClosingOpts should not be called when using "+
+			"stored MusigPartialSig",
 	)
 
-	// Also verify that InitRemoteNonce was actually called.
-	require.True(
-		t, strictLocalMusig.remoteNonceInited,
-		"InitRemoteNonce should have been called",
-	)
-
-	// And that it was called with the correct nonce from NonceState
-	// (established during shutdown), NOT the NextCloseeNonce from
-	// ClosingSig.
+	// Verify that the NextCloseeNonce was stored for the next RBF round.
 	require.Equal(
-		t, musig2.Nonces{PubNonce: remoteCloseeNonceFromShutdown},
-		strictLocalMusig.remoteNonce,
+		t, fn.Some(nextCloseeNonce),
+		localOfferSent.NonceState.RemoteCloseeNonce,
 		"InitRemoteNonce should be called with RemoteCloseeNonce from "+
 			"NonceState (not NextCloseeNonce from ClosingSig)",
 	)

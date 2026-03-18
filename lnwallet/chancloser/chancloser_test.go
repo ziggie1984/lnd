@@ -300,6 +300,8 @@ func (m *mockMusigSession) InitRemoteNonce(nonce *musig2.Nonces) {
 	m.remoteNonce = *nonce
 }
 
+func (m *mockMusigSession) InvalidateNonce() {}
+
 func (m *mockMusigSession) ClosingNonce() (*musig2.Nonces, error) {
 	return &musig2.Nonces{
 		PubNonce: [66]byte{1, 2, 3},

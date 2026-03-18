@@ -9,7 +9,6 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
-
 // TaprootPartialSigs houses the 3 possible taproot partial signatures (without nonces)
 // that can be sent in a ClosingSig message. These use just PartialSig since the
 // receiver already knows our nonce from the previous ClosingComplete.
@@ -77,19 +76,19 @@ type ClosingSig struct {
 
 // decodeClosingSigSigs decodes the closing sig TLV records from the passed
 // ExtraOpaqueData.
-func decodeClosingSigSigs(c *ClosingSigs, tp *TaprootPartialSigs, 
-	nextNonce *tlv.OptionalRecordT[tlv.TlvType22, Musig2Nonce], 
+func decodeClosingSigSigs(c *ClosingSigs, tp *TaprootPartialSigs,
+	nextNonce *tlv.OptionalRecordT[tlv.TlvType22, Musig2Nonce],
 	tlvRecords ExtraOpaqueData) error {
 	// Regular signatures
 	sig1 := c.CloserNoClosee.Zero()
 	sig2 := c.NoCloserClosee.Zero()
 	sig3 := c.CloserAndClosee.Zero()
-	
+
 	// Taproot partial signatures (without nonces)
 	tSig1 := tp.CloserNoClosee.Zero()
 	tSig2 := tp.NoCloserClosee.Zero()
 	tSig3 := tp.CloserAndClosee.Zero()
-	
+
 	// Next closee nonce for RBF
 	nonce := nextNonce.Zero()
 
@@ -110,7 +109,7 @@ func decodeClosingSigSigs(c *ClosingSigs, tp *TaprootPartialSigs,
 	if val, ok := typeMap[c.CloserAndClosee.TlvType()]; ok && val == nil {
 		c.CloserAndClosee = tlv.SomeRecordT(sig3)
 	}
-	
+
 	// Taproot partial signatures
 	if val, ok := typeMap[tp.CloserNoClosee.TlvType()]; ok && val == nil {
 		tp.CloserNoClosee = tlv.SomeRecordT(tSig1)
@@ -121,7 +120,7 @@ func decodeClosingSigSigs(c *ClosingSigs, tp *TaprootPartialSigs,
 	if val, ok := typeMap[tp.CloserAndClosee.TlvType()]; ok && val == nil {
 		tp.CloserAndClosee = tlv.SomeRecordT(tSig3)
 	}
-	
+
 	// Next closee nonce
 	if val, ok := typeMap[nextNonce.TlvType()]; ok && val == nil {
 		*nextNonce = tlv.SomeRecordT(nonce)
@@ -173,10 +172,10 @@ func (c *ClosingSig) Decode(r io.Reader, _ uint32) error {
 
 // closingSigSigRecords returns the set of records that encode the closing sigs,
 // including both regular and taproot signatures.
-func closingSigSigRecords(c *ClosingSigs, tp *TaprootPartialSigs, 
+func closingSigSigRecords(c *ClosingSigs, tp *TaprootPartialSigs,
 	nextNonce tlv.OptionalRecordT[tlv.TlvType22, Musig2Nonce]) []tlv.RecordProducer {
 	recordProducers := make([]tlv.RecordProducer, 0, 7)
-	
+
 	// Regular signatures
 	c.CloserNoClosee.WhenSome(func(sig tlv.RecordT[tlv.TlvType1, Sig]) {
 		recordProducers = append(recordProducers, &sig)
@@ -187,7 +186,7 @@ func closingSigSigRecords(c *ClosingSigs, tp *TaprootPartialSigs,
 	c.CloserAndClosee.WhenSome(func(sig tlv.RecordT[tlv.TlvType3, Sig]) {
 		recordProducers = append(recordProducers, &sig)
 	})
-	
+
 	// Taproot partial signatures (without nonces)
 	tp.CloserNoClosee.WhenSome(func(sig tlv.RecordT[tlv.TlvType5, PartialSig]) {
 		recordProducers = append(recordProducers, &sig)
@@ -198,7 +197,7 @@ func closingSigSigRecords(c *ClosingSigs, tp *TaprootPartialSigs,
 	tp.CloserAndClosee.WhenSome(func(sig tlv.RecordT[tlv.TlvType7, PartialSig]) {
 		recordProducers = append(recordProducers, &sig)
 	})
-	
+
 	// Next closee nonce for RBF
 	nextNonce.WhenSome(func(nonce tlv.RecordT[tlv.TlvType22, Musig2Nonce]) {
 		recordProducers = append(recordProducers, &nonce)

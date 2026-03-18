@@ -2,6 +2,7 @@ package lnwire
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -119,6 +120,17 @@ func decodeClosingSigs(c *ClosingSigs, tc *TaprootClosingSigs, tlvRecords ExtraO
 	}
 	if val, ok := typeMap[tc.CloserAndClosee.TlvType()]; ok && val == nil {
 		tc.CloserAndClosee = tlv.SomeRecordT(tSig3)
+	}
+
+	// Reject messages that contain both regular and taproot signatures.
+	hasRegular := c.CloserNoClosee.IsSome() ||
+		c.NoCloserClosee.IsSome() || c.CloserAndClosee.IsSome()
+	hasTaproot := tc.CloserNoClosee.IsSome() ||
+		tc.NoCloserClosee.IsSome() || tc.CloserAndClosee.IsSome()
+
+	if hasRegular && hasTaproot {
+		return fmt.Errorf("closing_complete contains both " +
+			"regular and taproot signatures")
 	}
 
 	return nil

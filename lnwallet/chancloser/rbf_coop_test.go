@@ -3208,11 +3208,12 @@ func TestLocalOfferSentNonceInitOrder(t *testing.T) {
 		LocalSig:          localSchnorrSig,
 	}
 
-	// The environment needs LocalMusigSession set for taproot path.
-	// IsTaproot() returns true when LocalMusigSession is non-nil.
+	// The environment needs both musig sessions set for taproot path.
+	// IsTaproot() returns true when both sessions are non-nil.
 	env := &Environment{
-		ChanPoint:         randOutPoint(t),
-		LocalMusigSession: strictLocalMusig,
+		ChanPoint:          randOutPoint(t),
+		LocalMusigSession:  strictLocalMusig,
+		RemoteMusigSession: newMockMusigSession(),
 	}
 
 	// Create a LocalSigReceived event with NextCloseeNonce.

@@ -1850,13 +1850,9 @@ func selectAndExtractSig(fields SigFieldSet, localIsDust bool) (
 	})
 
 	// Otherwise, for taproot, extract the partial sig and nonce.
-	sigType.WhenRight(func(partialSig lnwire.PartialSigWithNonce) {
-		nonce = fn.Some(partialSig.Nonce)
-
-		sigBytes := partialSig.Sig.Bytes()
-		copy(sig.RawBytes()[:32], sigBytes[:])
-
-		sig.ForceSchnorr()
+	sigType.WhenRight(func(ps lnwire.PartialSigWithNonce) {
+		nonce = fn.Some(ps.Nonce)
+		sig = partialSigToWireSig(ps.PartialSig)
 	})
 
 	return sig, nonce, isNoClosee, nil

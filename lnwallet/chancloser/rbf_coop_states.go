@@ -373,9 +373,9 @@ func (e *Environment) Name() string {
 }
 
 // IsTaproot returns true if this is a taproot channel. A channel is considered
-// taproot if either the LocalMusigSession or RemoteMusigSession is set.
+// taproot if both the LocalMusigSession and RemoteMusigSession are set.
 func (e *Environment) IsTaproot() bool {
-	return e.LocalMusigSession != nil || e.RemoteMusigSession != nil
+	return e.LocalMusigSession != nil && e.RemoteMusigSession != nil
 }
 
 // CloseStateTransition is the StateTransition type specific to the coop close

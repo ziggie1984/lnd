@@ -52,26 +52,24 @@ func sendShutdownEvents(chanID lnwire.ChannelID, chanPoint wire.OutPoint,
 	// For taproot channels using modern RBF flow, auto-generate closee
 	// nonce if not provided. The shutdown message only contains our closee
 	// nonce - the nonce the remote party will use when they act as closer.
-	if env.IsTaproot() {
-		// If closee nonce not provided, generate one now. Note how we
-		// generate it using the RemoteMusigSession, as that'll set our
-		// localNonce, we'll receive their remoteNonce for this session
-		// once we get their ClosingComplete message.
-		if localCloseeNonce.IsNone() {
-			remoteMusig := env.RemoteMusigSession
-			if remoteMusig != nil {
-				closeeNonces, err := remoteMusig.ClosingNonce()
-				if err != nil {
-					return nil, none, fmt.Errorf("unable "+
-						"to generate closee "+
-						"nonce: %w", err)
-				}
-				localCloseeNonce = fn.Some(
-					lnwire.Musig2Nonce(
-						closeeNonces.PubNonce,
-					),
-				)
+	if env.IsTaproot() && localCloseeNonce.IsNone() {
+		// Generate closee nonce now. Note how we generate it using the
+		// RemoteMusigSession, as that'll set our localNonce, we'll
+		// receive their remoteNonce for this session once we get their
+		// ClosingComplete message.
+		remoteMusig := env.RemoteMusigSession
+		if remoteMusig != nil {
+			closeeNonces, err := remoteMusig.ClosingNonce()
+			if err != nil {
+				return nil, none, fmt.Errorf("unable "+
+					"to generate closee "+
+					"nonce: %w", err)
 			}
+			localCloseeNonce = fn.Some(
+				lnwire.Musig2Nonce(
+					closeeNonces.PubNonce,
+				),
+			)
 		}
 	}
 
@@ -853,7 +851,7 @@ func extractSigAndNonceFromClosingSig(msg lnwire.ClosingSig,
 			"sigs present"), fn.None[lnwire.Musig2Nonce]()
 	}
 
-	// If it's a taprotot sig, then we may need to also extract the nonce.
+	// If it's a taproot sig, then we may need to also extract the nonce.
 	if hasTaprootSigs {
 		return extractTaprootSigAndNonce(msg)
 	}
@@ -1316,10 +1314,15 @@ func createClosingSigMessage(env *Environment, wireSig lnwire.Sig,
 	)
 
 	// For taproot channels, use PartialSig (no nonce) since receiver knows
-	// our nonce
+	// our nonce.
 	if env.IsTaproot() {
 		// We already have the MusigPartialSig from earlier.
-		musigSig := localSig.(*lnwallet.MusigPartialSig)
+		musigSig, ok := localSig.(*lnwallet.MusigPartialSig)
+		if !ok {
+			return nil, fmt.Errorf("expected "+
+				"MusigPartialSig for taproot channel, "+
+				"got %T", localSig)
+		}
 		wireSigWithNonce := musigSig.ToWireSig()
 		partialSig := wireSigWithNonce.PartialSig
 
@@ -1677,7 +1680,7 @@ func NewRegularSigType(sig lnwire.Sig) SigType {
 
 // NewTaprootSigType creates a SigType for a taproot signature with nonce.
 func NewTaprootSigType(ps lnwire.PartialSigWithNonce) SigType {
-	return fn.NewRight[lnwire.Sig, lnwire.PartialSigWithNonce](ps)
+	return fn.NewRight[lnwire.Sig](ps)
 }
 
 // SigFieldSet represents which signature fields are present in a

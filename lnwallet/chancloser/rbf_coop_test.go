@@ -1245,8 +1245,8 @@ func testRemoteInitiatedCloseOkNonTap(t *testing.T, ctx context.Context) {
 
 		// We assert our shutdown events, and also that we eventually
 		// send a shutdown to the remote party. We'll hold back the
-		// send in this case though, as we should only send once the no
-		// updates are dangling.
+		// send in this case though, as we should only send once there
+		// are no updates dangling.
 		closeHarness.expectShutdownEvents(shutdownExpect{
 			isInitiator:  false,
 			allowSend:    false,
@@ -1303,8 +1303,8 @@ func testRemoteInitiatedCloseOkTaproot(t *testing.T, ctx context.Context) {
 
 		// We assert our shutdown events, and also that we eventually
 		// send a shutdown to the remote party. We'll hold back the
-		// send in this case though, as we should only send once the no
-		// updates are dangling.
+		// send in this case though, as we should only send once there
+		// are no updates dangling.
 		closeHarness.expectShutdownEvents(shutdownExpect{
 			isInitiator:  false,
 			allowSend:    false,
@@ -2147,10 +2147,6 @@ func testRecvOfferRbfLoopIterations(t *testing.T, closeTerms *CloseChannelTerms,
 	})
 }
 
-// TestRbfCloseClosingNegotiationLocal tests the local portion of the primary
-// RBF close loop. We should be able to transition to a close state, get a sig,
-// then restart all over again to re-request a signature of at new higher fee
-// rate.
 // testSendOfferIterationNoDust is a helper function that tests the send offer
 // iteration scenario for both taproot and non-taproot channels.
 func testSendOfferIterationNoDust(t *testing.T, startingState *ClosingNegotiation,
@@ -2221,6 +2217,10 @@ func testSendOfferIterationNoDust(t *testing.T, startingState *ClosingNegotiatio
 	})
 }
 
+// TestRbfCloseClosingNegotiationLocal tests the local portion of the primary
+// RBF close loop. We should be able to transition to a close state, get a sig,
+// then restart all over again to re-request a signature at a new higher fee
+// rate.
 func TestRbfCloseClosingNegotiationLocal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

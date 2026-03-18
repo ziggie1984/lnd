@@ -1161,7 +1161,8 @@ func (l *LocalCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 			closeOpts...,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("unable to create close "+
+				"proposal: %w", err)
 		}
 
 		// Depending on the channel type, we'll be encoding a normal
@@ -1605,9 +1606,9 @@ func processRemoteTaprootSig(env *Environment, msg lnwire.ClosingComplete,
 		return nil, err
 	}
 
-	// Create a MusigPartialSig from the wire format The Nonce in
-	// PartialSigWithNonce is their next closee nonce for future RBF. We
-	// store it but don't use it for verification of this signature.
+	// Create a MusigPartialSig from the wire format. The nonce in
+	// PartialSigWithNonce is their JIT closer nonce used for the current
+	// session verification.
 	remoteSig := lnwallet.NewMusigPartialSig(
 		&musig2.PartialSignature{
 			S: &remotePartialSig.PartialSig.Sig,
@@ -1795,7 +1796,9 @@ func validateSigFields(sigFields SigFieldSet, localIsDust bool) error {
 	if localIsDust {
 		// Local output is dust, we need CloserNoClosee.
 		if sigFields.CloserNoClosee.IsNone() {
-			return ErrCloserNoClosee
+			return fmt.Errorf("local output is dust but "+
+				"CloserNoClosee sig missing: %w",
+				ErrCloserNoClosee)
 		}
 	} else {
 		// Local output is not dust, we prefer CloserAndClosee, but can
@@ -1803,7 +1806,9 @@ func validateSigFields(sigFields SigFieldSet, localIsDust bool) error {
 		if sigFields.CloserAndClosee.IsNone() &&
 			sigFields.NoCloserClosee.IsNone() {
 
-			return ErrCloserAndClosee
+			return fmt.Errorf("local output is not dust "+
+				"but no valid sig field present: %w",
+				ErrCloserAndClosee)
 		}
 	}
 

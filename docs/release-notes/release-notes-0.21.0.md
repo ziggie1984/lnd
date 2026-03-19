@@ -74,6 +74,17 @@
   non-wumbo channel size (~0.168 BTC), with wumbo channels always requiring
   6 confirmations.
 
+* [Added taproot channel support for RBF cooperative
+  close](https://github.com/lightningnetwork/lnd/pull/10063). The new RBF-based
+  cooperative close protocol (enabled with `--protocol.rbf-coop-close`) now
+  fully supports simple taproot channels. This includes MuSig2 partial signature
+  handling with the JIT (just-in-time) nonce pattern, where closer nonces are
+  bundled with signatures in `ClosingComplete` and closee nonces are rotated via
+  `NextCloseeNonce` in `ClosingSig` for each RBF iteration. The implementation
+  prevents nonce reuse across RBF rounds by storing the `MusigPartialSig` in the
+  protocol state machine and invalidating nonces after each signing round
+  completes.
+
 ## RPC Additions
 
 * The `WaitingCloseChannel` response in `PendingChannels` now includes two

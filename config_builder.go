@@ -81,7 +81,7 @@ const (
 
 	// paymentMigration is the version number for the payments migration
 	// that migrates KV payments to the native SQL schema.
-	paymentMigration = 14
+	paymentMigration = 12
 )
 
 // GrpcRegistrar is an interface that must be satisfied by an external subserver

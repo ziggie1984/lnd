@@ -93,36 +93,36 @@ var (
 			// user if necessary.
 		},
 		{
-			Name:          "000009_graph_v2_columns",
+			Name:          "000009_payments",
 			Version:       11,
 			SchemaVersion: 9,
 		},
 		{
-			Name:          "000010_payments",
-			Version:       12,
-			SchemaVersion: 10,
-		},
-		{
-			Name:          "000011_payment_duplicates",
-			Version:       13,
-			SchemaVersion: 11,
-		},
-		{
 			Name:          "kv_payments_migration",
-			Version:       14,
-			SchemaVersion: 11,
+			Version:       12,
+			SchemaVersion: 9,
 			// A migration function may be attached to this
 			// migration to migrate KV payments to the native SQL
 			// schema. This is optional and can be disabled by the
 			// user if necessary.
 		},
 		{
-			Name:          "000012_drop_redundant_invoice_indexes",
+			Name:          "000010_payment_duplicates",
+			Version:       13,
+			SchemaVersion: 10,
+		},
+		{
+			Name:          "000011_drop_redundant_invoice_indexes",
+			Version:       14,
+			SchemaVersion: 11,
+		},
+		{
+			Name:          "000012_payments_index_improvements",
 			Version:       15,
 			SchemaVersion: 12,
 		},
 		{
-			Name:          "000013_payments_index_improvements",
+			Name:          "000013_graph_v2_columns",
 			Version:       16,
 			SchemaVersion: 13,
 		},

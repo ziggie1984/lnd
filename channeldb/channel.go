@@ -265,6 +265,13 @@ type openChannelTlvData struct {
 	// confirmationHeight records the block height at which the funding
 	// transaction was first confirmed.
 	confirmationHeight tlv.RecordT[tlv.TlvType8, uint32]
+
+	// closeConfirmationHeight records the block height at which the closing
+	// transaction was first confirmed. This is used to calculate the
+	// remaining confirmations until the channel is considered fully closed.
+	// Note: if not set, it means either the channel has not been
+	// closed yet, or it was closed before this field was introduced.
+	closeConfirmationHeight tlv.OptionalRecordT[tlv.TlvType9, uint32]
 }
 
 // encode serializes the openChannelTlvData to the given io.Writer.
@@ -287,6 +294,11 @@ func (c *openChannelTlvData) encode(w io.Writer) error {
 	c.customBlob.WhenSome(func(blob tlv.RecordT[tlv.TlvType7, tlv.Blob]) {
 		tlvRecords = append(tlvRecords, blob.Record())
 	})
+	c.closeConfirmationHeight.WhenSome(
+		func(h tlv.RecordT[tlv.TlvType9, uint32]) {
+			tlvRecords = append(tlvRecords, h.Record())
+		},
+	)
 
 	tlv.SortRecords(tlvRecords)
 
@@ -304,6 +316,7 @@ func (c *openChannelTlvData) decode(r io.Reader) error {
 	memo := c.memo.Zero()
 	tapscriptRoot := c.tapscriptRoot.Zero()
 	blob := c.customBlob.Zero()
+	closeConfHeight := c.closeConfirmationHeight.Zero()
 
 	// Create the tlv stream.
 	tlvStream, err := tlv.NewStream(
@@ -315,6 +328,7 @@ func (c *openChannelTlvData) decode(r io.Reader) error {
 		tapscriptRoot.Record(),
 		blob.Record(),
 		c.confirmationHeight.Record(),
+		closeConfHeight.Record(),
 	)
 	if err != nil {
 		return err
@@ -333,6 +347,9 @@ func (c *openChannelTlvData) decode(r io.Reader) error {
 	}
 	if _, ok := tlvs[c.customBlob.TlvType()]; ok {
 		c.customBlob = tlv.SomeRecordT(blob)
+	}
+	if _, ok := tlvs[closeConfHeight.TlvType()]; ok {
+		c.closeConfirmationHeight = tlv.SomeRecordT(closeConfHeight)
 	}
 
 	return nil
@@ -945,6 +962,14 @@ type OpenChannel struct {
 	// transaction was first confirmed.
 	ConfirmationHeight uint32
 
+	// CloseConfirmationHeight records the block height at which the closing
+	// transaction was first confirmed. This is used to track remaining
+	// confirmations until the channel is considered fully closed. It is
+	// None if the closing transaction has not yet been confirmed, or if
+	// this data was not available (e.g. channels closed before this
+	// field was introduced).
+	CloseConfirmationHeight fn.Option[uint32]
+
 	// NumConfsRequired is the number of confirmations a channel's funding
 	// transaction must have received in order to be considered available
 	// for normal transactional use.
@@ -1257,6 +1282,9 @@ func (c *OpenChannel) amendTlvData(auxData openChannelTlvData) {
 	auxData.customBlob.WhenSomeV(func(blob tlv.Blob) {
 		c.CustomBlob = fn.Some(blob)
 	})
+	auxData.closeConfirmationHeight.WhenSomeV(func(h uint32) {
+		c.CloseConfirmationHeight = fn.Some(h)
+	})
 }
 
 // extractTlvData creates a new openChannelTlvData from the given channel.
@@ -1292,6 +1320,11 @@ func (c *OpenChannel) extractTlvData() openChannelTlvData {
 	c.CustomBlob.WhenSome(func(blob tlv.Blob) {
 		auxData.customBlob = tlv.SomeRecordT(
 			tlv.NewPrimitiveRecord[tlv.TlvType7](blob),
+		)
+	})
+	c.CloseConfirmationHeight.WhenSome(func(h uint32) {
+		auxData.closeConfirmationHeight = tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType9](h),
 		)
 	})
 
@@ -1571,6 +1604,45 @@ func (c *OpenChannel) MarkConfirmationHeight(height uint32) error {
 	}
 
 	c.ConfirmationHeight = height
+
+	return nil
+}
+
+// ResetCloseConfirmationHeight clears the channel's close confirmation height
+// when the spending transaction is reorged out.
+func (c *OpenChannel) ResetCloseConfirmationHeight() error {
+	return c.MarkCloseConfirmationHeight(fn.None[uint32]())
+}
+
+// MarkCloseConfirmationHeight updates the channel's close confirmation height
+// when the closing transaction is first detected in a block (spend height).
+func (c *OpenChannel) MarkCloseConfirmationHeight(
+	height fn.Option[uint32]) error {
+
+	c.Lock()
+	defer c.Unlock()
+
+	if err := kvdb.Update(c.Db.backend, func(tx kvdb.RwTx) error {
+		chanBucket, err := fetchChanBucketRw(
+			tx, c.IdentityPub, &c.FundingOutpoint, c.ChainHash,
+		)
+		if err != nil {
+			return err
+		}
+
+		channel, err := fetchOpenChannel(chanBucket, &c.FundingOutpoint)
+		if err != nil {
+			return err
+		}
+
+		channel.CloseConfirmationHeight = height
+
+		return putOpenChannel(chanBucket, channel)
+	}, func() {}); err != nil {
+		return err
+	}
+
+	c.CloseConfirmationHeight = height
 
 	return nil
 }

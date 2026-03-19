@@ -1933,19 +1933,15 @@ func TestRbfChannelFlushingTransitions(t *testing.T) {
 	assertSpendEventCloseFin(t, startingState)
 }
 
-// testSendOfferRbfIterationLoop is a helper function that tests the RBF iteration
-// loop scenario for both taproot and non-taproot channels.
-func testSendOfferRbfIterationLoop(t *testing.T, closeTerms *CloseChannelTerms,
-	sendOfferEvent *SendOfferEvent, balanceAfterClose btcutil.Amount,
-	absoluteFee btcutil.Amount, isTaproot bool) {
+// testSendOfferRbfIterationLoopNonTap tests the RBF iteration loop for
+// non-taproot channels.
+func testSendOfferRbfIterationLoopNonTap(t *testing.T,
+	closeTerms *CloseChannelTerms,
+	sendOfferEvent *SendOfferEvent,
+	balanceAfterClose btcutil.Amount,
+	absoluteFee btcutil.Amount) {
 
-	testName := "non_taproot"
-	if isTaproot {
-		testName = "taproot"
-	}
-
-	t.Run(testName, func(t *testing.T) {
-		// Create starting state for the test
+	t.Run("non_taproot", func(t *testing.T) {
 		firstState := &ClosingNegotiation{
 			PeerState: lntypes.Dual[AsymmetricPeerState]{
 				Local: &LocalCloseStart{
@@ -1955,93 +1951,106 @@ func testSendOfferRbfIterationLoop(t *testing.T, closeTerms *CloseChannelTerms,
 			CloseChannelTerms: closeTerms,
 		}
 
-		// For taproot channels, set up nonce state
-		if isTaproot {
-			// Add nonce state to the close terms
-			firstState.CloseChannelTerms.NonceState = NonceState{
-				LocalCloseeNonce:  fn.Some(lnwire.Musig2Nonce{1, 2, 3}),
-				RemoteCloseeNonce: fn.Some(lnwire.Musig2Nonce{4, 5, 6}),
-			}
-			// Update the local state's close terms too
-			localState := firstState.PeerState.Local.(*LocalCloseStart)
-			localState.CloseChannelTerms.NonceState = firstState.CloseChannelTerms.NonceState
-		}
-
 		cfg := &harnessCfg{
-			initialState:     fn.Some[ProtocolState](firstState),
+			initialState: fn.Some[ProtocolState](
+				firstState,
+			),
 			localUpfrontAddr: fn.Some(localAddr),
-		}
-
-		// Set up musig sessions for taproot
-		if isTaproot {
-			mockLocalMusig := newMockMusigSession()
-			mockRemoteMusig := newMockMusigSession()
-			cfg.localMusigSession = fn.Some[MusigSession](mockLocalMusig)
-			cfg.remoteMusigSession = fn.Some[MusigSession](mockRemoteMusig)
 		}
 
 		closeHarness := newCloser(t, cfg)
 		defer closeHarness.stopAndAssert()
 
-		// We'll start out by first triggering a routine iteration,
-		// assuming we start in this negotiation state.
-		if isTaproot {
-			// For taproot, use the nonce-aware iteration with a dummy next closee nonce
-			nextCloseeNonce := lnwire.Musig2Nonce{7, 8, 9}
-			closeHarness.assertSingleRbfIterationWithNonce(
-				sendOfferEvent, balanceAfterClose, absoluteFee,
-				noDustExpect, false, nextCloseeNonce,
-			)
-		} else {
-			closeHarness.assertSingleRbfIteration(
-				sendOfferEvent, balanceAfterClose, absoluteFee,
-				noDustExpect, false,
-			)
-		}
+		closeHarness.assertSingleRbfIteration(
+			sendOfferEvent, balanceAfterClose, absoluteFee,
+			noDustExpect, false,
+		)
 
-		// Next, we'll send in a new SendOfferEvent event which
-		// simulates the user requesting a RBF fee bump. We'll use 10x
-		// the fee we used in the last iteration.
 		rbfFeeBump := chainfee.FeePerKwFloor.FeePerVByte() * 10
 		localOffer := &SendOfferEvent{
 			TargetFeeRate: rbfFeeBump,
 		}
 
-		// Now we expect that another full RBF iteration takes place (we
-		// initiate a new local sig).
-		if isTaproot {
-			// For taproot, use the nonce-aware iteration with a dummy next closee nonce
-			nextCloseeNonce := lnwire.Musig2Nonce{10, 11, 12}
-			closeHarness.assertSingleRbfIterationWithNonce(
-				localOffer, balanceAfterClose, absoluteFee,
-				noDustExpect, true, nextCloseeNonce,
-			)
-		} else {
-			closeHarness.assertSingleRbfIteration(
-				localOffer, balanceAfterClose, absoluteFee,
-				noDustExpect, true,
-			)
-		}
+		closeHarness.assertSingleRbfIteration(
+			localOffer, balanceAfterClose, absoluteFee,
+			noDustExpect, true,
+		)
 	})
 }
 
-// testRecvOfferRbfLoopIterations is a helper function that tests the receive offer
-// RBF loop iteration scenario for both taproot and non-taproot channels.
-func testRecvOfferRbfLoopIterations(t *testing.T, closeTerms *CloseChannelTerms,
-	absoluteFee btcutil.Amount, isTaproot bool) {
+func testSendOfferRbfIterationLoopTaproot(t *testing.T,
+	closeTerms *CloseChannelTerms,
+	sendOfferEvent *SendOfferEvent,
+	balanceAfterClose btcutil.Amount,
+	absoluteFee btcutil.Amount) {
 
-	testName := "non_taproot"
-	if isTaproot {
-		testName = "taproot"
-	}
+	t.Run("taproot", func(t *testing.T) {
+		firstState := &ClosingNegotiation{
+			PeerState: lntypes.Dual[AsymmetricPeerState]{
+				Local: &LocalCloseStart{
+					CloseChannelTerms: closeTerms,
+				},
+			},
+			CloseChannelTerms: closeTerms,
+		}
 
-	t.Run(testName, func(t *testing.T) {
-		// We'll modify our balance s.t we're unable to pay for fees,
-		// but aren't yet dust.
-		closingTerms := *closeTerms
-		closingTerms.ShutdownBalances.LocalBalance = lnwire.NewMSatFromSatoshis(
-			9000,
+		firstState.CloseChannelTerms.NonceState = NonceState{
+			LocalCloseeNonce: fn.Some(
+				lnwire.Musig2Nonce{1, 2, 3},
+			),
+			RemoteCloseeNonce: fn.Some(
+				lnwire.Musig2Nonce{4, 5, 6},
+			),
+		}
+		localState := firstState.PeerState.Local.(*LocalCloseStart) //nolint:ll
+		localState.CloseChannelTerms.NonceState =
+			firstState.CloseChannelTerms.NonceState
+
+		cfg := &harnessCfg{
+			initialState: fn.Some[ProtocolState](
+				firstState,
+			),
+			localUpfrontAddr: fn.Some(localAddr),
+			localMusigSession: fn.Some[MusigSession](
+				newMockMusigSession(),
+			),
+			remoteMusigSession: fn.Some[MusigSession](
+				newMockMusigSession(),
+			),
+		}
+
+		closeHarness := newCloser(t, cfg)
+		defer closeHarness.stopAndAssert()
+
+		closeHarness.assertSingleRbfIterationWithNonce(
+			sendOfferEvent, balanceAfterClose, absoluteFee,
+			noDustExpect, false,
+			lnwire.Musig2Nonce{7, 8, 9},
 		)
+
+		rbfFeeBump := chainfee.FeePerKwFloor.FeePerVByte() * 10
+		localOffer := &SendOfferEvent{
+			TargetFeeRate: rbfFeeBump,
+		}
+
+		closeHarness.assertSingleRbfIterationWithNonce(
+			localOffer, balanceAfterClose, absoluteFee,
+			noDustExpect, true,
+			lnwire.Musig2Nonce{10, 11, 12},
+		)
+	})
+}
+
+// testRecvOfferRbfLoopIterationsNonTap tests the receive offer RBF loop
+// iteration scenario for non-taproot channels.
+func testRecvOfferRbfLoopIterationsNonTap(t *testing.T,
+	closeTerms *CloseChannelTerms,
+	absoluteFee btcutil.Amount) {
+
+	t.Run("non_taproot", func(t *testing.T) {
+		closingTerms := *closeTerms
+		closingTerms.ShutdownBalances.LocalBalance =
+			lnwire.NewMSatFromSatoshis(9000)
 
 		firstState := &ClosingNegotiation{
 			PeerState: lntypes.Dual[AsymmetricPeerState]{
@@ -2055,165 +2064,226 @@ func testRecvOfferRbfLoopIterations(t *testing.T, closeTerms *CloseChannelTerms,
 			CloseChannelTerms: &closingTerms,
 		}
 
-		// For taproot channels, set up musig sessions and nonce state
-		var mockLocalMusig, mockRemoteMusig *mockMusigSession
-		if isTaproot {
-			// Add nonce state to the close terms
-			firstState.CloseChannelTerms.NonceState = NonceState{
-				LocalCloseeNonce:  fn.Some(lnwire.Musig2Nonce{1, 2, 3}),
-				RemoteCloseeNonce: fn.Some(lnwire.Musig2Nonce{4, 5, 6}),
-			}
-			// Update the local and remote state's close terms too
-			localState := firstState.PeerState.Local.(*LocalCloseStart)
-			localState.CloseChannelTerms.NonceState = firstState.CloseChannelTerms.NonceState
-			remoteState := firstState.PeerState.Remote.(*RemoteCloseStart)
-			remoteState.CloseChannelTerms.NonceState = firstState.CloseChannelTerms.NonceState
-		}
-
 		cfg := &harnessCfg{
-			initialState:     fn.Some[ProtocolState](firstState),
+			initialState: fn.Some[ProtocolState](
+				firstState,
+			),
 			localUpfrontAddr: fn.Some(localAddr),
-		}
-		if isTaproot {
-			mockLocalMusig = newMockMusigSession()
-			mockRemoteMusig = newMockMusigSession()
-			cfg.localMusigSession = fn.Some[MusigSession](mockLocalMusig)
-			cfg.remoteMusigSession = fn.Some[MusigSession](mockRemoteMusig)
 		}
 
 		closeHarness := newCloser(t, cfg)
 		defer closeHarness.stopAndAssert()
 
-		balanceAfterClose := closingTerms.ShutdownBalances.RemoteBalance.ToSatoshis() - absoluteFee
+		balanceAfterClose := closingTerms.ShutdownBalances.RemoteBalance.ToSatoshis() - absoluteFee //nolint:ll
 		sequence := uint32(mempool.MaxRBFSequence)
 
-		var feeOffer *OfferReceivedEvent
-		if isTaproot {
-			// For taproot, use TaprootClosingSigs with PartialSigWithNonce
-			feeOffer = &OfferReceivedEvent{
-				SigMsg: lnwire.ClosingComplete{
-					CloserScript: remoteAddr,
-					CloseeScript: localAddr,
-					FeeSatoshis:  absoluteFee,
-					LockTime:     1,
-					TaprootClosingSigs: lnwire.TaprootClosingSigs{
-						CloserAndClosee: newPartialSigWithNonceTlv[tlv.TlvType7](
-							lnwire.PartialSigWithNonce{
-								PartialSig: lnwire.PartialSig{
-									Sig: btcec.ModNScalar{},
-								},
-								Nonce: lnwire.Musig2Nonce{10, 11, 12}, // Next closer nonce
-							},
-						),
-					},
+		feeOffer := &OfferReceivedEvent{
+			SigMsg: lnwire.ClosingComplete{
+				CloserScript: remoteAddr,
+				CloseeScript: localAddr,
+				FeeSatoshis:  absoluteFee,
+				LockTime:     1,
+				ClosingSigs: lnwire.ClosingSigs{
+					CloserAndClosee: newSigTlv[tlv.TlvType3]( //nolint:ll
+						remoteWireSig,
+					),
 				},
-			}
-		} else {
-			// For non-taproot, use regular ClosingSigs
-			feeOffer = &OfferReceivedEvent{
-				SigMsg: lnwire.ClosingComplete{
-					CloserScript: remoteAddr,
-					CloseeScript: localAddr,
-					FeeSatoshis:  absoluteFee,
-					LockTime:     1,
-					ClosingSigs: lnwire.ClosingSigs{
-						CloserAndClosee: newSigTlv[tlv.TlvType3](
-							remoteWireSig,
-						),
-					},
-				},
-			}
+			},
 		}
 
-		// As we're already in the negotiation phase, we'll now trigger
-		// a new iteration by having the remote party send a new offer
-		// sig.
 		closeHarness.assertSingleRemoteRbfIteration(
-			feeOffer, balanceAfterClose, absoluteFee, sequence,
-			false, true,
+			feeOffer, balanceAfterClose, absoluteFee,
+			sequence, false, true,
 		)
 
-		// Next, we'll receive an offer from the remote party, and drive
-		// another RBF iteration. This time, we'll increase the absolute
-		// fee by 1k sats.
 		feeOffer.SigMsg.FeeSatoshis += 1000
 		absoluteFee = feeOffer.SigMsg.FeeSatoshis
 		closeHarness.assertSingleRemoteRbfIteration(
-			feeOffer, balanceAfterClose, absoluteFee, sequence,
-			true, true,
+			feeOffer, balanceAfterClose, absoluteFee,
+			sequence, true, true,
 		)
 
 		closeHarness.assertNoStateTransitions()
 	})
 }
 
-// testSendOfferIterationNoDust is a helper function that tests the send offer
-// iteration scenario for both taproot and non-taproot channels.
-func testSendOfferIterationNoDust(t *testing.T, startingState *ClosingNegotiation,
-	sendOfferEvent *SendOfferEvent, balanceAfterClose btcutil.Amount,
-	absoluteFee btcutil.Amount, isTaproot bool) {
+// testRecvOfferRbfLoopIterationsTaproot tests the receive offer RBF loop
+// iteration scenario for taproot channels.
+func testRecvOfferRbfLoopIterationsTaproot(t *testing.T,
+	closeTerms *CloseChannelTerms,
+	absoluteFee btcutil.Amount) {
 
-	testName := "non_taproot"
-	if isTaproot {
-		testName = "taproot"
-	}
+	t.Run("taproot", func(t *testing.T) {
+		closingTerms := *closeTerms
+		closingTerms.ShutdownBalances.LocalBalance =
+			lnwire.NewMSatFromSatoshis(9000)
 
-	t.Run(testName, func(t *testing.T) {
-		// For taproot channels, set up musig sessions and nonce state
-		var mockLocalMusig, mockRemoteMusig *mockMusigSession
-		nextCloseeNonce := lnwire.Musig2Nonce{7, 8, 9}
-
-		// Create a copy of startingState with nonce state for taproot.
-		testStartingState := *startingState
-		if isTaproot {
-			testStartingState.CloseChannelTerms.NonceState = NonceState{
-				LocalCloseeNonce:  fn.Some(lnwire.Musig2Nonce{1, 2, 3}),
-				RemoteCloseeNonce: fn.Some(lnwire.Musig2Nonce{4, 5, 6}),
-			}
-
-			localState := testStartingState.PeerState.Local.(*LocalCloseStart)
-			localState.CloseChannelTerms.NonceState = testStartingState.CloseChannelTerms.NonceState
+		firstState := &ClosingNegotiation{
+			PeerState: lntypes.Dual[AsymmetricPeerState]{
+				Local: &LocalCloseStart{
+					CloseChannelTerms: &closingTerms,
+				},
+				Remote: &RemoteCloseStart{
+					CloseChannelTerms: &closingTerms,
+				},
+			},
+			CloseChannelTerms: &closingTerms,
 		}
+
+		nonceState := NonceState{
+			LocalCloseeNonce: fn.Some(
+				lnwire.Musig2Nonce{1, 2, 3},
+			),
+			RemoteCloseeNonce: fn.Some(
+				lnwire.Musig2Nonce{4, 5, 6},
+			),
+		}
+		firstState.CloseChannelTerms.NonceState = nonceState
+
+		localState := firstState.PeerState.Local.(*LocalCloseStart) //nolint:ll
+		localState.CloseChannelTerms.NonceState = nonceState
+
+		remoteState := firstState.PeerState.Remote.(*RemoteCloseStart) //nolint:ll
+		remoteState.CloseChannelTerms.NonceState = nonceState
 
 		cfg := &harnessCfg{
-			initialState: fn.Some[ProtocolState](&testStartingState),
-		}
-		if isTaproot {
-			mockLocalMusig = newMockMusigSession()
-			mockRemoteMusig = newMockMusigSession()
-			cfg.localMusigSession = fn.Some[MusigSession](mockLocalMusig)
-			cfg.remoteMusigSession = fn.Some[MusigSession](mockRemoteMusig)
+			initialState: fn.Some[ProtocolState](
+				firstState,
+			),
+			localUpfrontAddr: fn.Some(localAddr),
+			localMusigSession: fn.Some[MusigSession](
+				newMockMusigSession(),
+			),
+			remoteMusigSession: fn.Some[MusigSession](
+				newMockMusigSession(),
+			),
 		}
 
 		closeHarness := newCloser(t, cfg)
 		defer closeHarness.stopAndAssert()
 
-		// We'll now send in the initial sender offer event, which
-		// should then trigger a single RBF iteration, ending at the
-		// pending state.
-		if isTaproot {
-			closeHarness.assertSingleRbfIterationWithNonce(
-				sendOfferEvent, balanceAfterClose, absoluteFee,
-				noDustExpect, false, nextCloseeNonce,
-			)
+		balanceAfterClose := closingTerms.ShutdownBalances.RemoteBalance.ToSatoshis() - absoluteFee //nolint:ll
+		sequence := uint32(mempool.MaxRBFSequence)
 
-			// Verify nonce state was updated with new closee nonce
-			currentState := assertStateT[*ClosingNegotiation](
-				closeHarness,
-			)
-			require.True(
-				t, currentState.CloseChannelTerms.NonceState.RemoteCloseeNonce.IsSome(),
-			)
-			require.Equal(
-				t, nextCloseeNonce,
-				currentState.CloseChannelTerms.NonceState.RemoteCloseeNonce.UnwrapOr(lnwire.Musig2Nonce{}),
-			)
-		} else {
-			closeHarness.assertSingleRbfIteration(
-				sendOfferEvent, balanceAfterClose, absoluteFee,
-				noDustExpect, false,
-			)
+		feeOffer := &OfferReceivedEvent{
+			SigMsg: lnwire.ClosingComplete{
+				CloserScript: remoteAddr,
+				CloseeScript: localAddr,
+				FeeSatoshis:  absoluteFee,
+				LockTime:     1,
+				TaprootClosingSigs: lnwire.TaprootClosingSigs{
+					CloserAndClosee: newPartialSigWithNonceTlv[tlv.TlvType7]( //nolint:ll
+						lnwire.PartialSigWithNonce{
+							PartialSig: lnwire.PartialSig{
+								Sig: btcec.ModNScalar{},
+							},
+							Nonce: lnwire.Musig2Nonce{10, 11, 12},
+						},
+					),
+				},
+			},
 		}
+
+		closeHarness.assertSingleRemoteRbfIteration(
+			feeOffer, balanceAfterClose, absoluteFee,
+			sequence, false, true,
+		)
+
+		feeOffer.SigMsg.FeeSatoshis += 1000
+		absoluteFee = feeOffer.SigMsg.FeeSatoshis
+		closeHarness.assertSingleRemoteRbfIteration(
+			feeOffer, balanceAfterClose, absoluteFee,
+			sequence, true, true,
+		)
+
+		closeHarness.assertNoStateTransitions()
+	})
+}
+
+// testSendOfferIterationNoDustNonTap tests the send offer iteration
+// scenario for non-taproot channels.
+func testSendOfferIterationNoDustNonTap(t *testing.T,
+	startingState *ClosingNegotiation,
+	sendOfferEvent *SendOfferEvent,
+	balanceAfterClose btcutil.Amount,
+	absoluteFee btcutil.Amount) {
+
+	t.Run("non_taproot", func(t *testing.T) {
+		testStartingState := *startingState
+
+		cfg := &harnessCfg{
+			initialState: fn.Some[ProtocolState](
+				&testStartingState,
+			),
+		}
+
+		closeHarness := newCloser(t, cfg)
+		defer closeHarness.stopAndAssert()
+
+		closeHarness.assertSingleRbfIteration(
+			sendOfferEvent, balanceAfterClose, absoluteFee,
+			noDustExpect, false,
+		)
+	})
+}
+
+// testSendOfferIterationNoDustTaproot tests the send offer iteration
+// scenario for taproot channels.
+func testSendOfferIterationNoDustTaproot(t *testing.T,
+	startingState *ClosingNegotiation,
+	sendOfferEvent *SendOfferEvent,
+	balanceAfterClose btcutil.Amount,
+	absoluteFee btcutil.Amount) {
+
+	t.Run("taproot", func(t *testing.T) {
+		nextCloseeNonce := lnwire.Musig2Nonce{7, 8, 9}
+
+		testStartingState := *startingState
+		testStartingState.CloseChannelTerms.NonceState = NonceState{
+			LocalCloseeNonce: fn.Some(
+				lnwire.Musig2Nonce{1, 2, 3},
+			),
+			RemoteCloseeNonce: fn.Some(
+				lnwire.Musig2Nonce{4, 5, 6},
+			),
+		}
+
+		localState := testStartingState.PeerState.Local.(*LocalCloseStart) //nolint:ll
+		localState.CloseChannelTerms.NonceState =
+			testStartingState.CloseChannelTerms.NonceState
+
+		cfg := &harnessCfg{
+			initialState: fn.Some[ProtocolState](
+				&testStartingState,
+			),
+			localMusigSession: fn.Some[MusigSession](
+				newMockMusigSession(),
+			),
+			remoteMusigSession: fn.Some[MusigSession](
+				newMockMusigSession(),
+			),
+		}
+
+		closeHarness := newCloser(t, cfg)
+		defer closeHarness.stopAndAssert()
+
+		closeHarness.assertSingleRbfIterationWithNonce(
+			sendOfferEvent, balanceAfterClose, absoluteFee,
+			noDustExpect, false, nextCloseeNonce,
+		)
+
+		// Verify nonce state was updated with new closee nonce.
+		currentState := assertStateT[*ClosingNegotiation](
+			closeHarness,
+		)
+		require.True(
+			t,
+			currentState.CloseChannelTerms.NonceState.RemoteCloseeNonce.IsSome(), //nolint:ll
+		)
+		require.Equal(
+			t, nextCloseeNonce,
+			currentState.CloseChannelTerms.NonceState.RemoteCloseeNonce.UnwrapOr(lnwire.Musig2Nonce{}), //nolint:ll
+		)
 	})
 }
 
@@ -2260,13 +2330,13 @@ func TestRbfCloseClosingNegotiationLocal(t *testing.T) {
 	// In this state, we'll simulate deciding that we need to send a new
 	// offer to the remote party.
 	t.Run("send_offer_iteration_no_dust", func(t *testing.T) {
-		testSendOfferIterationNoDust(
-			t, startingState, sendOfferEvent, balanceAfterClose,
-			absoluteFee, false,
+		testSendOfferIterationNoDustNonTap(
+			t, startingState, sendOfferEvent,
+			balanceAfterClose, absoluteFee,
 		)
-		testSendOfferIterationNoDust(
-			t, startingState, sendOfferEvent, balanceAfterClose,
-			absoluteFee, true,
+		testSendOfferIterationNoDustTaproot(
+			t, startingState, sendOfferEvent,
+			balanceAfterClose, absoluteFee,
 		)
 	})
 
@@ -2406,14 +2476,13 @@ func TestRbfCloseClosingNegotiationLocal(t *testing.T) {
 	// In this test, we'll assert that we're able to restart the RBF loop
 	// to trigger additional signature iterations.
 	t.Run("send_offer_rbf_iteration_loop", func(t *testing.T) {
-		// Test both non-taproot and taproot channels
-		testSendOfferRbfIterationLoop(
-			t, closeTerms, sendOfferEvent, balanceAfterClose,
-			absoluteFee, false,
+		testSendOfferRbfIterationLoopNonTap(
+			t, closeTerms, sendOfferEvent,
+			balanceAfterClose, absoluteFee,
 		)
-		testSendOfferRbfIterationLoop(
-			t, closeTerms, sendOfferEvent, balanceAfterClose,
-			absoluteFee, true,
+		testSendOfferRbfIterationLoopTaproot(
+			t, closeTerms, sendOfferEvent,
+			balanceAfterClose, absoluteFee,
 		)
 	})
 
@@ -2734,9 +2803,12 @@ func TestRbfCloseClosingNegotiationRemote(t *testing.T) {
 	// loops to enable the remote party to sign.new versions of the co-op
 	// close transaction.
 	t.Run("recv_offer_rbf_loop_iterations", func(t *testing.T) {
-		// Test both non-taproot and taproot channels.
-		testRecvOfferRbfLoopIterations(t, closeTerms, absoluteFee, false)
-		testRecvOfferRbfLoopIterations(t, closeTerms, absoluteFee, true)
+		testRecvOfferRbfLoopIterationsNonTap(
+			t, closeTerms, absoluteFee,
+		)
+		testRecvOfferRbfLoopIterationsTaproot(
+			t, closeTerms, absoluteFee,
+		)
 	})
 
 	// This tests that if we get an offer that has the wrong local script,

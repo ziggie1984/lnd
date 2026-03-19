@@ -91,6 +91,7 @@ type Querier interface {
 	// See FilterInvoicesForward for the expected Go-side defaults.
 	FilterInvoicesReverse(ctx context.Context, arg FilterInvoicesReverseParams) ([]Invoice, error)
 	FilterPayments(ctx context.Context, arg FilterPaymentsParams) ([]FilterPaymentsRow, error)
+	FilterPaymentsDesc(ctx context.Context, arg FilterPaymentsDescParams) ([]FilterPaymentsDescRow, error)
 	GetAMPInvoiceID(ctx context.Context, setID []byte) (int64, error)
 	GetChannelAndNodesBySCID(ctx context.Context, arg GetChannelAndNodesBySCIDParams) (GetChannelAndNodesBySCIDRow, error)
 	GetChannelByOutpointWithPolicies(ctx context.Context, arg GetChannelByOutpointWithPoliciesParams) (GetChannelByOutpointWithPoliciesRow, error)

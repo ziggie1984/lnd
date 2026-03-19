@@ -299,11 +299,16 @@ func RandTLVRecords(t *rapid.T, ignoreRecords fn.Set[uint64],
 	return customRecords, ignoreSet
 }
 
-// RandMusig2Nonce generates a random musig2 nonce.
+// RandMusig2Nonce generates a random musig2 nonce containing two valid
+// compressed secp256k1 public keys.
 func RandMusig2Nonce(t *rapid.T) Musig2Nonce {
+	// A MuSig2 public nonce is two 33-byte compressed public keys.
+	pub1 := RandPubKey(t)
+	pub2 := RandPubKey(t)
+
 	var nonce Musig2Nonce
-	bytes := rapid.SliceOfN(rapid.Byte(), 32, 32).Draw(t, "nonce")
-	copy(nonce[:], bytes)
+	copy(nonce[:33], pub1.SerializeCompressed())
+	copy(nonce[33:], pub2.SerializeCompressed())
 
 	return nonce
 }

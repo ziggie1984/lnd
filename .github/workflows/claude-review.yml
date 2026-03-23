@@ -15,34 +15,49 @@ on:
 jobs:
   review:
     if: |
-      github.event.issue.pull_request != null &&
       (
-        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude review')) ||
-        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude review'))
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@claude review')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude review')) ||
+        github.event_name == 'workflow_dispatch'
       )
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
       issues: write
-      id-token: write
-      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 50
 
+      - name: Checkout PR branch (fork-safe)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ inputs.pr_number }}"
+          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
+            PR_NUMBER="${{ github.event.issue.number }}"
+          else
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          fi
+          gh pr checkout "$PR_NUMBER"
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+
       - name: Fetch agent-skills
         run: |
           git clone --depth=1 https://github.com/lightninglabs/agent-skills /tmp/agent-skills
+          mkdir -p .claude/commands .claude/skills
+          cp /tmp/agent-skills/commands/code-review.md .claude/commands/
           cp -r /tmp/agent-skills/skills/differential-review .claude/skills/
 
-      - name: Run Claude Review
-        uses: anthropics/claude-code-action@c9a05208bd8e9f434af6a50011d3fbd091b2d4d2
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          prompt: "/differential-review"
-          additional_permissions: |
-            actions: read
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run code review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          claude -p "/code-review $PR_NUMBER" --output-format text

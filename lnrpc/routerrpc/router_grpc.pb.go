@@ -19,6 +19,7 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RouterClient interface {
+	// lncli: `sendpayment`
 	// SendPaymentV2 attempts to route a payment described by the passed
 	// PaymentRequest to the final destination. The call returns a stream of
 	// payment updates. When using this RPC, make sure to set a fee limit, as the
@@ -37,6 +38,7 @@ type RouterClient interface {
 	// payment attempt make sure to subscribe to this method before initiating any
 	// payments.
 	TrackPayments(ctx context.Context, in *TrackPaymentsRequest, opts ...grpc.CallOption) (Router_TrackPaymentsClient, error)
+	// lncli: `estimateroutefee`
 	// EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
 	// may cost to send an HTLC to the target end destination.
 	EstimateRouteFee(ctx context.Context, in *RouteFeeRequest, opts ...grpc.CallOption) (*RouteFeeResponse, error)
@@ -48,6 +50,7 @@ type RouterClient interface {
 	// things like rebalancing, and atomic swaps. It differs from the newer
 	// SendToRouteV2 in that it doesn't return the full HTLC information.
 	SendToRoute(ctx context.Context, in *SendToRouteRequest, opts ...grpc.CallOption) (*SendToRouteResponse, error)
+	// lncli: `sendtoroute`
 	// SendToRouteV2 attempts to make a payment via the specified route. This
 	// method differs from SendPayment in that it allows users to specify a full
 	// route manually. This can be used for things like rebalancing, and atomic
@@ -497,6 +500,7 @@ func (c *routerClient) XFindBaseLocalChanAlias(ctx context.Context, in *FindBase
 // All implementations must embed UnimplementedRouterServer
 // for forward compatibility
 type RouterServer interface {
+	// lncli: `sendpayment`
 	// SendPaymentV2 attempts to route a payment described by the passed
 	// PaymentRequest to the final destination. The call returns a stream of
 	// payment updates. When using this RPC, make sure to set a fee limit, as the
@@ -515,6 +519,7 @@ type RouterServer interface {
 	// payment attempt make sure to subscribe to this method before initiating any
 	// payments.
 	TrackPayments(*TrackPaymentsRequest, Router_TrackPaymentsServer) error
+	// lncli: `estimateroutefee`
 	// EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
 	// may cost to send an HTLC to the target end destination.
 	EstimateRouteFee(context.Context, *RouteFeeRequest) (*RouteFeeResponse, error)
@@ -526,6 +531,7 @@ type RouterServer interface {
 	// things like rebalancing, and atomic swaps. It differs from the newer
 	// SendToRouteV2 in that it doesn't return the full HTLC information.
 	SendToRoute(context.Context, *SendToRouteRequest) (*SendToRouteResponse, error)
+	// lncli: `sendtoroute`
 	// SendToRouteV2 attempts to make a payment via the specified route. This
 	// method differs from SendPayment in that it allows users to specify a full
 	// route manually. This can be used for things like rebalancing, and atomic

@@ -173,6 +173,14 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string,
 		"-debuglogfile=" + logFile,
 		"-blockfilterindex",
 		"-peerblockfilters",
+		// Disable v2 transport since the miner is btcd, which
+		// doesn't support v2 yet. Without this, bitcoind
+		// attempts a v2 handshake that hangs for 30s before
+		// falling back to v1, causing test flakes whenever a
+		// test reconnects to the miner under a timeout.
+		//
+		// TODO: Remove once btcd supports v2 P2P transport.
+		"-v2transport=0",
 	}
 	cmdArgs = append(cmdArgs, extraArgs...)
 	bitcoind := exec.Command("bitcoind", cmdArgs...)

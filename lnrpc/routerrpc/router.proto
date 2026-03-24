@@ -27,7 +27,7 @@ option go_package = "github.com/lightningnetwork/lnd/lnrpc/routerrpc";
 // Router is a service that offers advanced interaction with the router
 // subsystem of the daemon.
 service Router {
-    /*
+    /* lncli: `sendpayment`
     SendPaymentV2 attempts to route a payment described by the passed
     PaymentRequest to the final destination. The call returns a stream of
     payment updates. When using this RPC, make sure to set a fee limit, as the
@@ -53,7 +53,7 @@ service Router {
     */
     rpc TrackPayments (TrackPaymentsRequest) returns (stream lnrpc.Payment);
 
-    /*
+    /* lncli: `estimateroutefee`
     EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
     may cost to send an HTLC to the target end destination.
     */
@@ -70,7 +70,7 @@ service Router {
         option deprecated = true;
     }
 
-    /*
+    /* lncli: `sendtoroute`
     SendToRouteV2 attempts to make a payment via the specified route. This
     method differs from SendPayment in that it allows users to specify a full
     route manually. This can be used for things like rebalancing, and atomic

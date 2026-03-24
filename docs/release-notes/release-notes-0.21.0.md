@@ -303,6 +303,12 @@
 
 ## Tooling and Documentation
 
+* [Added missing `lncli:` tags](https://github.com/lightningnetwork/lnd/pull/10658)
+  for `SendPaymentV2`, `SendToRouteV2`, and `EstimateRouteFee` in the
+  `routerrpc` proto definitions so that the generated API documentation
+  correctly links to their corresponding `lncli` commands (`sendpayment`,
+  `sendtoroute`, `estimateroutefee`).
+
 * [Overhauled Docker documentation and environment](https://github.com/lightningnetwork/lnd/pull/10461)
   to modernize the developer onboarding flow. Key updates include migrating 
   to Docker Compose V2, updating base images (btcd v0.25.0, Go 1.25.5), 
@@ -320,4 +326,5 @@
 * Mohamed Awnallah
 * Nishant Bansal
 * Pins
+* Suheb
 * Ziggie

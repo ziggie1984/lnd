@@ -326,7 +326,7 @@
     },
     "/v2/router/route/estimatefee": {
       "post": {
-        "summary": "EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it\nmay cost to send an HTLC to the target end destination.",
+        "summary": "lncli: `estimateroutefee`\nEstimateRouteFee allows callers to obtain a lower bound w.r.t how much it\nmay cost to send an HTLC to the target end destination.",
         "operationId": "Router_EstimateRouteFee",
         "responses": {
           "200": {
@@ -359,7 +359,7 @@
     },
     "/v2/router/route/send": {
       "post": {
-        "summary": "SendToRouteV2 attempts to make a payment via the specified route. This\nmethod differs from SendPayment in that it allows users to specify a full\nroute manually. This can be used for things like rebalancing, and atomic\nswaps.",
+        "summary": "lncli: `sendtoroute`\nSendToRouteV2 attempts to make a payment via the specified route. This\nmethod differs from SendPayment in that it allows users to specify a full\nroute manually. This can be used for things like rebalancing, and atomic\nswaps.",
         "operationId": "Router_SendToRouteV2",
         "responses": {
           "200": {
@@ -392,7 +392,7 @@
     },
     "/v2/router/send": {
       "post": {
-        "summary": "SendPaymentV2 attempts to route a payment described by the passed\nPaymentRequest to the final destination. The call returns a stream of\npayment updates. When using this RPC, make sure to set a fee limit, as the\ndefault routing fee limit is 0 sats. Without a non-zero fee limit only\nroutes without fees will be attempted which often fails with\nFAILURE_REASON_NO_ROUTE.",
+        "summary": "lncli: `sendpayment`\nSendPaymentV2 attempts to route a payment described by the passed\nPaymentRequest to the final destination. The call returns a stream of\npayment updates. When using this RPC, make sure to set a fee limit, as the\ndefault routing fee limit is 0 sats. Without a non-zero fee limit only\nroutes without fees will be attempted which often fails with\nFAILURE_REASON_NO_ROUTE.",
         "operationId": "Router_SendPaymentV2",
         "responses": {
           "200": {

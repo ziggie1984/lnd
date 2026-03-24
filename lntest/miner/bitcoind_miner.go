@@ -163,6 +163,13 @@ func (b *BitcoindMinerBackend) Start(setupChain bool,
 		"-debuglogfile=" + logFile,
 		// Set fallback fee for transaction creation.
 		"-fallbackfee=0.00001",
+		// Disable v2 transport since this backend may peer with
+		// btcd nodes that don't support v2 yet. Without this,
+		// bitcoind attempts a v2 handshake that hangs for 30s
+		// before falling back to v1.
+		//
+		// TODO: Remove once btcd supports v2 P2P transport.
+		"-v2transport=0",
 	}
 
 	cmdArgs = append(cmdArgs, b.extraArgs...)

@@ -2036,9 +2036,7 @@ func (s *Server) DeleteForwardingHistory(ctx context.Context,
 			minAge, deleteBeforeTime, now)
 	}
 
-	// Default batch size is 10000, will be replaces by a config value in
-	// later commit.
-	batchSize := 10000
+	batchSize := s.cfg.RouterBackend.FwdHistoryDeleteBatchSize
 
 	log.Infof("DeleteForwardingHistory: deleting events at or before %v "+
 		"with batch size %d", deleteBeforeTime, batchSize)

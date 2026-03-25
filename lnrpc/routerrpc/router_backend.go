@@ -138,6 +138,12 @@ type RouterBackend struct {
 	// have before it can be deleted. If zero the handler defaults to 1
 	// hour.
 	MinForwardingHistoryAge time.Duration
+
+	// FwdHistoryDeleteBatchSize is the number of forwarding events deleted
+	// per database transaction. If zero the DB layer applies its own
+	// default (10 000). Exposed here so operators can tune the value via
+	// lnd.conf on resource-constrained nodes.
+	FwdHistoryDeleteBatchSize int
 }
 
 // ForwardingLogDB defines the interface for forwarding log database operations.

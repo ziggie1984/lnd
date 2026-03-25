@@ -57,4 +57,7 @@ http:
     - selector: routerrpc.Router.XFindBaseLocalChanAlias
       post: "/v2/router/x/findbasealias"
       body: "*"
+    - selector: routerrpc.Router.DeleteForwardingHistory
+      post: "/v2/router/fwdhistory/delete"
+      body: "*"
 

@@ -3627,6 +3627,166 @@ func (x *FindBaseAliasResponse) GetBase() uint64 {
 	return 0
 }
 
+type DeleteForwardingHistoryRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Specify the cutoff time for deletion using one of the following options.
+	// Events with a timestamp at or before the cutoff are deleted.
+	//
+	// Types that are valid to be assigned to TimeSpec:
+	//
+	//	*DeleteForwardingHistoryRequest_DeleteBeforeTime
+	//	*DeleteForwardingHistoryRequest_DeleteBeforeDuration
+	TimeSpec      isDeleteForwardingHistoryRequest_TimeSpec `protobuf_oneof:"time_spec"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteForwardingHistoryRequest) Reset() {
+	*x = DeleteForwardingHistoryRequest{}
+	mi := &file_routerrpc_router_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteForwardingHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteForwardingHistoryRequest) ProtoMessage() {}
+
+func (x *DeleteForwardingHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_routerrpc_router_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteForwardingHistoryRequest.ProtoReflect.Descriptor instead.
+func (*DeleteForwardingHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_routerrpc_router_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *DeleteForwardingHistoryRequest) GetTimeSpec() isDeleteForwardingHistoryRequest_TimeSpec {
+	if x != nil {
+		return x.TimeSpec
+	}
+	return nil
+}
+
+func (x *DeleteForwardingHistoryRequest) GetDeleteBeforeTime() uint64 {
+	if x != nil {
+		if x, ok := x.TimeSpec.(*DeleteForwardingHistoryRequest_DeleteBeforeTime); ok {
+			return x.DeleteBeforeTime
+		}
+	}
+	return 0
+}
+
+func (x *DeleteForwardingHistoryRequest) GetDeleteBeforeDuration() string {
+	if x != nil {
+		if x, ok := x.TimeSpec.(*DeleteForwardingHistoryRequest_DeleteBeforeDuration); ok {
+			return x.DeleteBeforeDuration
+		}
+	}
+	return ""
+}
+
+type isDeleteForwardingHistoryRequest_TimeSpec interface {
+	isDeleteForwardingHistoryRequest_TimeSpec()
+}
+
+type DeleteForwardingHistoryRequest_DeleteBeforeTime struct {
+	// Absolute Unix timestamp (seconds). Events at or before this time
+	// are deleted.
+	DeleteBeforeTime uint64 `protobuf:"varint,1,opt,name=delete_before_time,json=deleteBeforeTime,proto3,oneof"`
+}
+
+type DeleteForwardingHistoryRequest_DeleteBeforeDuration struct {
+	// Relative duration string indicating how far back to delete, e.g.
+	// "-30d" deletes events at or before 30 days ago.
+	// Standard Go: "-24h", "-1.5h"
+	// Custom units: "-1d", "-1w", "-1M", "-1y"
+	// Supported: ns, us/µs, ms, s, m, h, d (days), w (weeks),
+	// M (months=30.44d), y (years=365.25d).
+	// Use negative values to specify time in the past.
+	DeleteBeforeDuration string `protobuf:"bytes,2,opt,name=delete_before_duration,json=deleteBeforeDuration,proto3,oneof"`
+}
+
+func (*DeleteForwardingHistoryRequest_DeleteBeforeTime) isDeleteForwardingHistoryRequest_TimeSpec() {}
+
+func (*DeleteForwardingHistoryRequest_DeleteBeforeDuration) isDeleteForwardingHistoryRequest_TimeSpec() {
+}
+
+type DeleteForwardingHistoryResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Number of forwarding events deleted.
+	EventsDeleted uint64 `protobuf:"varint,1,opt,name=events_deleted,json=eventsDeleted,proto3" json:"events_deleted,omitempty"`
+	// Total fees earned from deleted events (in millisatoshis).
+	// This is the sum of (amt_in - amt_out) for all deleted events, which
+	// can be used for accounting purposes.
+	TotalFeeMsat int64 `protobuf:"varint,2,opt,name=total_fee_msat,json=totalFeeMsat,proto3" json:"total_fee_msat,omitempty"`
+	// Status message.
+	Status        string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteForwardingHistoryResponse) Reset() {
+	*x = DeleteForwardingHistoryResponse{}
+	mi := &file_routerrpc_router_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteForwardingHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteForwardingHistoryResponse) ProtoMessage() {}
+
+func (x *DeleteForwardingHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_routerrpc_router_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteForwardingHistoryResponse.ProtoReflect.Descriptor instead.
+func (*DeleteForwardingHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_routerrpc_router_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *DeleteForwardingHistoryResponse) GetEventsDeleted() uint64 {
+	if x != nil {
+		return x.EventsDeleted
+	}
+	return 0
+}
+
+func (x *DeleteForwardingHistoryResponse) GetTotalFeeMsat() int64 {
+	if x != nil {
+		return x.TotalFeeMsat
+	}
+	return 0
+}
+
+func (x *DeleteForwardingHistoryResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 var File_routerrpc_router_proto protoreflect.FileDescriptor
 
 const file_routerrpc_router_proto_rawDesc = "" +
@@ -3867,7 +4027,15 @@ const file_routerrpc_router_proto_rawDesc = "" +
 	"\x14FindBaseAliasRequest\x12\x14\n" +
 	"\x05alias\x18\x01 \x01(\x04R\x05alias\"+\n" +
 	"\x15FindBaseAliasResponse\x12\x12\n" +
-	"\x04base\x18\x01 \x01(\x04R\x04base*\x85\x05\n" +
+	"\x04base\x18\x01 \x01(\x04R\x04base\"\x95\x01\n" +
+	"\x1eDeleteForwardingHistoryRequest\x12.\n" +
+	"\x12delete_before_time\x18\x01 \x01(\x04H\x00R\x10deleteBeforeTime\x126\n" +
+	"\x16delete_before_duration\x18\x02 \x01(\tH\x00R\x14deleteBeforeDurationB\v\n" +
+	"\ttime_spec\"\x86\x01\n" +
+	"\x1fDeleteForwardingHistoryResponse\x12%\n" +
+	"\x0eevents_deleted\x18\x01 \x01(\x04R\reventsDeleted\x12$\n" +
+	"\x0etotal_fee_msat\x18\x02 \x01(\x03R\ftotalFeeMsat\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status*\x85\x05\n" +
 	"\rFailureDetail\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\r\n" +
 	"\tNO_DETAIL\x10\x01\x12\x10\n" +
@@ -3917,7 +4085,7 @@ const file_routerrpc_router_proto_rawDesc = "" +
 	"\n" +
 	"\x06ENABLE\x10\x00\x12\v\n" +
 	"\aDISABLE\x10\x01\x12\b\n" +
-	"\x04AUTO\x10\x022\xc6\x0e\n" +
+	"\x04AUTO\x10\x022\xb8\x0f\n" +
 	"\x06Router\x12@\n" +
 	"\rSendPaymentV2\x12\x1d.routerrpc.SendPaymentRequest\x1a\x0e.lnrpc.Payment0\x01\x12B\n" +
 	"\x0eTrackPaymentV2\x12\x1e.routerrpc.TrackPaymentRequest\x1a\x0e.lnrpc.Payment0\x01\x12B\n" +
@@ -3940,7 +4108,8 @@ const file_routerrpc_router_proto_rawDesc = "" +
 	"\x10UpdateChanStatus\x12\".routerrpc.UpdateChanStatusRequest\x1a#.routerrpc.UpdateChanStatusResponse\x12S\n" +
 	"\x14XAddLocalChanAliases\x12\x1c.routerrpc.AddAliasesRequest\x1a\x1d.routerrpc.AddAliasesResponse\x12\\\n" +
 	"\x17XDeleteLocalChanAliases\x12\x1f.routerrpc.DeleteAliasesRequest\x1a .routerrpc.DeleteAliasesResponse\x12\\\n" +
-	"\x17XFindBaseLocalChanAlias\x12\x1f.routerrpc.FindBaseAliasRequest\x1a .routerrpc.FindBaseAliasResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/routerrpcb\x06proto3"
+	"\x17XFindBaseLocalChanAlias\x12\x1f.routerrpc.FindBaseAliasRequest\x1a .routerrpc.FindBaseAliasResponse\x12p\n" +
+	"\x17DeleteForwardingHistory\x12).routerrpc.DeleteForwardingHistoryRequest\x1a*.routerrpc.DeleteForwardingHistoryResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/routerrpcb\x06proto3"
 
 var (
 	file_routerrpc_router_proto_rawDescOnce sync.Once
@@ -3955,7 +4124,7 @@ func file_routerrpc_router_proto_rawDescGZIP() []byte {
 }
 
 var file_routerrpc_router_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_routerrpc_router_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
+var file_routerrpc_router_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
 var file_routerrpc_router_proto_goTypes = []any{
 	(FailureDetail)(0),                         // 0: routerrpc.FailureDetail
 	(PaymentState)(0),                          // 1: routerrpc.PaymentState
@@ -4010,33 +4179,35 @@ var file_routerrpc_router_proto_goTypes = []any{
 	(*DeleteAliasesResponse)(nil),              // 50: routerrpc.DeleteAliasesResponse
 	(*FindBaseAliasRequest)(nil),               // 51: routerrpc.FindBaseAliasRequest
 	(*FindBaseAliasResponse)(nil),              // 52: routerrpc.FindBaseAliasResponse
-	nil,                                        // 53: routerrpc.SendPaymentRequest.DestCustomRecordsEntry
-	nil,                                        // 54: routerrpc.SendPaymentRequest.FirstHopCustomRecordsEntry
-	nil,                                        // 55: routerrpc.SendToRouteRequest.FirstHopCustomRecordsEntry
-	nil,                                        // 56: routerrpc.BuildRouteRequest.FirstHopCustomRecordsEntry
-	nil,                                        // 57: routerrpc.ForwardHtlcInterceptRequest.CustomRecordsEntry
-	nil,                                        // 58: routerrpc.ForwardHtlcInterceptRequest.InWireCustomRecordsEntry
-	nil,                                        // 59: routerrpc.ForwardHtlcInterceptResponse.OutWireCustomRecordsEntry
-	(*lnrpc.RouteHint)(nil),                    // 60: lnrpc.RouteHint
-	(lnrpc.FeatureBit)(0),                      // 61: lnrpc.FeatureBit
-	(lnrpc.PaymentFailureReason)(0),            // 62: lnrpc.PaymentFailureReason
-	(*lnrpc.Route)(nil),                        // 63: lnrpc.Route
-	(*lnrpc.Failure)(nil),                      // 64: lnrpc.Failure
-	(lnrpc.Failure_FailureCode)(0),             // 65: lnrpc.Failure.FailureCode
-	(*lnrpc.HTLCAttempt)(nil),                  // 66: lnrpc.HTLCAttempt
-	(*lnrpc.ChannelPoint)(nil),                 // 67: lnrpc.ChannelPoint
-	(*lnrpc.AliasMap)(nil),                     // 68: lnrpc.AliasMap
-	(*lnrpc.Payment)(nil),                      // 69: lnrpc.Payment
+	(*DeleteForwardingHistoryRequest)(nil),     // 53: routerrpc.DeleteForwardingHistoryRequest
+	(*DeleteForwardingHistoryResponse)(nil),    // 54: routerrpc.DeleteForwardingHistoryResponse
+	nil,                                        // 55: routerrpc.SendPaymentRequest.DestCustomRecordsEntry
+	nil,                                        // 56: routerrpc.SendPaymentRequest.FirstHopCustomRecordsEntry
+	nil,                                        // 57: routerrpc.SendToRouteRequest.FirstHopCustomRecordsEntry
+	nil,                                        // 58: routerrpc.BuildRouteRequest.FirstHopCustomRecordsEntry
+	nil,                                        // 59: routerrpc.ForwardHtlcInterceptRequest.CustomRecordsEntry
+	nil,                                        // 60: routerrpc.ForwardHtlcInterceptRequest.InWireCustomRecordsEntry
+	nil,                                        // 61: routerrpc.ForwardHtlcInterceptResponse.OutWireCustomRecordsEntry
+	(*lnrpc.RouteHint)(nil),                    // 62: lnrpc.RouteHint
+	(lnrpc.FeatureBit)(0),                      // 63: lnrpc.FeatureBit
+	(lnrpc.PaymentFailureReason)(0),            // 64: lnrpc.PaymentFailureReason
+	(*lnrpc.Route)(nil),                        // 65: lnrpc.Route
+	(*lnrpc.Failure)(nil),                      // 66: lnrpc.Failure
+	(lnrpc.Failure_FailureCode)(0),             // 67: lnrpc.Failure.FailureCode
+	(*lnrpc.HTLCAttempt)(nil),                  // 68: lnrpc.HTLCAttempt
+	(*lnrpc.ChannelPoint)(nil),                 // 69: lnrpc.ChannelPoint
+	(*lnrpc.AliasMap)(nil),                     // 70: lnrpc.AliasMap
+	(*lnrpc.Payment)(nil),                      // 71: lnrpc.Payment
 }
 var file_routerrpc_router_proto_depIdxs = []int32{
-	60, // 0: routerrpc.SendPaymentRequest.route_hints:type_name -> lnrpc.RouteHint
-	53, // 1: routerrpc.SendPaymentRequest.dest_custom_records:type_name -> routerrpc.SendPaymentRequest.DestCustomRecordsEntry
-	61, // 2: routerrpc.SendPaymentRequest.dest_features:type_name -> lnrpc.FeatureBit
-	54, // 3: routerrpc.SendPaymentRequest.first_hop_custom_records:type_name -> routerrpc.SendPaymentRequest.FirstHopCustomRecordsEntry
-	62, // 4: routerrpc.RouteFeeResponse.failure_reason:type_name -> lnrpc.PaymentFailureReason
-	63, // 5: routerrpc.SendToRouteRequest.route:type_name -> lnrpc.Route
-	55, // 6: routerrpc.SendToRouteRequest.first_hop_custom_records:type_name -> routerrpc.SendToRouteRequest.FirstHopCustomRecordsEntry
-	64, // 7: routerrpc.SendToRouteResponse.failure:type_name -> lnrpc.Failure
+	62, // 0: routerrpc.SendPaymentRequest.route_hints:type_name -> lnrpc.RouteHint
+	55, // 1: routerrpc.SendPaymentRequest.dest_custom_records:type_name -> routerrpc.SendPaymentRequest.DestCustomRecordsEntry
+	63, // 2: routerrpc.SendPaymentRequest.dest_features:type_name -> lnrpc.FeatureBit
+	56, // 3: routerrpc.SendPaymentRequest.first_hop_custom_records:type_name -> routerrpc.SendPaymentRequest.FirstHopCustomRecordsEntry
+	64, // 4: routerrpc.RouteFeeResponse.failure_reason:type_name -> lnrpc.PaymentFailureReason
+	65, // 5: routerrpc.SendToRouteRequest.route:type_name -> lnrpc.Route
+	57, // 6: routerrpc.SendToRouteRequest.first_hop_custom_records:type_name -> routerrpc.SendToRouteRequest.FirstHopCustomRecordsEntry
+	66, // 7: routerrpc.SendToRouteResponse.failure:type_name -> lnrpc.Failure
 	19, // 8: routerrpc.QueryMissionControlResponse.pairs:type_name -> routerrpc.PairHistory
 	19, // 9: routerrpc.XImportMissionControlRequest.pairs:type_name -> routerrpc.PairHistory
 	20, // 10: routerrpc.PairHistory.history:type_name -> routerrpc.PairData
@@ -4046,8 +4217,8 @@ var file_routerrpc_router_proto_depIdxs = []int32{
 	27, // 14: routerrpc.MissionControlConfig.apriori:type_name -> routerrpc.AprioriParameters
 	26, // 15: routerrpc.MissionControlConfig.bimodal:type_name -> routerrpc.BimodalParameters
 	20, // 16: routerrpc.QueryProbabilityResponse.history:type_name -> routerrpc.PairData
-	56, // 17: routerrpc.BuildRouteRequest.first_hop_custom_records:type_name -> routerrpc.BuildRouteRequest.FirstHopCustomRecordsEntry
-	63, // 18: routerrpc.BuildRouteResponse.route:type_name -> lnrpc.Route
+	58, // 17: routerrpc.BuildRouteRequest.first_hop_custom_records:type_name -> routerrpc.BuildRouteRequest.FirstHopCustomRecordsEntry
+	65, // 18: routerrpc.BuildRouteResponse.route:type_name -> lnrpc.Route
 	5,  // 19: routerrpc.HtlcEvent.event_type:type_name -> routerrpc.HtlcEvent.EventType
 	35, // 20: routerrpc.HtlcEvent.forward_event:type_name -> routerrpc.ForwardEvent
 	36, // 21: routerrpc.HtlcEvent.forward_fail_event:type_name -> routerrpc.ForwardFailEvent
@@ -4057,23 +4228,23 @@ var file_routerrpc_router_proto_depIdxs = []int32{
 	38, // 25: routerrpc.HtlcEvent.final_htlc_event:type_name -> routerrpc.FinalHtlcEvent
 	34, // 26: routerrpc.ForwardEvent.info:type_name -> routerrpc.HtlcInfo
 	34, // 27: routerrpc.LinkFailEvent.info:type_name -> routerrpc.HtlcInfo
-	65, // 28: routerrpc.LinkFailEvent.wire_failure:type_name -> lnrpc.Failure.FailureCode
+	67, // 28: routerrpc.LinkFailEvent.wire_failure:type_name -> lnrpc.Failure.FailureCode
 	0,  // 29: routerrpc.LinkFailEvent.failure_detail:type_name -> routerrpc.FailureDetail
 	1,  // 30: routerrpc.PaymentStatus.state:type_name -> routerrpc.PaymentState
-	66, // 31: routerrpc.PaymentStatus.htlcs:type_name -> lnrpc.HTLCAttempt
+	68, // 31: routerrpc.PaymentStatus.htlcs:type_name -> lnrpc.HTLCAttempt
 	42, // 32: routerrpc.ForwardHtlcInterceptRequest.incoming_circuit_key:type_name -> routerrpc.CircuitKey
-	57, // 33: routerrpc.ForwardHtlcInterceptRequest.custom_records:type_name -> routerrpc.ForwardHtlcInterceptRequest.CustomRecordsEntry
-	58, // 34: routerrpc.ForwardHtlcInterceptRequest.in_wire_custom_records:type_name -> routerrpc.ForwardHtlcInterceptRequest.InWireCustomRecordsEntry
+	59, // 33: routerrpc.ForwardHtlcInterceptRequest.custom_records:type_name -> routerrpc.ForwardHtlcInterceptRequest.CustomRecordsEntry
+	60, // 34: routerrpc.ForwardHtlcInterceptRequest.in_wire_custom_records:type_name -> routerrpc.ForwardHtlcInterceptRequest.InWireCustomRecordsEntry
 	42, // 35: routerrpc.ForwardHtlcInterceptResponse.incoming_circuit_key:type_name -> routerrpc.CircuitKey
 	2,  // 36: routerrpc.ForwardHtlcInterceptResponse.action:type_name -> routerrpc.ResolveHoldForwardAction
-	65, // 37: routerrpc.ForwardHtlcInterceptResponse.failure_code:type_name -> lnrpc.Failure.FailureCode
-	59, // 38: routerrpc.ForwardHtlcInterceptResponse.out_wire_custom_records:type_name -> routerrpc.ForwardHtlcInterceptResponse.OutWireCustomRecordsEntry
-	67, // 39: routerrpc.UpdateChanStatusRequest.chan_point:type_name -> lnrpc.ChannelPoint
+	67, // 37: routerrpc.ForwardHtlcInterceptResponse.failure_code:type_name -> lnrpc.Failure.FailureCode
+	61, // 38: routerrpc.ForwardHtlcInterceptResponse.out_wire_custom_records:type_name -> routerrpc.ForwardHtlcInterceptResponse.OutWireCustomRecordsEntry
+	69, // 39: routerrpc.UpdateChanStatusRequest.chan_point:type_name -> lnrpc.ChannelPoint
 	3,  // 40: routerrpc.UpdateChanStatusRequest.action:type_name -> routerrpc.ChanStatusAction
-	68, // 41: routerrpc.AddAliasesRequest.alias_maps:type_name -> lnrpc.AliasMap
-	68, // 42: routerrpc.AddAliasesResponse.alias_maps:type_name -> lnrpc.AliasMap
-	68, // 43: routerrpc.DeleteAliasesRequest.alias_maps:type_name -> lnrpc.AliasMap
-	68, // 44: routerrpc.DeleteAliasesResponse.alias_maps:type_name -> lnrpc.AliasMap
+	70, // 41: routerrpc.AddAliasesRequest.alias_maps:type_name -> lnrpc.AliasMap
+	70, // 42: routerrpc.AddAliasesResponse.alias_maps:type_name -> lnrpc.AliasMap
+	70, // 43: routerrpc.DeleteAliasesRequest.alias_maps:type_name -> lnrpc.AliasMap
+	70, // 44: routerrpc.DeleteAliasesResponse.alias_maps:type_name -> lnrpc.AliasMap
 	6,  // 45: routerrpc.Router.SendPaymentV2:input_type -> routerrpc.SendPaymentRequest
 	7,  // 46: routerrpc.Router.TrackPaymentV2:input_type -> routerrpc.TrackPaymentRequest
 	8,  // 47: routerrpc.Router.TrackPayments:input_type -> routerrpc.TrackPaymentsRequest
@@ -4095,29 +4266,31 @@ var file_routerrpc_router_proto_depIdxs = []int32{
 	47, // 63: routerrpc.Router.XAddLocalChanAliases:input_type -> routerrpc.AddAliasesRequest
 	49, // 64: routerrpc.Router.XDeleteLocalChanAliases:input_type -> routerrpc.DeleteAliasesRequest
 	51, // 65: routerrpc.Router.XFindBaseLocalChanAlias:input_type -> routerrpc.FindBaseAliasRequest
-	69, // 66: routerrpc.Router.SendPaymentV2:output_type -> lnrpc.Payment
-	69, // 67: routerrpc.Router.TrackPaymentV2:output_type -> lnrpc.Payment
-	69, // 68: routerrpc.Router.TrackPayments:output_type -> lnrpc.Payment
-	10, // 69: routerrpc.Router.EstimateRouteFee:output_type -> routerrpc.RouteFeeResponse
-	12, // 70: routerrpc.Router.SendToRoute:output_type -> routerrpc.SendToRouteResponse
-	66, // 71: routerrpc.Router.SendToRouteV2:output_type -> lnrpc.HTLCAttempt
-	14, // 72: routerrpc.Router.ResetMissionControl:output_type -> routerrpc.ResetMissionControlResponse
-	16, // 73: routerrpc.Router.QueryMissionControl:output_type -> routerrpc.QueryMissionControlResponse
-	18, // 74: routerrpc.Router.XImportMissionControl:output_type -> routerrpc.XImportMissionControlResponse
-	22, // 75: routerrpc.Router.GetMissionControlConfig:output_type -> routerrpc.GetMissionControlConfigResponse
-	24, // 76: routerrpc.Router.SetMissionControlConfig:output_type -> routerrpc.SetMissionControlConfigResponse
-	29, // 77: routerrpc.Router.QueryProbability:output_type -> routerrpc.QueryProbabilityResponse
-	31, // 78: routerrpc.Router.BuildRoute:output_type -> routerrpc.BuildRouteResponse
-	33, // 79: routerrpc.Router.SubscribeHtlcEvents:output_type -> routerrpc.HtlcEvent
-	41, // 80: routerrpc.Router.SendPayment:output_type -> routerrpc.PaymentStatus
-	41, // 81: routerrpc.Router.TrackPayment:output_type -> routerrpc.PaymentStatus
-	43, // 82: routerrpc.Router.HtlcInterceptor:output_type -> routerrpc.ForwardHtlcInterceptRequest
-	46, // 83: routerrpc.Router.UpdateChanStatus:output_type -> routerrpc.UpdateChanStatusResponse
-	48, // 84: routerrpc.Router.XAddLocalChanAliases:output_type -> routerrpc.AddAliasesResponse
-	50, // 85: routerrpc.Router.XDeleteLocalChanAliases:output_type -> routerrpc.DeleteAliasesResponse
-	52, // 86: routerrpc.Router.XFindBaseLocalChanAlias:output_type -> routerrpc.FindBaseAliasResponse
-	66, // [66:87] is the sub-list for method output_type
-	45, // [45:66] is the sub-list for method input_type
+	53, // 66: routerrpc.Router.DeleteForwardingHistory:input_type -> routerrpc.DeleteForwardingHistoryRequest
+	71, // 67: routerrpc.Router.SendPaymentV2:output_type -> lnrpc.Payment
+	71, // 68: routerrpc.Router.TrackPaymentV2:output_type -> lnrpc.Payment
+	71, // 69: routerrpc.Router.TrackPayments:output_type -> lnrpc.Payment
+	10, // 70: routerrpc.Router.EstimateRouteFee:output_type -> routerrpc.RouteFeeResponse
+	12, // 71: routerrpc.Router.SendToRoute:output_type -> routerrpc.SendToRouteResponse
+	68, // 72: routerrpc.Router.SendToRouteV2:output_type -> lnrpc.HTLCAttempt
+	14, // 73: routerrpc.Router.ResetMissionControl:output_type -> routerrpc.ResetMissionControlResponse
+	16, // 74: routerrpc.Router.QueryMissionControl:output_type -> routerrpc.QueryMissionControlResponse
+	18, // 75: routerrpc.Router.XImportMissionControl:output_type -> routerrpc.XImportMissionControlResponse
+	22, // 76: routerrpc.Router.GetMissionControlConfig:output_type -> routerrpc.GetMissionControlConfigResponse
+	24, // 77: routerrpc.Router.SetMissionControlConfig:output_type -> routerrpc.SetMissionControlConfigResponse
+	29, // 78: routerrpc.Router.QueryProbability:output_type -> routerrpc.QueryProbabilityResponse
+	31, // 79: routerrpc.Router.BuildRoute:output_type -> routerrpc.BuildRouteResponse
+	33, // 80: routerrpc.Router.SubscribeHtlcEvents:output_type -> routerrpc.HtlcEvent
+	41, // 81: routerrpc.Router.SendPayment:output_type -> routerrpc.PaymentStatus
+	41, // 82: routerrpc.Router.TrackPayment:output_type -> routerrpc.PaymentStatus
+	43, // 83: routerrpc.Router.HtlcInterceptor:output_type -> routerrpc.ForwardHtlcInterceptRequest
+	46, // 84: routerrpc.Router.UpdateChanStatus:output_type -> routerrpc.UpdateChanStatusResponse
+	48, // 85: routerrpc.Router.XAddLocalChanAliases:output_type -> routerrpc.AddAliasesResponse
+	50, // 86: routerrpc.Router.XDeleteLocalChanAliases:output_type -> routerrpc.DeleteAliasesResponse
+	52, // 87: routerrpc.Router.XFindBaseLocalChanAlias:output_type -> routerrpc.FindBaseAliasResponse
+	54, // 88: routerrpc.Router.DeleteForwardingHistory:output_type -> routerrpc.DeleteForwardingHistoryResponse
+	67, // [67:89] is the sub-list for method output_type
+	45, // [45:67] is the sub-list for method input_type
 	45, // [45:45] is the sub-list for extension type_name
 	45, // [45:45] is the sub-list for extension extendee
 	0,  // [0:45] is the sub-list for field type_name
@@ -4140,13 +4313,17 @@ func file_routerrpc_router_proto_init() {
 		(*HtlcEvent_SubscribedEvent)(nil),
 		(*HtlcEvent_FinalHtlcEvent)(nil),
 	}
+	file_routerrpc_router_proto_msgTypes[47].OneofWrappers = []any{
+		(*DeleteForwardingHistoryRequest_DeleteBeforeTime)(nil),
+		(*DeleteForwardingHistoryRequest_DeleteBeforeDuration)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_routerrpc_router_proto_rawDesc), len(file_routerrpc_router_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   54,
+			NumMessages:   56,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

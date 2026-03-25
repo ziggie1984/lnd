@@ -1742,11 +1742,7 @@ func (c *RevokeAndAck) RandTestMessage(t *rapid.T) Message {
 	msg.NextRevocationKey = RandPubKey(t)
 
 	if rapid.Bool().Draw(t, "includeLocalNonce") {
-		var nonce Musig2Nonce
-		nonceBytes := rapid.SliceOfN(rapid.Byte(), 32, 32).Draw(
-			t, "nonce",
-		)
-		copy(nonce[:], nonceBytes)
+		nonce := RandMusig2Nonce(t)
 
 		msg.LocalNonce = tlv.SomeRecordT(
 			tlv.NewRecordT[NonceRecordTypeT, Musig2Nonce](nonce),

@@ -4429,11 +4429,40 @@ func (lc *LightningChannel) ProcessChanSyncMsg(ctx context.Context,
 		}
 	}
 
-	// If this is a taproot channel, then we expect that the remote party
-	// has sent the next verification nonce. If they haven't, then we'll
-	// bail out, otherwise we'll init our local session then continue as
-	// normal.
+	// If this is a taproot channel, then we expect the remote party to
+	// have sent the next verification nonce. We prioritize the new
+	// LocalNonces field over the legacy LocalNonce field for backwards
+	// compatibility. If no nonce is present, we'll bail out.
 	switch {
+	case lc.channelState.ChanType.IsTaproot() && msg.LocalNonces.IsSome():
+		// The IsSome() guard above guarantees this unwrap succeeds.
+		noncesData := msg.LocalNonces.UnsafeFromSome()
+
+		// Extract the nonce for the main commitment by looking up the
+		// funding TXID, as the commitment tx spends the funding
+		// outpoint.
+		fundingTxid := lc.channelState.FundingOutpoint.Hash
+		commitNonce, ok := noncesData.NoncesMap[fundingTxid]
+		if !ok {
+			return nil, nil, nil, fmt.Errorf(
+				"remote LocalNonces missing nonce "+
+					"for funding txid %v", fundingTxid,
+			)
+		}
+
+		if lc.opts.skipNonceInit {
+			break
+		}
+
+		initErr := lc.InitRemoteMusigNonces(&musig2.Nonces{
+			PubNonce: commitNonce,
+		})
+		if initErr != nil {
+			return nil, nil, nil, fmt.Errorf(
+				"unable to init remote nonce: %w", initErr,
+			)
+		}
+
 	case lc.channelState.ChanType.IsTaproot() && msg.LocalNonce.IsNone():
 		return nil, nil, nil, fmt.Errorf("remote verification nonce " +
 			"not sent")

@@ -507,7 +507,7 @@
     },
     "/v2/wallet/psbt/sign": {
       "post": {
-        "summary": "SignPsbt expects a partial transaction with all inputs and outputs fully\ndeclared and tries to sign all unsigned inputs that have all required fields\n(UTXO information, BIP32 derivation information, witness or sig scripts)\nset.\nIf no error is returned, the PSBT is ready to be given to the next signer or\nto be finalized if lnd was the last signer.",
+        "summary": "lncli: `wallet psbt sign`\nSignPsbt expects a partial transaction with all inputs and outputs fully\ndeclared and tries to sign all unsigned inputs that have all required fields\n(UTXO information, BIP32 derivation information, witness or sig scripts)\nset.\nIf no error is returned, the PSBT is ready to be given to the next signer or\nto be finalized if lnd was the last signer.",
         "description": "NOTE: This RPC only signs inputs (and only those it can sign), it does not\nperform any other tasks (such as coin selection, UTXO locking or\ninput/output/fee value validation, PSBT finalization). Any input that is\nincomplete will be skipped.",
         "operationId": "WalletKit_SignPsbt",
         "responses": {

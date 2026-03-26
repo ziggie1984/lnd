@@ -23,6 +23,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/graph/db/models"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -208,6 +209,10 @@ var versionedTests = []versionedTest{
 	{
 		name: "channel view",
 		test: testChannelView,
+	},
+	{
+		name: "channel view taproot v1 round trip",
+		test: testChannelViewTaprootV1RoundTrip,
 	},
 }
 
@@ -3895,6 +3900,72 @@ func testChannelView(t *testing.T, v lnwire.GossipVersion) {
 	channelView, err = graph.ChannelView(ctx)
 	require.NoError(t, err)
 	assertChanViewEqual(t, channelView, edgePoints)
+}
+
+// testChannelViewTaprootV1RoundTripBug documents the current bug: a taproot
+// channel persisted as a v1 edge is read back from ChannelView() with a legacy
+// P2WSH funding script. The next commit fixes this behavior.
+func testChannelViewTaprootV1RoundTrip(t *testing.T, v lnwire.GossipVersion) {
+	t.Parallel()
+
+	if v != lnwire.GossipVersion1 {
+		t.Skip("only relevant for v1 taproot workaround channels")
+	}
+
+	ctx := t.Context()
+	graph := NewVersionedGraph(MakeTestGraph(t), v)
+
+	node1 := createTestVertex(t, v)
+	require.NoError(t, graph.AddNode(ctx, node1))
+	node2 := createTestVertex(t, v)
+	require.NoError(t, graph.AddNode(ctx, node2))
+
+	node1Pub, err := node1.PubKey()
+	require.NoError(t, err)
+	node2Pub, err := node2.PubKey()
+	require.NoError(t, err)
+
+	node1Vertex := route.NewVertex(node1Pub)
+	node2Vertex := route.NewVertex(node2Pub)
+	outpoint := wire.OutPoint{
+		Hash:  rev,
+		Index: 1,
+	}
+
+	// Persist a synthetic v1 channel that advertises the taproot staging
+	// bit. This reproduces the serialization path exercised by older graph
+	// entries.
+	edgeInfo, err := models.NewV1Channel(
+		1, *chaincfg.MainNetParams.GenesisHash,
+		node1Vertex, node2Vertex,
+		&models.ChannelV1Fields{
+			BitcoinKey1Bytes: node1Vertex,
+			BitcoinKey2Bytes: node2Vertex,
+			ExtraOpaqueData:  make([]byte, 0),
+		},
+		models.WithChannelPoint(outpoint),
+		models.WithCapacity(9000),
+		models.WithFeatures(lnwire.NewRawFeatureVector(
+			lnwire.SimpleTaprootChannelsRequiredStaging,
+		)),
+	)
+	require.NoError(t, err)
+	require.NoError(t, graph.AddChannelEdge(ctx, edgeInfo))
+
+	// The current buggy behavior reconstructs the legacy 2-of-2 witness
+	// script hash when ChannelView reads the edge back out of the database.
+	witnessScript, err := input.GenMultiSigScript(
+		node1Pub.SerializeCompressed(), node2Pub.SerializeCompressed(),
+	)
+	require.NoError(t, err)
+	expectedScript, err := input.WitnessScriptHash(witnessScript)
+	require.NoError(t, err)
+
+	channelView, err := graph.ChannelView(ctx)
+	require.NoError(t, err)
+	require.Len(t, channelView, 1)
+	require.Equal(t, expectedScript, channelView[0].FundingPkScript)
+	require.Equal(t, outpoint, channelView[0].OutPoint)
 }
 
 // testIncompleteChannelPolicies tests that a channel that only has a policy

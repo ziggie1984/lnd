@@ -60,11 +60,6 @@ var (
 		localSchnorrSigBytes,
 	)
 
-	remoteSchnorrSigBytes = bytes.Repeat([]byte{0x02}, 64)
-	remoteSchnorrSig, _   = lnwire.NewSigFromSchnorrRawSignature(
-		remoteSchnorrSigBytes,
-	)
-
 	localTx = wire.MsgTx{Version: 2}
 
 	closeTx = wire.NewMsgTx(2)
@@ -160,7 +155,7 @@ func assertUnknownEventFail(t *testing.T, startingState ProtocolState) {
 		defer closeHarness.stopAndAssert()
 
 		closeHarness.sendEventAndExpectFailure(
-			context.Background(), &unknownEvent{},
+			t.Context(), &unknownEvent{},
 			ErrInvalidStateTransition,
 		)
 	})
@@ -180,7 +175,7 @@ func assertSpendEventCloseFin(t *testing.T, startingState ProtocolState) {
 		defer closeHarness.stopAndAssert()
 
 		closeHarness.chanCloser.SendEvent(
-			context.Background(), &SpendEvent{},
+			t.Context(), &SpendEvent{},
 		)
 
 		closeHarness.assertStateTransitions(&CloseFin{})
@@ -441,7 +436,7 @@ func (r *rbfCloserTestHarness) expectNewCloseSig(
 
 	r.T.Helper()
 
-	// For taproot channels, we'll return a musig2 partial siganture instead
+	// For taproot channels, we'll return a musig2 partial signature instead
 	// of the normal schnorr sig.
 	switch {
 	case r.env.LocalMusigSession != nil:
@@ -927,7 +922,7 @@ func TestSelectTaprootPartialSigWithNonce(t *testing.T) {
 	require.Equal(t, nonceNoClosee, selected.Nonce)
 
 	sigsNoCloser := lnwire.TaprootClosingSigs{
-		NoCloserClosee: newPartialSigWithNonceTlv[tlv.TlvType6](noCloserPS),
+		NoCloserClosee: newPartialSigWithNonceTlv[tlv.TlvType6](noCloserPS), //nolint:ll
 	}
 
 	selected, err = selectTaprootPartialSigWithNonce(sigsNoCloser, false)
@@ -948,7 +943,7 @@ func assertStateT[T ProtocolState](h *rbfCloserTestHarness) T {
 func newRbfCloserTestHarness(t *testing.T,
 	cfg *harnessCfg) *rbfCloserTestHarness {
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	startingHeight := 200
 
@@ -1369,7 +1364,7 @@ func testRemoteInitiatedCloseOkTaproot(t *testing.T, ctx context.Context) {
 // TestRbfChannelActiveTransitions tests the transitions of from the
 // ChannelActive state.
 func TestRbfChannelActiveTransitions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	localAddr := lnwire.DeliveryAddress(bytes.Repeat([]byte{0x01}, 20))
 	remoteAddr := lnwire.DeliveryAddress(bytes.Repeat([]byte{0x02}, 20))
 
@@ -1519,7 +1514,7 @@ func TestRbfChannelActiveTransitions(t *testing.T) {
 // shutdown ourselves.
 func TestRbfShutdownPendingTransitions(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	startingState := &ShutdownPending{}
 
@@ -1573,7 +1568,7 @@ func TestRbfShutdownPendingTransitions(t *testing.T) {
 
 	// If the remote party sends a shutdown for a taproot channel without
 	// a nonce in the ShutdownPending state, we should reject it.
-	t.Run("initiator_shutdown_recv_taproot_no_nonce_fail", func(t *testing.T) {
+	t.Run("initiator_shutdown_recv_taproot_no_nonce_fail", func(t *testing.T) { //nolint:ll
 		firstState := *startingState
 		firstState.IdealFeeRate = fn.Some(
 			chainfee.FeePerKwFloor.FeePerVByte(),
@@ -1760,7 +1755,7 @@ func TestRbfShutdownPendingTransitions(t *testing.T) {
 // transition to the negotiation state.
 func TestRbfChannelFlushingTransitions(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	localBalance := lnwire.NewMSatFromSatoshis(10_000)
 	remoteBalance := lnwire.NewMSatFromSatoshis(50_000)
@@ -2002,7 +1997,8 @@ func testSendOfferRbfIterationLoopTaproot(t *testing.T,
 				lnwire.Musig2Nonce{4, 5, 6},
 			),
 		}
-		localState := firstState.PeerState.Local.(*LocalCloseStart) //nolint:ll
+		localState, ok := firstState.PeerState.Local.(*LocalCloseStart)
+		require.True(t, ok)
 		localState.CloseChannelTerms.NonceState =
 			firstState.CloseChannelTerms.NonceState
 
@@ -2140,10 +2136,12 @@ func testRecvOfferRbfLoopIterationsTaproot(t *testing.T,
 		}
 		firstState.CloseChannelTerms.NonceState = nonceState
 
-		localState := firstState.PeerState.Local.(*LocalCloseStart) //nolint:ll
+		localState, ok := firstState.PeerState.Local.(*LocalCloseStart)
+		require.True(t, ok)
 		localState.CloseChannelTerms.NonceState = nonceState
 
-		remoteState := firstState.PeerState.Remote.(*RemoteCloseStart) //nolint:ll
+		remoteState, ok := firstState.PeerState.Remote.(*RemoteCloseStart) //nolint:ll
+		require.True(t, ok)
 		remoteState.CloseChannelTerms.NonceState = nonceState
 
 		cfg := &harnessCfg{
@@ -2165,22 +2163,25 @@ func testRecvOfferRbfLoopIterationsTaproot(t *testing.T,
 		balanceAfterClose := closingTerms.ShutdownBalances.RemoteBalance.ToSatoshis() - absoluteFee //nolint:ll
 		sequence := uint32(mempool.MaxRBFSequence)
 
+		closingSigs := lnwire.TaprootClosingSigs{
+			CloserAndClosee: newPartialSigWithNonceTlv[tlv.TlvType7]( //nolint:ll
+				lnwire.PartialSigWithNonce{
+					PartialSig: lnwire.PartialSig{
+						Sig: btcec.ModNScalar{},
+					},
+					Nonce: lnwire.Musig2Nonce{
+						10, 11, 12,
+					},
+				},
+			),
+		}
 		feeOffer := &OfferReceivedEvent{
 			SigMsg: lnwire.ClosingComplete{
-				CloserScript: remoteAddr,
-				CloseeScript: localAddr,
-				FeeSatoshis:  absoluteFee,
-				LockTime:     1,
-				TaprootClosingSigs: lnwire.TaprootClosingSigs{
-					CloserAndClosee: newPartialSigWithNonceTlv[tlv.TlvType7]( //nolint:ll
-						lnwire.PartialSigWithNonce{
-							PartialSig: lnwire.PartialSig{
-								Sig: btcec.ModNScalar{},
-							},
-							Nonce: lnwire.Musig2Nonce{10, 11, 12},
-						},
-					),
-				},
+				CloserScript:       remoteAddr,
+				CloseeScript:       localAddr,
+				FeeSatoshis:        absoluteFee,
+				LockTime:           1,
+				TaprootClosingSigs: closingSigs,
 			},
 		}
 
@@ -2248,7 +2249,8 @@ func testSendOfferIterationNoDustTaproot(t *testing.T,
 			),
 		}
 
-		localState := testStartingState.PeerState.Local.(*LocalCloseStart) //nolint:ll
+		localState, ok := testStartingState.PeerState.Local.(*LocalCloseStart) //nolint:ll
+		require.True(t, ok)
 		localState.CloseChannelTerms.NonceState =
 			testStartingState.CloseChannelTerms.NonceState
 
@@ -2293,7 +2295,7 @@ func testSendOfferIterationNoDustTaproot(t *testing.T,
 // rate.
 func TestRbfCloseClosingNegotiationLocal(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	localBalance := lnwire.NewMSatFromSatoshis(40_000)
 	remoteBalance := lnwire.NewMSatFromSatoshis(50_000)
@@ -2582,23 +2584,31 @@ func TestValidateSigTypeMatchesChannelType(t *testing.T) {
 			// Create a message with mismatched signature type
 			var sigMsg lnwire.ClosingSig
 			if tc.sendTaproot {
-				// Send taproot signature using TaprootPartialSigs
-				// Create a dummy partial sig
+				// Send taproot signature using
+				// TaprootPartialSigs. Create a
+				// dummy partial sig.
 				var scalar btcec.ModNScalar
 				scalar.SetByteSlice(localSchnorrSigBytes[:32])
 				partialSig := lnwire.PartialSig{Sig: scalar}
 
-				sigMsg.TaprootPartialSigs.CloserAndClosee = tlv.SomeRecordT(
-					tlv.NewRecordT[tlv.TlvType7](partialSig),
+				sigMsg.TaprootPartialSigs.CloserAndClosee = tlv.SomeRecordT( //nolint:ll
+					tlv.NewRecordT[tlv.TlvType7](
+						partialSig,
+					),
 				)
 
 				testNonce := lnwire.Musig2Nonce{7, 8, 9}
-				sigMsg.NextCloseeNonce = tlv.SomeRecordT(
-					tlv.NewRecordT[tlv.TlvType22](testNonce),
+				sigMsg.NextCloseeNonce = tlv.SomeRecordT( //nolint:ll
+					tlv.NewRecordT[tlv.TlvType22](
+						testNonce,
+					),
 				)
 			} else {
-				sigMsg.ClosingSigs.CloserAndClosee = tlv.SomeRecordT(
-					tlv.NewRecordT[tlv.TlvType3](localSigWire),
+				sigs := &sigMsg.ClosingSigs
+				sigs.CloserAndClosee = tlv.SomeRecordT(
+					tlv.NewRecordT[tlv.TlvType3](
+						localSigWire,
+					),
 				)
 			}
 
@@ -2609,7 +2619,9 @@ func TestValidateSigTypeMatchesChannelType(t *testing.T) {
 			if tc.expectedError != "" {
 				_, err := sigResult.Unpack()
 				require.Error(t, err)
-				require.Contains(t, err.Error(), tc.expectedError)
+				require.Contains(
+					t, err.Error(), tc.expectedError,
+				)
 			} else {
 				sig, err := sigResult.Unpack()
 				require.NoError(t, err)
@@ -2629,7 +2641,7 @@ func TestValidateSigTypeMatchesChannelType(t *testing.T) {
 func TestRbfCloseClosingNegotiationRemote(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	localBalance := lnwire.NewMSatFromSatoshis(40_000)
 	remoteBalance := lnwire.NewMSatFromSatoshis(50_000)
@@ -3053,7 +3065,7 @@ func TestTaprootNonceHandling(t *testing.T) {
 	// Send the shutdown event and verify state transition. We should
 	// transition to ShutdownPending.
 	closeHarness.chanCloser.SendEvent(
-		context.Background(), shutdownEvent,
+		t.Context(), shutdownEvent,
 	)
 
 	closeHarness.assertStateTransitions(&ShutdownPending{})
@@ -3158,7 +3170,7 @@ func TestProcessRemoteTaprootSigWithSignerNonce(t *testing.T) {
 	jitNonce := lnwire.Musig2Nonce{20, 21, 22}
 	msg := lnwire.ClosingComplete{
 		TaprootClosingSigs: lnwire.TaprootClosingSigs{
-			CloserAndClosee: newPartialSigWithNonceTlv[tlv.TlvType7](
+			CloserAndClosee: newPartialSigWithNonceTlv[tlv.TlvType7]( //nolint:ll
 				lnwire.PartialSigWithNonce{
 					PartialSig: lnwire.PartialSig{
 						Sig: btcec.ModNScalar{},
@@ -3203,9 +3215,8 @@ func newStrictNonceMusigSession() *strictNonceMusigSession {
 	return &strictNonceMusigSession{}
 }
 
-func (m *strictNonceMusigSession) ProposalClosingOpts() ([]lnwallet.ChanCloseOpt,
-	error) {
-
+//nolint:ll
+func (m *strictNonceMusigSession) ProposalClosingOpts() ([]lnwallet.ChanCloseOpt, error) {
 	// Track if ProposalClosingOpts was called before InitRemoteNonce.
 	if !m.remoteNonceInited {
 		m.proposalOptsCalledBeforeInit = true
@@ -3258,8 +3269,10 @@ func TestLocalOfferSentUsesStoredSig(t *testing.T) {
 			RemoteDeliveryScript: remoteAddr,
 		},
 		NonceState: NonceState{
-			LocalCloseeNonce:  fn.Some(lnwire.Musig2Nonce{1, 2, 3}),
-			RemoteCloseeNonce: fn.Some(remoteCloseeNonceFromShutdown),
+			LocalCloseeNonce: fn.Some(lnwire.Musig2Nonce{1, 2, 3}),
+			RemoteCloseeNonce: fn.Some(
+				remoteCloseeNonceFromShutdown,
+			),
 		},
 		ShutdownBalances: ShutdownBalances{
 			LocalBalance:  lnwire.NewMSatFromSatoshis(500_000),

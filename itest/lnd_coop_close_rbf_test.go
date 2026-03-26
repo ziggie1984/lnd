@@ -14,8 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// rbfTestCase encapsulates the parameters and logic for a single RBF coop close test run.
-func runRbfCoopCloseTest(st *lntest.HarnessTest, alice, bob *node.HarnessNode,
+// runRbfCoopCloseTest encapsulates the parameters and logic for a
+// single RBF coop close test run.
+func runRbfCoopCloseTest(st *lntest.HarnessTest,
+	alice, bob *node.HarnessNode,
 	chanPoint *lnrpc.ChannelPoint, isTaproot bool) {
 
 	// To start, we'll have Alice try to close the channel, with a fee rate
@@ -58,14 +60,22 @@ func runRbfCoopCloseTest(st *lntest.HarnessTest, alice, bob *node.HarnessNode,
 	alicePendingUpdate = aliceCloseUpdate.GetClosePending()
 	require.NotNil(st, aliceCloseUpdate)
 
-	// For taproot channels, due to different witness sizes, the fee per vbyte
-	// might be slightly different due to rounding when converting between
-	// absolute fee and fee per vbyte.
+	// For taproot channels, due to different witness sizes,
+	// the fee per vbyte might be slightly different due to
+	// rounding when converting between absolute fee and fee
+	// per vbyte.
 	if isTaproot {
-		// Allow for a small difference in fee calculation for taproot
-		require.InDelta(st, int64(bobFeeRate), alicePendingUpdate.FeePerVbyte, 1)
+		// Allow for a small difference in fee
+		// calculation for taproot.
+		require.InDelta(
+			st, int64(bobFeeRate),
+			alicePendingUpdate.FeePerVbyte, 1,
+		)
 	} else {
-		require.Equal(st, alicePendingUpdate.FeePerVbyte, int64(bobFeeRate))
+		require.Equal(
+			st, alicePendingUpdate.FeePerVbyte,
+			int64(bobFeeRate),
+		)
 	}
 	require.False(st, alicePendingUpdate.LocalCloseTx)
 
@@ -161,9 +171,10 @@ func testCoopCloseRbf(ht *lntest.HarnessTest) {
 			baseArgs := lntest.NodeArgsForCommitType(
 				chanType.commitType,
 			)
-			nodeArgs := append(
+			baseArgs = append(
 				baseArgs, "--protocol.rbf-coop-close",
 			)
+			nodeArgs := baseArgs
 			cfgs := [][]string{nodeArgs, nodeArgs}
 
 			// For taproot channels, we need to make them private.
@@ -185,7 +196,9 @@ func testCoopCloseRbf(ht *lntest.HarnessTest) {
 			alice, bob := nodes[0], nodes[1]
 			chanPoint := chanPoints[0]
 
-			runRbfCoopCloseTest(st, alice, bob, chanPoint, isTaproot)
+			runRbfCoopCloseTest(
+				st, alice, bob, chanPoint, isTaproot,
+			)
 
 			st.Shutdown(alice)
 			st.Shutdown(bob)

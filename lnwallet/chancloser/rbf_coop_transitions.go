@@ -30,11 +30,12 @@ var (
 	ErrThawHeightNotReached = fmt.Errorf("thaw height not reached")
 )
 
-// sendShutdownEvents is a helper function that returns a set of daemon events
-// we need to emit when we decide that we should send a shutdown message. We'll
-// also mark the channel as borked as well, as at this point, we no longer want
-// to continue with normal operation. This function also returns the actual closee
-// nonce used (either provided or auto-generated) for taproot channels.
+// sendShutdownEvents is a helper function that returns a set of daemon
+// events we need to emit when we decide that we should send a shutdown
+// message. We'll also mark the channel as borked as well, as at this
+// point, we no longer want to continue with normal operation. This
+// function also returns the actual closee nonce used (either provided
+// or auto-generated) for taproot channels.
 func sendShutdownEvents(chanID lnwire.ChannelID, chanPoint wire.OutPoint,
 	deliveryAddr lnwire.DeliveryAddress, peerPub btcec.PublicKey,
 	postSendEvent fn.Option[ProtocolEvent], chanState ChanStateObserver,
@@ -100,7 +101,8 @@ func sendShutdownEvents(chanID lnwire.ChannelID, chanPoint wire.OutPoint,
 	// If a close is already in process (we're in the RBF loop), then we
 	// can skip everything below, and just send out the shutdown message.
 	if chanState.FinalBalances().IsSome() {
-		return protofsm.DaemonEventSet{msgsToSend}, localCloseeNonce, nil
+		return protofsm.DaemonEventSet{msgsToSend},
+			localCloseeNonce, nil
 	}
 
 	// Before closing, we'll attempt to send a disable update for the
@@ -163,7 +165,9 @@ func initRemoteMusigCloserNonce(env *Environment,
 	if env.RemoteMusigSession != nil {
 		remoteCloserNonce.WhenSome(func(nonce lnwire.Musig2Nonce) {
 			remoteMusigNonce := musig2.Nonces{PubNonce: nonce}
-			env.RemoteMusigSession.InitRemoteNonce(&remoteMusigNonce)
+			env.RemoteMusigSession.InitRemoteNonce(
+				&remoteMusigNonce,
+			)
 		})
 	}
 }
@@ -347,7 +351,7 @@ func (c *ChannelActive) ProcessEvent(event ProtocolEvent, env *Environment,
 					RemoteDeliveryScript: remoteAddr,
 				},
 				NonceState: NonceState{
-					RemoteCloseeNonce: msg.RemoteShutdownNonce,
+					RemoteCloseeNonce: msg.RemoteShutdownNonce, //nolint:ll
 					LocalCloseeNonce:  closeeNonce,
 				},
 			},
@@ -713,13 +717,15 @@ func partialSigToWireSig(partialSig lnwire.PartialSig) lnwire.Sig {
 	sigBytes := partialSig.Sig.Bytes()
 	copy(wireSig.RawBytes()[:32], sigBytes[:])
 	wireSig.ForceSchnorr()
+
 	return wireSig
 }
 
 // extractTaprootSigAndNonce extracts the partial signature and closee nonce
 // from a taproot ClosingSig message.
-func extractTaprootSigAndNonce(msg lnwire.ClosingSig) (sig fn.Result[lnwire.Sig],
-	nonce fn.Option[lnwire.Musig2Nonce]) {
+func extractTaprootSigAndNonce(
+	msg lnwire.ClosingSig) (fn.Result[lnwire.Sig],
+	fn.Option[lnwire.Musig2Nonce]) {
 
 	// Count how many taproot sig fields are populated.
 	taprootSigInts := []bool{
@@ -727,17 +733,23 @@ func extractTaprootSigAndNonce(msg lnwire.ClosingSig) (sig fn.Result[lnwire.Sig]
 		msg.TaprootPartialSigs.NoCloserClosee.IsSome(),
 		msg.TaprootPartialSigs.CloserAndClosee.IsSome(),
 	}
-	numTaprootSigs := fn.Foldl(0, taprootSigInts, func(acc int, sigInt bool) int { //nolint:ll
-		if sigInt {
-			return acc + 1
-		}
-		return acc
-	})
+	numTaprootSigs := fn.Foldl(
+		0, taprootSigInts,
+		func(acc int, sigInt bool) int {
+			if sigInt {
+				return acc + 1
+			}
+
+			return acc
+		},
+	)
 
 	// Validate exactly one sig is set.
 	if numTaprootSigs != 1 {
-		return fn.Errf[lnwire.Sig]("%w: only one sig should be set, got %v",
-			ErrTooManySigs, numTaprootSigs), fn.None[lnwire.Musig2Nonce]()
+		return fn.Errf[lnwire.Sig](
+			"%w: only one sig should be set, got %v",
+			ErrTooManySigs, numTaprootSigs,
+		), fn.None[lnwire.Musig2Nonce]()
 	}
 
 	tapSigs := msg.TaprootPartialSigs
@@ -786,14 +798,16 @@ func extractRegularSig(msg lnwire.ClosingSig) fn.Result[lnwire.Sig] {
 		msg.ClosingSigs.NoCloserClosee.IsSome(),
 		msg.ClosingSigs.CloserAndClosee.IsSome(),
 	}
-	numRegularSigs := fn.Foldl(0, regularSigInts, func(acc int,
-		sigInt bool) int {
+	numRegularSigs := fn.Foldl(
+		0, regularSigInts,
+		func(acc int, sigInt bool) int {
+			if sigInt {
+				return acc + 1
+			}
 
-		if sigInt {
-			return acc + 1
-		}
-		return acc
-	})
+			return acc
+		},
+	)
 
 	// Validate exactly one sig is set
 	if numRegularSigs != 1 {
@@ -805,23 +819,32 @@ func extractRegularSig(msg lnwire.ClosingSig) fn.Result[lnwire.Sig] {
 	switch {
 	case msg.ClosingSigs.CloserNoClosee.IsSome():
 		var sig lnwire.Sig
-		msg.ClosingSigs.CloserNoClosee.WhenSomeV(func(s lnwire.Sig) {
-			sig = s
-		})
+		msg.ClosingSigs.CloserNoClosee.WhenSomeV(
+			func(s lnwire.Sig) {
+				sig = s
+			},
+		)
+
 		return fn.Ok(sig)
 
 	case msg.ClosingSigs.NoCloserClosee.IsSome():
 		var sig lnwire.Sig
-		msg.ClosingSigs.NoCloserClosee.WhenSomeV(func(s lnwire.Sig) {
-			sig = s
-		})
+		msg.ClosingSigs.NoCloserClosee.WhenSomeV(
+			func(s lnwire.Sig) {
+				sig = s
+			},
+		)
+
 		return fn.Ok(sig)
 
 	case msg.ClosingSigs.CloserAndClosee.IsSome():
 		var sig lnwire.Sig
-		msg.ClosingSigs.CloserAndClosee.WhenSomeV(func(s lnwire.Sig) {
-			sig = s
-		})
+		msg.ClosingSigs.CloserAndClosee.WhenSomeV(
+			func(s lnwire.Sig) {
+				sig = s
+			},
+		)
+
 		return fn.Ok(sig)
 
 	default:
@@ -833,8 +856,9 @@ func extractRegularSig(msg lnwire.ClosingSig) fn.Result[lnwire.Sig] {
 // ClosingSig message matches the channel type (taproot vs non-taproot), then
 // extracts the partial signature and the NextCloseeNonce for the next RBF
 // round. This is used by the closer when receiving the closee's response.
-func extractSigAndNonceFromClosingSig(msg lnwire.ClosingSig,
-) (sig fn.Result[lnwire.Sig], nonce fn.Option[lnwire.Musig2Nonce]) {
+func extractSigAndNonceFromClosingSig(
+	msg lnwire.ClosingSig,
+) (fn.Result[lnwire.Sig], fn.Option[lnwire.Musig2Nonce]) {
 
 	// Check if this is a taproot or regular signature.
 	hasTaprootSigs := msg.TaprootPartialSigs.CloserNoClosee.IsSome() ||
@@ -861,8 +885,9 @@ func extractSigAndNonceFromClosingSig(msg lnwire.ClosingSig,
 
 // validateAndExtractSigAndNonce validates that the signature type matches the
 // channel type and then extracts the signature and nonce.
-func validateAndExtractSigAndNonce(msg lnwire.ClosingSig,
-	isTaproot bool) (sig fn.Result[lnwire.Sig], nonce fn.Option[lnwire.Musig2Nonce]) {
+func validateAndExtractSigAndNonce(
+	msg lnwire.ClosingSig, isTaproot bool,
+) (fn.Result[lnwire.Sig], fn.Option[lnwire.Musig2Nonce]) {
 
 	// Check if this is a taproot or regular signature.
 	hasTaprootSigs := msg.TaprootPartialSigs.CloserNoClosee.IsSome() ||
@@ -1055,28 +1080,35 @@ func encodeClosingSignatures(env *Environment, wireSig lnwire.Sig,
 		}
 
 		// Convert the musig partial sig to wire format.
-		// This already includes our JIT closer nonce that we used to sign.
+		// This already includes our JIT closer nonce that we
+		// used to sign.
 		partialSigWithNonce := musigPartialSig.ToWireSig()
 
 		switch {
 		case noCloser:
 			taprootClosingSigs.NoCloserClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType6](*partialSigWithNonce),
+				tlv.NewRecordT[tlv.TlvType6](
+					*partialSigWithNonce,
+				),
 			)
 		case noClosee:
 			taprootClosingSigs.CloserNoClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType5](*partialSigWithNonce),
+				tlv.NewRecordT[tlv.TlvType5](
+					*partialSigWithNonce,
+				),
 			)
 		default:
 			taprootClosingSigs.CloserAndClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType7](*partialSigWithNonce),
+				tlv.NewRecordT[tlv.TlvType7](
+					*partialSigWithNonce,
+				),
 			)
 		}
 
 		return closingSigs, taprootClosingSigs, nil
 	}
 
-	// For non-taproot channels, we'll populate the normal ECDSA sigantures.
+	// For non-taproot channels, we'll populate the normal ECDSA signatures.
 	switch {
 	case noClosee:
 		closingSigs.CloserNoClosee = newSigTlv[tlv.TlvType1](wireSig)
@@ -1292,25 +1324,31 @@ func selectTaprootPartialSigWithNonce(
 			return ps, ErrCloserNoClosee
 		}
 
-		sigs.CloserNoClosee.WhenSomeV(func(p lnwire.PartialSigWithNonce) {
-			ps = p
-		})
+		sigs.CloserNoClosee.WhenSomeV(
+			func(p lnwire.PartialSigWithNonce) {
+				ps = p
+			},
+		)
 
 		return ps, nil
 	}
 
 	if sigs.CloserAndClosee.IsSome() {
-		sigs.CloserAndClosee.WhenSomeV(func(p lnwire.PartialSigWithNonce) {
-			ps = p
-		})
+		sigs.CloserAndClosee.WhenSomeV(
+			func(p lnwire.PartialSigWithNonce) {
+				ps = p
+			},
+		)
 
 		return ps, nil
 	}
 
 	if sigs.NoCloserClosee.IsSome() {
-		sigs.NoCloserClosee.WhenSomeV(func(p lnwire.PartialSigWithNonce) {
-			ps = p
-		})
+		sigs.NoCloserClosee.WhenSomeV(
+			func(p lnwire.PartialSigWithNonce) {
+				ps = p
+			},
+		)
 
 		return ps, nil
 	}
@@ -1395,32 +1433,43 @@ func createClosingSigMessage(env *Environment, wireSig lnwire.Sig,
 	}, nil
 }
 
-// extractTaprootPartialSig extracts just the PartialSig from TaprootPartialSigs.
-// This is useful when we need the actual partial sig for combining.
-func extractTaprootPartialSig(sigs lnwire.TaprootPartialSigs) (
-	partialSig fn.Option[lnwire.PartialSig]) {
+// extractTaprootPartialSig extracts just the PartialSig from
+// TaprootPartialSigs. This is useful when we need the actual
+// partial sig for combining.
+func extractTaprootPartialSig(
+	sigs lnwire.TaprootPartialSigs,
+) fn.Option[lnwire.PartialSig] {
 
 	if sigs.CloserNoClosee.IsSome() {
 		var ps lnwire.PartialSig
-		sigs.CloserNoClosee.WhenSomeV(func(p lnwire.PartialSig) {
-			ps = p
-		})
+		sigs.CloserNoClosee.WhenSomeV(
+			func(p lnwire.PartialSig) {
+				ps = p
+			},
+		)
+
 		return fn.Some(ps)
 	}
 
 	if sigs.NoCloserClosee.IsSome() {
 		var ps lnwire.PartialSig
-		sigs.NoCloserClosee.WhenSomeV(func(p lnwire.PartialSig) {
-			ps = p
-		})
+		sigs.NoCloserClosee.WhenSomeV(
+			func(p lnwire.PartialSig) {
+				ps = p
+			},
+		)
+
 		return fn.Some(ps)
 	}
 
 	if sigs.CloserAndClosee.IsSome() {
 		var ps lnwire.PartialSig
-		sigs.CloserAndClosee.WhenSomeV(func(p lnwire.PartialSig) {
-			ps = p
-		})
+		sigs.CloserAndClosee.WhenSomeV(
+			func(p lnwire.PartialSig) {
+				ps = p
+			},
+		)
+
 		return fn.Some(ps)
 	}
 
@@ -1431,11 +1480,12 @@ func extractTaprootPartialSig(sigs lnwire.TaprootPartialSigs) (
 // closing transaction. For taproot channels, it handles musig signature
 // combination. For non-taproot channels, it converts wire signatures to regular
 // signatures.
-func prepareClosingSignatures(env *Environment, l *LocalOfferSent,
-	msg *LocalSigReceived, sig lnwire.Sig,
+func prepareClosingSignatures(env *Environment,
+	l *LocalOfferSent, msg *LocalSigReceived,
+	sig lnwire.Sig,
 	closeOpts []lnwallet.ChanCloseOpt,
-) (localSig, remoteSig input.Signature,
-	musigOpts []lnwallet.ChanCloseOpt, err error) {
+) (input.Signature, input.Signature,
+	[]lnwallet.ChanCloseOpt, error) {
 
 	if env.IsTaproot() {
 		// Use the stored MusigPartialSig from LocalCloseStart rather
@@ -1480,11 +1530,11 @@ func prepareClosingSignatures(env *Environment, l *LocalOfferSent,
 
 	// For non-taproot channels, convert wire signatures to regular
 	// signatures.
-	remoteSig, err = sig.ToSignature()
+	remoteSig, err := sig.ToSignature()
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	localSig, err = l.LocalSig.ToSignature()
+	localSig, err := l.LocalSig.ToSignature()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1822,14 +1872,20 @@ func validateSigFields(sigFields SigFieldSet, localIsDust bool) error {
 
 // selectAndExtractSig selects the appropriate signature field based on BOLT
 // spec priority and extracts the signature and nonce.
-func selectAndExtractSig(fields SigFieldSet, localIsDust bool) (
-	sig lnwire.Sig, nonce fn.Option[lnwire.Musig2Nonce], isNoClosee bool,
-	err error) {
+func selectAndExtractSig(
+	fields SigFieldSet, localIsDust bool,
+) (lnwire.Sig, fn.Option[lnwire.Musig2Nonce], bool,
+	error) {
 
 	// Select which field to use based on BOLT spec priority.
-	var selectedField fn.Option[SigType]
+	var (
+		selectedField fn.Option[SigType]
+		isNoClosee    bool
+	)
+
 	if localIsDust {
-		// Spec step 1: Local output is dust, use CloserNoClosee.
+		// Spec step 1: Local output is dust, use
+		// CloserNoClosee.
 		selectedField = fields.CloserNoClosee
 		isNoClosee = true
 	} else {
@@ -1847,19 +1903,22 @@ func selectAndExtractSig(fields SigFieldSet, localIsDust bool) (
 	// If the selected field is none, this is an error.
 	sigType, err := selectedField.UnwrapOrErr(ErrNoSig)
 	if err != nil {
-		return lnwire.Sig{}, fn.None[lnwire.Musig2Nonce](), false, err
+		return lnwire.Sig{}, fn.None[lnwire.Musig2Nonce](),
+			false, err
 	}
 
-	// Check if this is a taproot signature (Right side of Either) or
-	// regular (Left side).
-	nonce = fn.None[lnwire.Musig2Nonce]()
+	// Check if this is a taproot signature (Right side of
+	// Either) or regular (Left side).
+	var sig lnwire.Sig
+	nonce := fn.None[lnwire.Musig2Nonce]()
 
 	// If this is a regular signature, extract it directly.
 	sigType.WhenLeft(func(regularSig lnwire.Sig) {
 		sig = regularSig
 	})
 
-	// Otherwise, for taproot, extract the partial sig and nonce.
+	// Otherwise, for taproot, extract the partial sig and
+	// nonce.
 	sigType.WhenRight(func(ps lnwire.PartialSigWithNonce) {
 		nonce = fn.Some(ps.Nonce)
 		sig = partialSigToWireSig(ps.PartialSig)
@@ -1868,14 +1927,17 @@ func selectAndExtractSig(fields SigFieldSet, localIsDust bool) (
 	return sig, nonce, isNoClosee, nil
 }
 
-// extractSigAndNonceFromClosingComplete extracts signature and optional nonce
-// from ClosingComplete using a three-phase approach: parse, validate, and select.
+// extractSigAndNonceFromClosingComplete extracts signature and optional
+// nonce from ClosingComplete using a three-phase approach: parse,
+// validate, and select.
 //
 // This function implements the BOLT spec requirements for the receiver (closee)
 // of a closing_complete message.
-func extractSigAndNonceFromClosingComplete(msg lnwire.ClosingComplete,
-	localIsDust, isTaproot bool) (sig lnwire.Sig,
-	nonce fn.Option[lnwire.Musig2Nonce], isNoClosee bool, err error) {
+func extractSigAndNonceFromClosingComplete(
+	msg lnwire.ClosingComplete,
+	localIsDust, isTaproot bool,
+) (lnwire.Sig, fn.Option[lnwire.Musig2Nonce], bool,
+	error) {
 
 	// First, parse the message to extract which signature fields are
 	// present.
@@ -1902,11 +1964,14 @@ func extractSigAndNonceFromClosingComplete(msg lnwire.ClosingComplete,
 		return lnwire.Sig{}, fn.None[lnwire.Musig2Nonce](), false, err
 	}
 
-	// Finally, select and extract the appropriate signature based on BOLT
-	// spec priority.
-	sig, nonce, isNoClosee, err = selectAndExtractSig(fields, localIsDust)
+	// Finally, select and extract the appropriate signature
+	// based on BOLT spec priority.
+	sig, nonce, isNoClosee, err := selectAndExtractSig(
+		fields, localIsDust,
+	)
 	if err != nil {
-		return lnwire.Sig{}, fn.None[lnwire.Musig2Nonce](), false, err
+		return lnwire.Sig{}, fn.None[lnwire.Musig2Nonce](),
+			false, err
 	}
 
 	return sig, nonce, isNoClosee, nil
@@ -1937,7 +2002,7 @@ func (l *RemoteCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 		// Extract the signature and JIT nonce from the ClosingComplete
 		// message. This function parses, validates, and selects the
 		// appropriate signature per BOLT spec.
-		sig, jitNonce, noClosee, err := extractSigAndNonceFromClosingComplete(
+		sig, jitNonce, noClosee, err := extractSigAndNonceFromClosingComplete( //nolint:ll
 			msg.SigMsg, l.LocalAmtIsDust(), env.IsTaproot(),
 		)
 		if err != nil {
@@ -1970,7 +2035,8 @@ func (l *RemoteCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 
 			// Now that the nonce is initialized, get the musig
 			// closing options.
-			musigOpts, err := env.RemoteMusigSession.ProposalClosingOpts()
+			session := env.RemoteMusigSession
+			musigOpts, err := session.ProposalClosingOpts()
 			if err != nil {
 				return nil, fmt.Errorf("failed to get musig "+
 					"closing opts: %w", err)

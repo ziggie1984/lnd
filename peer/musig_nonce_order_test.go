@@ -38,7 +38,8 @@ func TestRemoteCloseStartTaprootIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create TWO SEPARATE MusigChanCloser instances. This is the key to
-	// exposing the bug - in production where the issue existed, they share one.
+	// exposing the bug - in production where the issue
+	// existed, they share one.
 	localSession := NewMusigChanCloser(aliceChan)
 	remoteSession := NewMusigChanCloser(bobChan)
 
@@ -217,8 +218,11 @@ func (m *mockCloseSigner) CreateCloseProposal(
 	args := m.Called(proposedFee, localDeliveryScript,
 		remoteDeliveryScript, closeOpt)
 
-	return args.Get(0).(input.Signature), args.Get(1).(*wire.MsgTx),
-		args.Get(2).(btcutil.Amount), args.Error(3)
+	sig, _ := args.Get(0).(input.Signature)
+	tx, _ := args.Get(1).(*wire.MsgTx)
+	amt, _ := args.Get(2).(btcutil.Amount)
+
+	return sig, tx, amt, args.Error(3)
 }
 
 func (m *mockCloseSigner) CompleteCooperativeClose(
@@ -230,8 +234,10 @@ func (m *mockCloseSigner) CompleteCooperativeClose(
 	args := m.Called(localSig, remoteSig, localDeliveryScript,
 		remoteDeliveryScript, proposedFee, closeOpts)
 
-	return args.Get(0).(*wire.MsgTx), args.Get(1).(btcutil.Amount),
-		args.Error(2)
+	tx, _ := args.Get(0).(*wire.MsgTx)
+	amt, _ := args.Get(1).(btcutil.Amount)
+
+	return tx, amt, args.Error(2)
 }
 
 type mockCoopFeeEstimator struct {
@@ -244,7 +250,9 @@ func (m *mockCoopFeeEstimator) EstimateFee(
 
 	args := m.Called(chanType, localTxOut, remoteTxOut, idealFeeRate)
 
-	return args.Get(0).(btcutil.Amount)
+	amt, _ := args.Get(0).(btcutil.Amount)
+
+	return amt
 }
 
 type mockChanObserver struct {
@@ -291,8 +299,12 @@ func (m *mockChanObserver) MarkShutdownSent(deliveryAddr []byte,
 	return args.Error(0)
 }
 
+//nolint:ll
 func (m *mockChanObserver) FinalBalances() fn.Option[chancloser.ShutdownBalances] {
 	args := m.Called()
 
-	return args.Get(0).(fn.Option[chancloser.ShutdownBalances])
+	//nolint:forcetypeassert
+	val := args.Get(0).(fn.Option[chancloser.ShutdownBalances])
+
+	return val
 }

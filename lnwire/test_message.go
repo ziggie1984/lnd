@@ -670,7 +670,7 @@ func (c *ClosingComplete) RandTestMessage(t *rapid.T) Message {
 			partialSig := *RandPartialSig(t)
 			nonce := RandMusig2Nonce(t)
 			msg.TaprootClosingSigs.CloserNoClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType5, PartialSigWithNonce](
+				tlv.NewRecordT[tlv.TlvType5, PartialSigWithNonce]( //nolint:ll
 					PartialSigWithNonce{
 						PartialSig: partialSig,
 						Nonce:      nonce,
@@ -683,7 +683,7 @@ func (c *ClosingComplete) RandTestMessage(t *rapid.T) Message {
 			partialSig := *RandPartialSig(t)
 			nonce := RandMusig2Nonce(t)
 			msg.TaprootClosingSigs.NoCloserClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType6, PartialSigWithNonce](
+				tlv.NewRecordT[tlv.TlvType6, PartialSigWithNonce]( //nolint:ll
 					PartialSigWithNonce{
 						PartialSig: partialSig,
 						Nonce:      nonce,
@@ -695,8 +695,8 @@ func (c *ClosingComplete) RandTestMessage(t *rapid.T) Message {
 		if includeCloserAndClosee {
 			partialSig := *RandPartialSig(t)
 			nonce := RandMusig2Nonce(t)
-			msg.TaprootClosingSigs.CloserAndClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType7, PartialSigWithNonce](
+			msg.TaprootClosingSigs.CloserAndClosee = tlv.SomeRecordT( //nolint:ll
+				tlv.NewRecordT[tlv.TlvType7, PartialSigWithNonce]( //nolint:ll
 					PartialSigWithNonce{
 						PartialSig: partialSig,
 						Nonce:      nonce,
@@ -777,25 +777,26 @@ func (c *ClosingSig) RandTestMessage(t *rapid.T) Message {
 	useTaprootSigs := rapid.Bool().Draw(t, "useTaprootSigs")
 
 	if useTaprootSigs {
-		// For taproot channels in ClosingSig, use just PartialSig (no nonce)
+		// For taproot channels in ClosingSig, use just PartialSig (no
+		// nonce).
 		if includeCloserNoClosee {
 			partialSig := *RandPartialSig(t)
 			msg.TaprootPartialSigs.CloserNoClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType5, PartialSig](partialSig),
+				tlv.NewRecordT[tlv.TlvType5, PartialSig](partialSig), //nolint:ll
 			)
 		}
 
 		if includeNoCloserClosee {
 			partialSig := *RandPartialSig(t)
 			msg.TaprootPartialSigs.NoCloserClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType6, PartialSig](partialSig),
+				tlv.NewRecordT[tlv.TlvType6, PartialSig](partialSig), //nolint:ll
 			)
 		}
 
 		if includeCloserAndClosee {
 			partialSig := *RandPartialSig(t)
-			msg.TaprootPartialSigs.CloserAndClosee = tlv.SomeRecordT(
-				tlv.NewRecordT[tlv.TlvType7, PartialSig](partialSig),
+			msg.TaprootPartialSigs.CloserAndClosee = tlv.SomeRecordT( //nolint:ll
+				tlv.NewRecordT[tlv.TlvType7, PartialSig](partialSig), //nolint:ll
 			)
 		}
 	} else {

@@ -9,7 +9,8 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
-// TaprootPartialSigs houses the 3 possible taproot partial signatures (without nonces)
+// TaprootPartialSigs houses the 3 possible taproot partial
+// signatures (without nonces)
 // that can be sent in a ClosingSig message. These use just PartialSig since the
 // receiver already knows our nonce from the previous ClosingComplete.
 type TaprootPartialSigs struct {
@@ -57,8 +58,8 @@ type ClosingSig struct {
 	// without the nonce since the remote already knows our nonce from the
 	// previous ClosingComplete message.
 	//
-	// NOTE: This field is only populated for taproot channels. When present,
-	// the above ClosingSigs MUST be empty.
+	// NOTE: This field is only populated for taproot channels. When
+	// present, the above ClosingSigs MUST be empty.
 	TaprootPartialSigs
 
 	// NextCloseeNonce is an optional nonce for RBF iterations. This is the
@@ -159,7 +160,11 @@ func (c *ClosingSig) Decode(r io.Reader, _ uint32) error {
 		return err
 	}
 
-	if err := decodeClosingSigSigs(&c.ClosingSigs, &c.TaprootPartialSigs, &c.NextCloseeNonce, tlvRecords); err != nil {
+	err = decodeClosingSigSigs(
+		&c.ClosingSigs, &c.TaprootPartialSigs,
+		&c.NextCloseeNonce, tlvRecords,
+	)
+	if err != nil {
 		return err
 	}
 
@@ -172,8 +177,11 @@ func (c *ClosingSig) Decode(r io.Reader, _ uint32) error {
 
 // closingSigSigRecords returns the set of records that encode the closing sigs,
 // including both regular and taproot signatures.
-func closingSigSigRecords(c *ClosingSigs, tp *TaprootPartialSigs,
-	nextNonce tlv.OptionalRecordT[tlv.TlvType22, Musig2Nonce]) []tlv.RecordProducer {
+func closingSigSigRecords(c *ClosingSigs,
+	tp *TaprootPartialSigs,
+	nextNonce tlv.OptionalRecordT[tlv.TlvType22, Musig2Nonce],
+) []tlv.RecordProducer {
+
 	recordProducers := make([]tlv.RecordProducer, 0, 7)
 
 	// Regular signatures
@@ -187,16 +195,28 @@ func closingSigSigRecords(c *ClosingSigs, tp *TaprootPartialSigs,
 		recordProducers = append(recordProducers, &sig)
 	})
 
-	// Taproot partial signatures (without nonces)
-	tp.CloserNoClosee.WhenSome(func(sig tlv.RecordT[tlv.TlvType5, PartialSig]) {
-		recordProducers = append(recordProducers, &sig)
-	})
-	tp.NoCloserClosee.WhenSome(func(sig tlv.RecordT[tlv.TlvType6, PartialSig]) {
-		recordProducers = append(recordProducers, &sig)
-	})
-	tp.CloserAndClosee.WhenSome(func(sig tlv.RecordT[tlv.TlvType7, PartialSig]) {
-		recordProducers = append(recordProducers, &sig)
-	})
+	// Taproot partial signatures (without nonces).
+	tp.CloserNoClosee.WhenSome(
+		func(sig tlv.RecordT[tlv.TlvType5, PartialSig]) {
+			recordProducers = append(
+				recordProducers, &sig,
+			)
+		},
+	)
+	tp.NoCloserClosee.WhenSome(
+		func(sig tlv.RecordT[tlv.TlvType6, PartialSig]) {
+			recordProducers = append(
+				recordProducers, &sig,
+			)
+		},
+	)
+	tp.CloserAndClosee.WhenSome(
+		func(sig tlv.RecordT[tlv.TlvType7, PartialSig]) {
+			recordProducers = append(
+				recordProducers, &sig,
+			)
+		},
+	)
 
 	// Next closee nonce for RBF
 	nextNonce.WhenSome(func(nonce tlv.RecordT[tlv.TlvType22, Musig2Nonce]) {
@@ -227,7 +247,10 @@ func (c *ClosingSig) Encode(w *bytes.Buffer, _ uint32) error {
 		return err
 	}
 
-	recordProducers := closingSigSigRecords(&c.ClosingSigs, &c.TaprootPartialSigs, c.NextCloseeNonce)
+	recordProducers := closingSigSigRecords(
+		&c.ClosingSigs, &c.TaprootPartialSigs,
+		c.NextCloseeNonce,
+	)
 
 	err := EncodeMessageExtraData(&c.ExtraData, recordProducers...)
 	if err != nil {

@@ -369,7 +369,7 @@ check-go-version-dockerfile:
 check-go-version: check-go-version-dockerfile check-go-version-yaml
 
 #? lint-source: Run static code analysis
-lint-source: docker-tools	
+lint-source: docker-tools
 	@$(call print, "Linting source.")
 	$(DOCKER_TOOLS_LINT) custom-gcl run -v $(LINT_WORKERS)
 
@@ -381,7 +381,18 @@ lint-config-check:
 	$(GOTOOL) $(GOLINT_PKG) config verify -v
 
 #? lint: Run static code analysis
-lint: check-go-version lint-config-check lint-source 
+lint: check-go-version lint-config-check lint-source
+
+#? build-native-linter: Build the custom golangci-lint binary natively
+build-native-linter:
+	@$(call print, "Building custom linter natively.")
+	cd tools && CGO_ENABLED=0 $(GOCC) tool $(GOLINT_PKG) custom
+
+#? lint-native: Run static code analysis without Docker (faster on macOS)
+lint-native: check-go-version lint-config-check build-native-linter
+	@$(call print, "Linting source (native).")
+	GOWORK=off ./tools/custom-gcl run -v $(LINT_WORKERS) \
+	  --new-from-rev=$$(git merge-base HEAD master)
 
 #? protolint: Lint proto files using protolint
 protolint:
@@ -524,6 +535,7 @@ clean-docker-volumes:
 	flake-unit \
 	fmt \
 	lint \
+	lint-native \
 	list \
 	rpc \
 	rpc-format \

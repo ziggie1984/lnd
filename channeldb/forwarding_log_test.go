@@ -37,7 +37,7 @@ func TestForwardingLogBasicStorageAndQuery(t *testing.T) {
 	// minutes after the prior event.
 	numEvents := 100
 	events := make([]ForwardingEvent, numEvents)
-	for i := 0; i < numEvents; i++ {
+	for i := range numEvents {
 		events[i] = ForwardingEvent{
 			Timestamp:      timestamp,
 			IncomingChanID: lnwire.NewShortChanIDFromInt(uint64(rand.Int63())),
@@ -107,7 +107,7 @@ func TestForwardingLogQueryOptions(t *testing.T) {
 	// minutes after the prior event.
 	numEvents := 20
 	events := make([]ForwardingEvent, numEvents)
-	for i := 0; i < numEvents; i++ {
+	for i := range numEvents {
 		events[i] = ForwardingEvent{
 			Timestamp:      endTime,
 			IncomingChanID: lnwire.NewShortChanIDFromInt(uint64(rand.Int63())),
@@ -208,7 +208,7 @@ func TestForwardingLogQueryLimit(t *testing.T) {
 	// minutes after the prior event.
 	numEvents := 200
 	events := make([]ForwardingEvent, numEvents)
-	for i := 0; i < numEvents; i++ {
+	for i := range numEvents {
 		events[i] = ForwardingEvent{
 			Timestamp:      endTime,
 			IncomingChanID: lnwire.NewShortChanIDFromInt(uint64(rand.Int63())),
@@ -319,7 +319,7 @@ func TestForwardingLogStoreEvent(t *testing.T) {
 	numEvents := 20
 	events := make([]ForwardingEvent, numEvents)
 	ts := time.Now().UnixNano()
-	for i := 0; i < numEvents; i++ {
+	for i := range numEvents {
 		events[i] = ForwardingEvent{
 			Timestamp:      time.Unix(0, ts+int64(i)),
 			IncomingChanID: lnwire.NewShortChanIDFromInt(uint64(rand.Int63())),
@@ -503,7 +503,7 @@ func TestForwardingLogQueryChanIDs(t *testing.T) {
 	}
 
 	events := make([]ForwardingEvent, numEvents)
-	for i := 0; i < numEvents; i++ {
+	for i := range numEvents {
 		events[i] = ForwardingEvent{
 			Timestamp:      endTime,
 			IncomingChanID: incomingChanIDs[i%len(incomingChanIDs)],

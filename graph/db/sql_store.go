@@ -3054,7 +3054,8 @@ func (s *SQLStore) ChannelView(ctx context.Context,
 		switch v {
 		case gossipV1:
 			handleChannel := func(_ context.Context,
-				channel sqlc.ListChannelsPaginatedRow) error {
+				channel sqlc.ListChannelsPaginatedRow,
+				chanFeats map[int64][]int) error {
 
 				key1, err := route.NewVertexFromBytes(
 					channel.BitcoinKey1,
@@ -3070,11 +3071,28 @@ func (s *SQLStore) ChannelView(ctx context.Context,
 					return err
 				}
 
+				// Private taproot channels are currently stored
+				// as simple v1 channels that only need the
+				// taproot staging bit to reconstruct the BIP86
+				// funding script. They do not carry a custom
+				// tapscript root on this path.
+				//
+				// TODO: Remove this v1 feature-bit workaround
+				//  once private taproot channels have been
+				//  migrated to v2 gossip objects.
+				feats := lnwire.EmptyFeatureVector()
+				bits := chanFeats[channel.ID]
+				for _, bit := range bits {
+					feats.Set(lnwire.FeatureBit(bit))
+				}
+
 				edge := &models.ChannelEdgeInfo{
 					Version:          gossipV1,
 					BitcoinKey1Bytes: fn.Some(key1),
 					BitcoinKey2Bytes: fn.Some(key2),
+					Features:         feats,
 				}
+
 				pkScript, err := edge.FundingPKScript()
 				if err != nil {
 					return err
@@ -3114,9 +3132,25 @@ func (s *SQLStore) ChannelView(ctx context.Context,
 				return row.ID
 			}
 
-			return sqldb.ExecutePaginatedQuery(
+			collectID := func(
+				row sqlc.ListChannelsPaginatedRow) (int64,
+				error) {
+
+				return row.ID, nil
+			}
+
+			loadChannelFeatures := func(ctx context.Context,
+				chanIDs []int64) (map[int64][]int, error) {
+
+				return batchLoadChannelFeaturesHelper(
+					ctx, s.cfg.QueryCfg, db, chanIDs,
+				)
+			}
+
+			return sqldb.ExecuteCollectAndBatchWithSharedDataQuery(
 				ctx, s.cfg.QueryCfg, int64(-1), queryFunc,
-				extractCursor, handleChannel,
+				extractCursor, collectID, loadChannelFeatures,
+				handleChannel,
 			)
 
 		case gossipV2:

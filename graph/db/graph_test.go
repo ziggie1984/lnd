@@ -3902,9 +3902,9 @@ func testChannelView(t *testing.T, v lnwire.GossipVersion) {
 	assertChanViewEqual(t, channelView, edgePoints)
 }
 
-// testChannelViewTaprootV1RoundTripBug documents the current bug: a taproot
-// channel persisted as a v1 edge is read back from ChannelView() with a legacy
-// P2WSH funding script. The next commit fixes this behavior.
+// testChannelViewTaprootV1RoundTrip tests that a taproot channel persisted as a
+// v1 edge can be read back from ChannelView() with the correct taproot funding
+// script.
 func testChannelViewTaprootV1RoundTrip(t *testing.T, v lnwire.GossipVersion) {
 	t.Parallel()
 
@@ -3952,13 +3952,11 @@ func testChannelViewTaprootV1RoundTrip(t *testing.T, v lnwire.GossipVersion) {
 	require.NoError(t, err)
 	require.NoError(t, graph.AddChannelEdge(ctx, edgeInfo))
 
-	// The current buggy behavior reconstructs the legacy 2-of-2 witness
-	// script hash when ChannelView reads the edge back out of the database.
-	witnessScript, err := input.GenMultiSigScript(
-		node1Pub.SerializeCompressed(), node2Pub.SerializeCompressed(),
+	// The fix should make ChannelView reconstruct the taproot funding
+	// script for v1 channels that advertise the taproot staging bit.
+	expectedScript, _, err := input.GenTaprootFundingScript(
+		node1Pub, node2Pub, 0, fn.None[chainhash.Hash](),
 	)
-	require.NoError(t, err)
-	expectedScript, err := input.WitnessScriptHash(witnessScript)
 	require.NoError(t, err)
 
 	channelView, err := graph.ChannelView(ctx)

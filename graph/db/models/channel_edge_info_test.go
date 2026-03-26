@@ -146,10 +146,9 @@ func TestFundingPKScriptV2(t *testing.T) {
 	})
 }
 
-// TestFundingPKScriptV1TaprootFeatureBitBug documents the current bug: a v1
-// channel edge carrying the taproot staging bit still reconstructs a legacy
-// P2WSH funding script. The next commit fixes this behavior.
-func TestFundingPKScriptV1TaprootFeatureBitBug(t *testing.T) {
+// TestFundingPKScriptV1TaprootFeatureBit tests that a v1 channel edge carrying
+// the taproot staging bit reconstructs a taproot funding script.
+func TestFundingPKScriptV1TaprootFeatureBit(t *testing.T) {
 	t.Parallel()
 
 	privKey1, err := btcec.NewPrivateKey()
@@ -181,13 +180,11 @@ func TestFundingPKScriptV1TaprootFeatureBitBug(t *testing.T) {
 	pkScript, err := edge.FundingPKScript()
 	require.NoError(t, err)
 
-	// The pre-fix behavior ignores the feature bit here and reconstructs
-	// the legacy P2WSH funding script from the stored multisig keys.
-	witnessScript, err := input.GenMultiSigScript(
-		pubKey1.SerializeCompressed(), pubKey2.SerializeCompressed(),
+	// The fix should make FundingPKScript honor the feature bit and derive
+	// the taproot funding script directly from the stored bitcoin keys.
+	expectedScript, _, err := input.GenTaprootFundingScript(
+		pubKey1, pubKey2, 0, fn.None[chainhash.Hash](),
 	)
-	require.NoError(t, err)
-	expectedScript, err := input.WitnessScriptHash(witnessScript)
 	require.NoError(t, err)
 
 	require.Equal(t, expectedScript, pkScript)

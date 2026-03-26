@@ -61,6 +61,14 @@
   these valid no-reply pings instead of disconnecting peers, restoring
   compatibility with implementations that pad `channel_reestablish` messages
   with them.
+ 
+* [Fixed `FundingPKScript` to honor the taproot feature bit on v1 channel
+  edges](https://github.com/lightningnetwork/lnd/pull/10672). Private taproot
+  channels stored as v1 gossip objects with the taproot staging feature bit
+  were having their funding scripts incorrectly reconstructed as legacy P2WSH
+  multisig. This affected read paths such as `ChannelView`, which rebuilds
+  the chain watch filter on restart. This was a pre-existing bug since
+  private taproot channels were first introduced.
 
 # New Features
 

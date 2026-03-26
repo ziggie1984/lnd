@@ -2598,7 +2598,8 @@ func messageSummary(msg lnwire.Message) string {
 			msg.NodeID, time.Unix(int64(msg.Timestamp), 0))
 
 	case *lnwire.Ping:
-		return fmt.Sprintf("ping_bytes=%x", msg.PaddingBytes[:])
+		return fmt.Sprintf("num_pong_bytes=%d, len(ping_bytes)=%d",
+			msg.NumPongBytes, len(msg.PaddingBytes[:]))
 
 	case *lnwire.Pong:
 		return fmt.Sprintf("len(pong_bytes)=%d", len(msg.PongBytes[:]))

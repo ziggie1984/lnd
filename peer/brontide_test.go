@@ -1143,6 +1143,26 @@ func TestPeerIgnoresPingWithoutPongReply(t *testing.T) {
 	require.Len(t, pong.PongBytes, 1)
 }
 
+// TestMessageSummaryPingIncludesNumPongBytes ensures the debug summary for a
+// ping exposes the requested pong size, which makes ignored no-reply pings
+// visible without requiring trace-level logging.
+func TestMessageSummaryPingIncludesNumPongBytes(t *testing.T) {
+	t.Parallel()
+
+	// Arrange: Build a ping that uses the BOLT 1 no-reply sentinel range.
+	msg := &lnwire.Ping{
+		NumPongBytes: 65535,
+		PaddingBytes: []byte{1, 2, 3},
+	}
+
+	// Act: Generate the human-readable message summary.
+	summary := messageSummary(msg)
+
+	// Assert: The summary includes both the requested pong size and payload
+	// length so debug logs can explain why no pong was sent.
+	require.Equal(t, "num_pong_bytes=65535, len(ping_bytes)=3", summary)
+}
+
 // TestUpdateNextRevocation checks that the method `updateNextRevocation` is
 // behave as expected.
 func TestUpdateNextRevocation(t *testing.T) {

@@ -56,6 +56,12 @@
   transitions during startup, avoiding lost unlocks during slow database
   initialization.
 
+* [Fixed handling of BOLT 1 pings requesting 65532 or more pong
+  bytes](https://github.com/lightningnetwork/lnd/pull/10674). LND now ignores
+  these valid no-reply pings instead of disconnecting peers, restoring
+  compatibility with implementations that pad `channel_reestablish` messages
+  with them.
+
 # New Features
 
 - [Basic Support](https://github.com/lightningnetwork/lnd/pull/9868) for onion

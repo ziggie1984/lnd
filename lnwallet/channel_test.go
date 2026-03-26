@@ -3630,7 +3630,8 @@ func TestChanSyncTaprootLocalNonces(t *testing.T) {
 	t.Run("final taproot only populates LocalNonces", func(t *testing.T) {
 		// Final taproot channels populate only the map-based
 		// LocalNonces field.
-		aliceChanSyncMsg, err := aliceFinalChan.channelState.ChanSyncMsg()
+		aliceFinalState := aliceFinalChan.channelState
+		aliceChanSyncMsg, err := aliceFinalState.ChanSyncMsg()
 		require.NoError(t, err)
 
 		// Only LocalNonces should be populated.
@@ -3645,7 +3646,8 @@ func TestChanSyncTaprootLocalNonces(t *testing.T) {
 		// Final taproot channels send messages with only the
 		// LocalNonces field populated. Verify that the receiving side
 		// can process such a message.
-		aliceChanSyncMsg, err := aliceFinalChan.channelState.ChanSyncMsg()
+		aliceFinalState := aliceFinalChan.channelState
+		aliceChanSyncMsg, err := aliceFinalState.ChanSyncMsg()
 		require.NoError(t, err)
 		bobChanSyncMsg, err := bobFinalChan.channelState.ChanSyncMsg()
 		require.NoError(t, err)

@@ -1073,6 +1073,76 @@ func TestPeerCustomMessage(t *testing.T) {
 	require.Equal(t, receivedCustomMsg, &receivedCustom.msg)
 }
 
+// TestPeerIgnoresPingWithoutPongReply ensures we keep the connection alive for
+// pings using the BOLT 1 no-reply sentinel range.
+func TestPeerIgnoresPingWithoutPongReply(t *testing.T) {
+	t.Parallel()
+
+	// Arrange: Start a peer using the mock connection so we can
+	// inject incoming pings and observe any outgoing responses.
+	params := createTestPeer(t)
+
+	var (
+		mockConn  = params.mockConn
+		alicePeer = params.peer
+	)
+
+	startPeerDone := startPeer(t, mockConn, alicePeer)
+	_, err := fn.RecvOrTimeout(startPeerDone, 2*timeout)
+	require.NoError(t, err)
+
+	writePing := func(msg *lnwire.Ping) {
+		t.Helper()
+
+		var b bytes.Buffer
+		_, err := lnwire.WriteMessage(&b, msg, 0)
+		require.NoError(t, err)
+
+		select {
+		case mockConn.readMessages <- b.Bytes():
+		case <-time.After(timeout):
+			t.Fatal("timeout sending ping to peer")
+		}
+	}
+
+	// Act: Deliver a ping in the BOLT 1 no-reply range.
+	ignoredPayload := []byte{1, 2, 3}
+	writePing(&lnwire.Ping{
+		NumPongBytes: 65535,
+		PaddingBytes: ignoredPayload,
+	})
+
+	// Assert: The peer records the latest ping payload for observability.
+	require.Eventually(t, func() bool {
+		return bytes.Equal(
+			alicePeer.LastRemotePingPayload(), ignoredPayload,
+		)
+	}, timeout, 10*time.Millisecond)
+
+	// Assert: No pong is sent for the no-reply sentinel range.
+	select {
+	case rawMsg := <-mockConn.writtenMessages:
+		t.Fatalf("expected no pong reply, got %x", rawMsg)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Act: Send a normal ping afterward to prove the peer
+	// stayed connected and still handles standard ping/pong
+	// traffic.
+	writePing(&lnwire.Ping{NumPongBytes: 1})
+
+	rawMsg, err := fn.RecvOrTimeout(mockConn.writtenMessages, timeout)
+	require.NoError(t, err)
+
+	msg, err := lnwire.ReadMessage(bytes.NewReader(rawMsg), 0)
+	require.NoError(t, err)
+
+	// Assert: The follow-up ping receives the requested pong reply.
+	pong, ok := msg.(*lnwire.Pong)
+	require.True(t, ok)
+	require.Len(t, pong.PongBytes, 1)
+}
+
 // TestUpdateNextRevocation checks that the method `updateNextRevocation` is
 // behave as expected.
 func TestUpdateNextRevocation(t *testing.T) {

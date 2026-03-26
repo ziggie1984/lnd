@@ -2220,6 +2220,13 @@ out:
 			// the relevant atomic variable.
 			p.lastPingPayload.Store(msg.PaddingBytes[:])
 
+			// BOLT 1 requires us to ignore pings requesting 65532
+			// or more pong bytes instead of replying or
+			// disconnecting.
+			if msg.NumPongBytes > lnwire.MaxPongBytes {
+				continue
+			}
+
 			// Next, we'll send over the amount of specified pong
 			// bytes.
 			pong := lnwire.NewPong(p.cfg.PongBuf[0:msg.NumPongBytes])

@@ -63,6 +63,8 @@ var (
 	localTx = wire.MsgTx{Version: 2}
 
 	closeTx = wire.NewMsgTx(2)
+
+	defaultTimeout = 500 * time.Millisecond
 )
 
 func sigMustParse(sigBytes []byte) ecdsa.Signature {
@@ -119,7 +121,8 @@ func assertStateTransitions[Event any, Env protofsm.Environment](
 
 	for _, expectedState := range expectedStates {
 		newState, err := fn.RecvOrTimeout(
-			stateSub.NewItemCreated.ChanOut(), 10*time.Millisecond,
+			stateSub.NewItemCreated.ChanOut(),
+			defaultTimeout,
 		)
 		require.NoError(t, err, "expected state: %T", expectedState)
 
@@ -850,12 +853,15 @@ func (r *rbfCloserTestHarness) assertSingleRemoteRbfIteration(
 	}
 
 	// Our outer state should transition to ClosingNegotiation state.
-	r.assertStateTransitions(&ClosingNegotiation{})
-
-	// If this is an iteration, then we'll go from ClosePending ->
-	// RemoteCloseStart -> ClosePending. So we'll assert an extra transition
-	// here.
+	// If this is an iteration, we go ClosePending -> RemoteCloseStart ->
+	// ClosePending, producing two ClosingNegotiation transitions. We
+	// consume them in a single call to avoid the "no more states" check
+	// draining the second transition before we can assert it.
 	if iteration {
+		r.assertStateTransitions(
+			&ClosingNegotiation{}, &ClosingNegotiation{},
+		)
+	} else {
 		r.assertStateTransitions(&ClosingNegotiation{})
 	}
 

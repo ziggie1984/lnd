@@ -104,13 +104,9 @@ func (m *MusigChanCloser) CombineClosingOpts(localSig,
 	return localMuSig, remoteMuSig, opts, nil
 }
 
-// ClosingNonce returns the nonce that should be used when generating the our
-// partial signature for the remote party.
+// ClosingNonce generates a fresh nonce for our partial signature. A new nonce
+// is generated on every call to prevent nonce reuse across RBF iterations.
 func (m *MusigChanCloser) ClosingNonce() (*musig2.Nonces, error) {
-	if m.localNonce != nil {
-		return m.localNonce, nil
-	}
-
 	localKey, _ := m.channel.MultiSigKeys()
 	nonce, err := musig2.GenNonces(
 		musig2.WithPublicKey(localKey.PubKey),
@@ -128,6 +124,14 @@ func (m *MusigChanCloser) ClosingNonce() (*musig2.Nonces, error) {
 // message so it can be used later to generate and verify signatures.
 func (m *MusigChanCloser) InitRemoteNonce(nonce *musig2.Nonces) {
 	m.remoteNonce = nonce
+}
+
+// InvalidateNonce clears the cached local nonce, forcing a fresh nonce to be
+// generated on the next call to ClosingNonce. This prevents nonce reuse across
+// RBF iterations.
+func (m *MusigChanCloser) InvalidateNonce() {
+	m.localNonce = nil
+	m.musigSession = nil
 }
 
 // A compile-time assertion to ensure MusigChanCloser implements the

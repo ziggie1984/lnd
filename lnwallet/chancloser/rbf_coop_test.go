@@ -3082,13 +3082,15 @@ func TestTaprootNonceHandling(t *testing.T) {
 	)
 }
 
-// TestNextCloseeNonceStorageFromClosingSig tests that NextCloseeNonce from
-// LocalSigReceived (ClosingSig message) is properly stored for the next RBF
-// round in updateAndValidateCloseTerms.
+// TestNextCloseeNonceStorageFromClosingSig tests that
+// updateAndValidateCloseTerms does NOT modify RemoteCloseeNonce. The nonce
+// rotation is handled by LocalOfferSent.ProcessEvent, keeping close term
+// validation separate from nonce state management.
 func TestNextCloseeNonceStorageFromClosingSig(t *testing.T) {
 	t.Parallel()
 
-	// Create a closing negotiation state with taproot
+	// Create a closing negotiation state with taproot.
+	originalNonce := lnwire.Musig2Nonce{4, 5, 6}
 	closeTerms := &CloseChannelTerms{
 		ShutdownScripts: ShutdownScripts{
 			LocalDeliveryScript:  localAddr,
@@ -3096,7 +3098,7 @@ func TestNextCloseeNonceStorageFromClosingSig(t *testing.T) {
 		},
 		NonceState: NonceState{
 			LocalCloseeNonce:  fn.Some(lnwire.Musig2Nonce{1, 2, 3}),
-			RemoteCloseeNonce: fn.Some(lnwire.Musig2Nonce{4, 5, 6}),
+			RemoteCloseeNonce: fn.Some(originalNonce),
 		},
 	}
 
@@ -3128,21 +3130,19 @@ func TestNextCloseeNonceStorageFromClosingSig(t *testing.T) {
 		},
 	}
 
-	// Test that updateAndValidateCloseTerms properly stores the
-	// NextCloseeNonce.
+	// updateAndValidateCloseTerms should only validate close terms, not
+	// update the nonce. The nonce rotation happens in
+	// LocalOfferSent.ProcessEvent.
 	err := negotiation.updateAndValidateCloseTerms(sigEvent, true)
 	require.NoError(t, err)
 
-	// Verify the NextCloseeNonce was stored for the next round.
-	require.True(
-		t, negotiation.NonceState.RemoteCloseeNonce.IsSome(),
-		"NextCloseeNonce should be stored for next round",
-	)
-
+	// Verify the RemoteCloseeNonce was NOT modified — it should still
+	// hold the original nonce from shutdown.
 	storedNonce := negotiation.NonceState.RemoteCloseeNonce.UnwrapOrFail(t)
 	require.Equal(
-		t, nextCloseeNonce, storedNonce,
-		"stored nonce should match the NextCloseeNonce from ClosingSig",
+		t, originalNonce, storedNonce,
+		"updateAndValidateCloseTerms should not modify "+
+			"RemoteCloseeNonce",
 	)
 }
 

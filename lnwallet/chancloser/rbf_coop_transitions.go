@@ -961,17 +961,6 @@ func (c *ClosingNegotiation) updateAndValidateCloseTerms(event ProtocolEvent,
 			return err
 		}
 
-		// For taproot channels, extract the NextCloseeNonce from
-		// ClosingSig if present. This will be used for the next RBF
-		// iteration when we act as closer. This is their new closee
-		// nonce.
-		_, nextCloseeNonce := validateAndExtractSigAndNonce(
-			msg.SigMsg, isTaproot,
-		)
-		nextCloseeNonce.WhenSome(func(nonce lnwire.Musig2Nonce) {
-			c.NonceState.RemoteCloseeNonce = fn.Some(nonce)
-		})
-
 		return nil
 	}
 

@@ -58,20 +58,14 @@ func sendShutdownEvents(chanID lnwire.ChannelID, chanPoint wire.OutPoint,
 		// RemoteMusigSession, as that'll set our localNonce, we'll
 		// receive their remoteNonce for this session once we get their
 		// ClosingComplete message.
-		remoteMusig := env.RemoteMusigSession
-		if remoteMusig != nil {
-			closeeNonces, err := remoteMusig.ClosingNonce()
-			if err != nil {
-				return nil, none, fmt.Errorf("unable "+
-					"to generate closee "+
-					"nonce: %w", err)
-			}
-			localCloseeNonce = fn.Some(
-				lnwire.Musig2Nonce(
-					closeeNonces.PubNonce,
-				),
-			)
+		closeeNonces, err := env.RemoteMusigSession.ClosingNonce()
+		if err != nil {
+			return nil, none, fmt.Errorf("unable to generate "+
+				"closee nonce: %w", err)
 		}
+		localCloseeNonce = fn.Some(
+			lnwire.Musig2Nonce(closeeNonces.PubNonce),
+		)
 	}
 
 	// If we have a closee nonce, then make sure to include it in the
@@ -1584,7 +1578,8 @@ func (l *LocalOfferSent) ProcessEvent(event ProtocolEvent, env *Environment,
 			env, l, msg, sig, closeOpts,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LocalOfferSent: unable "+
+				"to prepare closing sigs: %w", err)
 		}
 		closeOpts = append(closeOpts, musigOpts...)
 
@@ -1595,7 +1590,8 @@ func (l *LocalOfferSent) ProcessEvent(event ProtocolEvent, env *Environment,
 			l.RemoteDeliveryScript, l.ProposedFee, closeOpts...,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LocalOfferSent: unable "+
+				"to complete coop close: %w", err)
 		}
 
 		// Invalidate the closer nonce now that the round is complete.
@@ -2065,7 +2061,8 @@ func (l *RemoteCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 			l.RemoteDeliveryScript, chanOpts,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("RemoteCloseStart: unable "+
+				"to create closee sig: %w", err)
 		}
 
 		// With our signature created, we'll now attempt to finalize the
@@ -2076,7 +2073,8 @@ func (l *RemoteCloseStart) ProcessEvent(event ProtocolEvent, env *Environment,
 			chanOpts...,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("RemoteCloseStart: unable "+
+				"to complete coop close: %w", err)
 		}
 
 		chancloserLog.Infof("ChannelPoint(%v): received sig (fee=%v "+

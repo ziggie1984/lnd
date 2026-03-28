@@ -242,6 +242,9 @@ exclude github.com/lightninglabs/lightning-node-connect v0.1.12-alpha
 
 exclude github.com/lightninglabs/lightning-node-connect v0.2.5-alpha
 
+// Use local sqldb module so cherry-picked fixes in ./sqldb are active.
+replace github.com/lightningnetwork/lnd/sqldb => ./sqldb
+
 // If you change this please also update docs/INSTALL.md and GO_VERSION in
 // Makefile (then run `make lint` to see where else it needs to be updated as
 // well).

@@ -20,11 +20,14 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/breez/breez/refcount"
 	"github.com/btcsuite/btcwallet/walletdb/bdb"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/gabstv/go-bsdiff/pkg/bspatch"
 	"github.com/lightningnetwork/lnd/channeldb"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/kvdb"
+	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/lightningnetwork/lnd/sqldb"
 	"go.etcd.io/bbolt"
 )
 
@@ -475,7 +478,7 @@ func downloadGraph(cacheDir string, dgraphPath string, log *Logger, breezURL str
 	}
 }
 
-func GossipSync(serviceUrl string, cacheDir string, dataDir string, networkType string, callback Callback) {
+func GossipSync(serviceUrl string, cacheDir string, dataDir string, networkType string, isSqlite bool, callback Callback) {
 	var (
 		firstRun      bool
 		useDGraph     bool
@@ -762,34 +765,15 @@ func GossipSync(serviceUrl string, cacheDir string, dataDir string, networkType 
 				log.Printf("Checksum OK %s", calculatedChecksum)
 			}
 		}
-		// open channel.db as dest
-		service, release, err := serviceRefCounter.Get(
-			func() (interface{}, refcount.ReleaseFunc, error) {
-				chanDB, graphDB, rel, err := newService(dataDir, log)
-				if err != nil {
-					return nil, nil, err
-				}
-				// Return a struct containing both databases
-				return struct {
-					chanDB  *channeldb.DB
-					graphDB *graphdb.ChannelGraph
-				}{chanDB, graphDB}, rel, nil
-			},
-		)
+		// temporarily copy dgraph to usage dir
+		err = copyFile(dgraphPath, usagePath, log)
 		if err != nil {
 			callback.OnError(err)
 			return
 		}
-		defer release()
-		serviceStruct := service.(struct {
-			chanDB  *channeldb.DB
-			graphDB *graphdb.ChannelGraph
-		})
-		destDB := serviceStruct.chanDB
-		destGraphDB := serviceStruct.graphDB
-		// temporarily copy dgraph to usage dir
-		err = copyFile(dgraphPath, usagePath, log)
-		// open dgraph.db as source
+		defer os.Remove(usagePath)
+
+		// open dgraph.db as source (always bolt format)
 		sourceBackend, err := kvdb.GetBoltBackend(&kvdb.BoltBackendConfig{
 			DBPath:         cacheDir + "/usage",
 			DBFileName:     "channel.db",
@@ -803,86 +787,173 @@ func GossipSync(serviceUrl string, cacheDir string, dataDir string, networkType 
 		}
 		defer sourceBackend.Close()
 
-		dchanDB, err := channeldb.CreateWithBackend(sourceBackend)
-		defer os.Remove(usagePath)
-		if err != nil {
-			callback.OnError(err)
-			return
-		}
-		defer dchanDB.Close()
+		if isSqlite {
+			// SQLite + native SQL path: migrate directly from
+			// the downloaded bolt dgraph into lnd.sqlite using
+			// the existing MigrateGraphToSQL logic.
+			log.Println("SQLite mode: migrating graph from bolt to native SQL")
+			graphDir := path.Join(dataDir, strings.Replace(directoryPattern, "{{network}}", "mainnet", -1))
+			lndSqlitePath := path.Join(graphDir, lncfg.SqliteNativeDBName)
 
-		// Use KVStore directly instead of ChannelGraph to avoid blocking on
-		// topology update channels that have no receivers
-		sourceGraphKV, err := graphdb.NewKVStore(sourceBackend)
-		log.Printf("Created source graphdb KVStore, err: %v", err)
-		if err != nil {
-			callback.OnError(err)
-			return
-		}
-		sourceDB, err := bdb.UnderlineDB(dchanDB.Backend)
-		if err != nil {
-			callback.OnError(err)
-			return
-		}
-		// utility function to convert bolts key to a string path.
-		extractPathElements := func(bytesPath [][]byte, key []byte) []string {
-			var path []string
-			for _, b := range bytesPath {
-				path = append(path, string(b))
+			sqliteStore, err := sqldb.NewSqliteStore(
+				&sqldb.SqliteConfig{
+					BusyTimeout: sqldb.DefaultSqliteBusyTimeout,
+					PragmaOptions: []string{
+						"temp_store=memory",
+					},
+				},
+				lndSqlitePath,
+			)
+			if err != nil {
+				callback.OnError(fmt.Errorf("failed to open lnd.sqlite: %w", err))
+				return
 			}
-			return append(path, string(key))
-		}
-		ourNode, err := ourNode(globalCtx, destGraphDB)
-		if err != nil {
-			callback.OnError(err)
-			return
-		}
-		kvdbTx, err := destDB.BeginReadWriteTx()
-		if err != nil {
-			callback.OnError(err)
-			return
-		}
-		tx, err := bdb.UnderlineTX(kvdbTx)
-		if err != nil {
-			callback.OnError(err)
-			return
-		}
-		defer tx.Rollback()
-		if ourNode == nil && hasSourceNode(tx) {
-			callback.OnError(err)
-			return
-			//errors.New("source node was set before sync transaction, rolling back").Error()
-		}
-		if ourNode != nil {
-			channelNodes, channels, policies, err := ourData(globalCtx, destGraphDB, ourNode, log)
+			defer sqliteStore.Close()
+
+			// Run schema migrations to ensure graph tables exist.
+			migrations := sqldb.GetMigrations()
+			err = sqliteStore.ApplyAllMigrations(globalCtx, migrations)
+			if err != nil {
+				callback.OnError(fmt.Errorf("failed to run migrations: %w", err))
+				return
+			}
+
+			baseDB := sqliteStore.GetBaseDB()
+			queryCfg := sqldb.DefaultSQLiteConfig()
+			migCfg := &graphdb.SQLStoreConfig{
+				ChainHash: *chaincfg.MainNetParams.GenesisHash,
+				QueryCfg:  queryCfg,
+			}
+
+			// Run the migration within a transaction.
+			tx, err := baseDB.DB.BeginTx(globalCtx, nil)
+			if err != nil {
+				callback.OnError(fmt.Errorf("failed to begin tx: %w", err))
+				return
+			}
+			defer tx.Rollback()
+
+			queries := baseDB.WithTx(tx)
+			err = graphdb.MigrateGraphToSQL(
+				globalCtx, migCfg, sourceBackend, queries,
+				func(o *graphdb.MigrateGraphToSQLOpts) {
+					o.SkipSourceNode = true
+				},
+			)
+			if err != nil {
+				callback.OnError(fmt.Errorf("graph migration failed: %w", err))
+				return
+			}
+
+			if err := tx.Commit(); err != nil {
+				callback.OnError(fmt.Errorf("failed to commit graph migration: %w", err))
+				return
+			}
+
+			log.Println("SQLite graph migration completed successfully")
+		} else {
+			// Bolt path: merge downloaded graph into channel.db
+			// using existing bbolt bucket copy logic.
+			dchanDB, err := channeldb.CreateWithBackend(sourceBackend)
+			if err != nil {
+				callback.OnError(err)
+				return
+			}
+			defer dchanDB.Close()
+
+			sourceGraphKV, err := graphdb.NewKVStore(sourceBackend)
+			log.Printf("Created source graphdb KVStore, err: %v", err)
+			if err != nil {
+				callback.OnError(err)
+				return
+			}
+			sourceDB, err := bdb.UnderlineDB(dchanDB.Backend)
 			if err != nil {
 				callback.OnError(err)
 				return
 			}
 
-			// add our data to the source db.
-			if err := putOurData(globalCtx, sourceGraphKV, ourNode, channelNodes, channels, policies, log); err != nil {
+			service, release, err := serviceRefCounter.Get(
+				func() (interface{}, refcount.ReleaseFunc, error) {
+					chanDB, graphDB, rel, err := newService(dataDir, log)
+					if err != nil {
+						return nil, nil, err
+					}
+					return struct {
+						chanDB  *channeldb.DB
+						graphDB *graphdb.ChannelGraph
+					}{chanDB, graphDB}, rel, nil
+				},
+			)
+			if err != nil {
 				callback.OnError(err)
 				return
 			}
-		}
-		// clear graph data from the destination db
-		for b := range bucketsToCopy {
-			if err := tx.DeleteBucket([]byte(b)); err != nil && err != bbolt.ErrBucketNotFound {
+			defer release()
+			serviceStruct := service.(struct {
+				chanDB  *channeldb.DB
+				graphDB *graphdb.ChannelGraph
+			})
+			destDB := serviceStruct.chanDB
+			destGraphDB := serviceStruct.graphDB
+
+			extractPathElements := func(bytesPath [][]byte, key []byte) []string {
+				var path []string
+				for _, b := range bytesPath {
+					path = append(path, string(b))
+				}
+				return append(path, string(key))
+			}
+			ourNode, err := ourNode(globalCtx, destGraphDB)
+			if err != nil {
 				callback.OnError(err)
 				return
 			}
+			kvdbTx, err := destDB.BeginReadWriteTx()
+			if err != nil {
+				callback.OnError(err)
+				return
+			}
+			boltTx, err := bdb.UnderlineTX(kvdbTx)
+			if err != nil {
+				callback.OnError(err)
+				return
+			}
+			defer boltTx.Rollback()
+			if ourNode == nil && hasSourceNode(boltTx) {
+				callback.OnError(err)
+				return
+			}
+			if ourNode != nil {
+				channelNodes, channels, policies, err := ourData(globalCtx, destGraphDB, ourNode, log)
+				if err != nil {
+					callback.OnError(err)
+					return
+				}
+				if err := putOurData(globalCtx, sourceGraphKV, ourNode, channelNodes, channels, policies, log); err != nil {
+					callback.OnError(err)
+					return
+				}
+			}
+			for b := range bucketsToCopy {
+				if err := boltTx.DeleteBucket([]byte(b)); err != nil && err != bbolt.ErrBucketNotFound {
+					callback.OnError(err)
+					return
+				}
+			}
+			err = merge(boltTx, sourceDB,
+				func(keyPath [][]byte, k []byte, v []byte) bool {
+					pathElements := extractPathElements(keyPath, k)
+					_, shouldCopy := bucketsToCopy[pathElements[0]]
+					return !shouldCopy
+				}, log)
+			if err != nil {
+				callback.OnError(err)
+				return
+			}
+			callback.OnResponse([]byte(fmt.Sprintf("dl=%t,done_commit_err=%v", !useDGraph, boltTx.Commit())))
 		}
-		err = merge(tx, sourceDB,
-			func(keyPath [][]byte, k []byte, v []byte) bool {
-				pathElements := extractPathElements(keyPath, k)
-				_, shouldCopy := bucketsToCopy[pathElements[0]]
-				return !shouldCopy
-			}, log)
-		if err != nil {
-			callback.OnError(err)
-			return
-		}
+
 		// update the lastrun modified time
 		now := time.Now()
 		if !fileExists(lastRunPath) {
@@ -898,7 +969,9 @@ func GossipSync(serviceUrl string, cacheDir string, dataDir string, networkType 
 			return
 		}
 		log.Printf("Done")
-		callback.OnResponse([]byte(fmt.Sprintf("dl=%t,done_commit_err=%v", !useDGraph, tx.Commit())))
+		if isSqlite {
+			callback.OnResponse([]byte(fmt.Sprintf("dl=%t,sqlite=true", !useDGraph)))
+		}
 	}
 }
 

@@ -44,3 +44,14 @@ CREATE INDEX IF NOT EXISTS graph_channel_policy_block_height_idx
 DROP INDEX IF EXISTS graph_node_last_update_idx;
 CREATE INDEX IF NOT EXISTS graph_node_last_update_idx
     ON graph_nodes(version, last_update, pub_key);
+
+-- Replace the single-column channel node-id indexes with composite indexes
+-- that include version. This helps the version-aware public node checks
+-- (UNION ALL probes) for both v1 and v2, while still serving node-centric
+-- lookups like channel iteration and existence checks.
+DROP INDEX IF EXISTS graph_channels_node_id_1_idx;
+DROP INDEX IF EXISTS graph_channels_node_id_2_idx;
+CREATE INDEX IF NOT EXISTS graph_channels_node_id_1_idx
+    ON graph_channels(node_id_1, version);
+CREATE INDEX IF NOT EXISTS graph_channels_node_id_2_idx
+    ON graph_channels(node_id_2, version);

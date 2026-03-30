@@ -135,6 +135,12 @@ type Querier interface {
 	GetPruneEntriesForHeights(ctx context.Context, heights []int64) ([]GraphPruneLog, error)
 	GetPruneHashByHeight(ctx context.Context, blockHeight int64) ([]byte, error)
 	GetPruneTip(ctx context.Context) (GraphPruneLog, error)
+	// Returns only public V1 nodes within the given last_update range. A V1 node
+	// is public if it has at least one channel with a bitcoin_1_signature set. The
+	// public check uses two separate EXISTS probes (one per node_id column)
+	// instead of a single OR on node_id_1/node_id_2 so the planner can use the
+	// channel node-id indexes directly.
+	GetPublicNodesByLastUpdateRange(ctx context.Context, arg GetPublicNodesByLastUpdateRangeParams) ([]GraphNode, error)
 	GetPublicV1ChannelsBySCID(ctx context.Context, arg GetPublicV1ChannelsBySCIDParams) ([]GraphChannel, error)
 	GetPublicV2ChannelsBySCID(ctx context.Context, arg GetPublicV2ChannelsBySCIDParams) ([]GraphChannel, error)
 	GetSCIDByOutpoint(ctx context.Context, arg GetSCIDByOutpointParams) ([]byte, error)

@@ -21,3 +21,19 @@ ALTER TABLE graph_channel_policies ADD COLUMN block_height BIGINT;
 -- A bitfield describing the disabled flags for a v2 channel update.
 ALTER TABLE graph_channel_policies ADD COLUMN disable_flags SMALLINT
     CHECK (disable_flags >= 0 AND disable_flags <= 255);
+
+-- Composite index for v2 node horizon queries. The query filters on
+-- (version, block_height) for the range scan and then paginates and orders by
+-- (block_height, pub_key). Including pub_key in the index lets the DB cover
+-- the ORDER BY without an extra sort and seek directly to the pagination
+-- cursor position.
+CREATE INDEX IF NOT EXISTS graph_node_block_height_idx
+    ON graph_nodes (version, block_height, pub_key);
+
+-- Index for v2 channel policy horizon queries which filter by gossip version
+-- and block-height range. The pagination cursor for channel queries uses a
+-- CASE expression across two joined policy rows (max of both block_heights),
+-- so the index cannot cover the ORDER BY — (version, block_height) is
+-- sufficient for the range scan.
+CREATE INDEX IF NOT EXISTS graph_channel_policy_block_height_idx
+    ON graph_channel_policies (version, block_height);

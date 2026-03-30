@@ -37,3 +37,10 @@ CREATE INDEX IF NOT EXISTS graph_node_block_height_idx
 -- sufficient for the range scan.
 CREATE INDEX IF NOT EXISTS graph_channel_policy_block_height_idx
     ON graph_channel_policies (version, block_height);
+
+-- Replace the old single-column last_update index with a composite index
+-- that matches the v1 node horizon query shape:
+--   WHERE version = 1 AND last_update >= ... ORDER BY last_update, pub_key
+DROP INDEX IF EXISTS graph_node_last_update_idx;
+CREATE INDEX IF NOT EXISTS graph_node_last_update_idx
+    ON graph_nodes(version, last_update, pub_key);

@@ -2433,7 +2433,8 @@ func (q *Queries) GetNodesByIDs(ctx context.Context, ids []int64) ([]GraphNode, 
 const getNodesByLastUpdateRange = `-- name: GetNodesByLastUpdateRange :many
 SELECT id, version, pub_key, alias, last_update, color, signature, block_height
 FROM graph_nodes
-WHERE last_update >= $1
+WHERE version = 1
+  AND last_update >= $1
   AND last_update < $2
   -- Pagination: We use (last_update, pub_key) as a compound cursor.
   -- This ensures stable ordering and allows us to resume from where we left off.

@@ -227,7 +227,8 @@ ORDER BY node_id, type, position;
 -- name: GetNodesByLastUpdateRange :many
 SELECT *
 FROM graph_nodes
-WHERE last_update >= @start_time
+WHERE version = 1
+  AND last_update >= @start_time
   AND last_update < @end_time
   -- Pagination: We use (last_update, pub_key) as a compound cursor.
   -- This ensures stable ordering and allows us to resume from where we left off.

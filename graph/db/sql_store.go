@@ -108,6 +108,7 @@ type SQLQueries interface {
 	ListChannelsPaginated(ctx context.Context, arg sqlc.ListChannelsPaginatedParams) ([]sqlc.ListChannelsPaginatedRow, error)
 	ListChannelsPaginatedV2(ctx context.Context, arg sqlc.ListChannelsPaginatedV2Params) ([]sqlc.ListChannelsPaginatedV2Row, error)
 	GetChannelsByPolicyLastUpdateRange(ctx context.Context, arg sqlc.GetChannelsByPolicyLastUpdateRangeParams) ([]sqlc.GetChannelsByPolicyLastUpdateRangeRow, error)
+	GetChannelsByPolicyBlockRange(ctx context.Context, arg sqlc.GetChannelsByPolicyBlockRangeParams) ([]sqlc.GetChannelsByPolicyBlockRangeRow, error)
 	GetChannelByOutpointWithPolicies(ctx context.Context, arg sqlc.GetChannelByOutpointWithPoliciesParams) (sqlc.GetChannelByOutpointWithPoliciesRow, error)
 	GetPublicV1ChannelsBySCID(ctx context.Context, arg sqlc.GetPublicV1ChannelsBySCIDParams) ([]sqlc.GraphChannel, error)
 	GetPublicV2ChannelsBySCID(ctx context.Context, arg sqlc.GetPublicV2ChannelsBySCIDParams) ([]sqlc.GraphChannel, error)
@@ -1227,26 +1228,28 @@ func extractMaxUpdateTime(
 	}
 }
 
-// buildChannelFromRow constructs a ChannelEdge from a database row.
-// This includes building the nodes, channel info, and policies.
-func (s *SQLStore) buildChannelFromRow(ctx context.Context, db SQLQueries,
-	row sqlc.GetChannelsByPolicyLastUpdateRangeRow) (ChannelEdge, error) {
+// buildChannelEdgeFromRow constructs a ChannelEdge from the common fields
+// shared by both the v1 time-range and v2 block-height-range query rows.
+// The policyRow parameter is passed to extractChannelPolicies which
+// type-switches on the concrete sqlc row type.
+func (s *SQLStore) buildChannelEdgeFromRow(ctx context.Context,
+	db SQLQueries, n1, n2 sqlc.GraphNode, ch sqlc.GraphChannel,
+	policyRow any) (ChannelEdge, error) {
 
-	node1, err := buildNode(ctx, s.cfg.QueryCfg, db, row.GraphNode)
+	node1, err := buildNode(ctx, s.cfg.QueryCfg, db, n1)
 	if err != nil {
 		return ChannelEdge{}, fmt.Errorf("unable to build node1: %w",
 			err)
 	}
 
-	node2, err := buildNode(ctx, s.cfg.QueryCfg, db, row.GraphNode_2)
+	node2, err := buildNode(ctx, s.cfg.QueryCfg, db, n2)
 	if err != nil {
 		return ChannelEdge{}, fmt.Errorf("unable to build node2: %w",
 			err)
 	}
 
 	channel, err := getAndBuildEdgeInfo(
-		ctx, s.cfg, db,
-		row.GraphChannel, node1.PubKeyBytes,
+		ctx, s.cfg, db, ch, node1.PubKeyBytes,
 		node2.PubKeyBytes,
 	)
 	if err != nil {
@@ -1254,7 +1257,7 @@ func (s *SQLStore) buildChannelFromRow(ctx context.Context, db SQLQueries,
 			"channel info: %w", err)
 	}
 
-	dbPol1, dbPol2, err := extractChannelPolicies(row)
+	dbPol1, dbPol2, err := extractChannelPolicies(policyRow)
 	if err != nil {
 		return ChannelEdge{}, fmt.Errorf("unable to extract "+
 			"channel policies: %w", err)
@@ -1276,6 +1279,26 @@ func (s *SQLStore) buildChannelFromRow(ctx context.Context, db SQLQueries,
 		Node1:   node1,
 		Node2:   node2,
 	}, nil
+}
+
+// extractMaxBlockHeight returns the maximum of the two policy block heights.
+// This is used for pagination cursor tracking in v2 gossip queries.
+func extractMaxBlockHeight(
+	row sqlc.GetChannelsByPolicyBlockRangeRow) int64 {
+
+	switch {
+	case row.Policy1BlockHeight.Valid &&
+		row.Policy2BlockHeight.Valid:
+
+		return max(row.Policy1BlockHeight.Int64,
+			row.Policy2BlockHeight.Int64)
+	case row.Policy1BlockHeight.Valid:
+		return row.Policy1BlockHeight.Int64
+	case row.Policy2BlockHeight.Valid:
+		return row.Policy2BlockHeight.Int64
+	default:
+		return 0
+	}
 }
 
 // updateChanCacheBatch updates the channel cache with multiple edges at once.
@@ -1320,11 +1343,7 @@ func (s *SQLStore) ChanUpdatesInHorizon(ctx context.Context,
 		return s.chanUpdatesInHorizonV1(ctx, r, cfg)
 
 	case gossipV2:
-		err := fmt.Errorf("v2 chan updates in horizon not yet " +
-			"implemented")
-		return func(yield func(ChannelEdge, error) bool) {
-			_ = yield(ChannelEdge{}, err)
-		}
+		return s.chanUpdatesInHorizonV2(ctx, r, cfg)
 
 	default:
 		err := fmt.Errorf("unknown gossip version: %v", v)
@@ -1431,8 +1450,12 @@ func (s *SQLStore) chanUpdatesInHorizonV1(ctx context.Context,
 							continue
 						}
 
-						chanEdge, err := s.buildChannelFromRow(
-							ctx, db, row,
+						chanEdge, err := s.buildChannelEdgeFromRow(
+							ctx, db,
+							row.GraphNode,
+							row.GraphNode_2,
+							row.GraphChannel,
+							row,
 						)
 						if err != nil {
 							return err
@@ -1491,6 +1514,179 @@ func (s *SQLStore) chanUpdatesInHorizonV1(ctx context.Context,
 		} else {
 			log.Debugf("ChanUpdatesInHorizon(v1) returned no " +
 				"edges in horizon")
+		}
+	}
+}
+
+// chanUpdatesInHorizonV2 implements the v2 block-height-based channel horizon
+// query.
+func (s *SQLStore) chanUpdatesInHorizonV2(ctx context.Context,
+	r ChanUpdateRange,
+	cfg *iterConfig) iter.Seq2[ChannelEdge, error] {
+
+	startHeight := int64(r.StartHeight.UnwrapOr(0))
+	endHeight := int64(r.EndHeight.UnwrapOr(0))
+	batchSize := cfg.chanUpdateIterBatchSize
+
+	return func(yield func(ChannelEdge, error) bool) {
+		var (
+			edgesSeen       = make(map[uint64]struct{})
+			edgesToCache    = make(map[uint64]ChannelEdge)
+			hits            int
+			total           int
+			lastBlockHeight sql.NullInt64
+			lastID          sql.NullInt64
+			hasMore         = true
+		)
+
+		// queryChannels fetches the next page of v2 channels in
+		// the block-height range.
+		queryChannels := func(
+			db SQLQueries,
+		) ([]sqlc.GetChannelsByPolicyBlockRangeRow, error) {
+
+			return db.GetChannelsByPolicyBlockRange(
+				ctx,
+				sqlc.GetChannelsByPolicyBlockRangeParams{
+					Version: int16(gossipV2),
+					StartHeight: sqldb.SQLInt64(
+						startHeight,
+					),
+					EndHeight: sqldb.SQLInt64(
+						endHeight,
+					),
+					LastBlockHeight: lastBlockHeight,
+					LastID:          lastID,
+					MaxResults: sql.NullInt32{
+						Int32: int32(batchSize),
+						Valid: true,
+					},
+				},
+			)
+		}
+
+		// processRow handles a single channel row: updates
+		// pagination cursors, checks the seen set and cache, and
+		// builds the channel edge if needed.
+		processRow := func(ctx context.Context, db SQLQueries,
+			row sqlc.GetChannelsByPolicyBlockRangeRow,
+			batch *[]ChannelEdge) error {
+
+			lastBlockHeight = sql.NullInt64{
+				Int64: extractMaxBlockHeight(row),
+				Valid: true,
+			}
+			lastID = sql.NullInt64{
+				Int64: row.GraphChannel.ID,
+				Valid: true,
+			}
+
+			chanIDInt := byteOrder.Uint64(
+				row.GraphChannel.Scid,
+			)
+			if _, ok := edgesSeen[chanIDInt]; ok {
+				return nil
+			}
+
+			// Check cache (we already hold shared read
+			// lock).
+			channel, ok := s.chanCache.get(
+				gossipV2, chanIDInt,
+			)
+			if ok {
+				hits++
+				total++
+				edgesSeen[chanIDInt] = struct{}{}
+				*batch = append(*batch, channel)
+
+				return nil
+			}
+
+			chanEdge, err := s.buildChannelEdgeFromRow(
+				ctx, db, row.GraphNode,
+				row.GraphNode_2,
+				row.GraphChannel, row,
+			)
+			if err != nil {
+				return err
+			}
+
+			edgesSeen[chanIDInt] = struct{}{}
+			edgesToCache[chanIDInt] = chanEdge
+			*batch = append(*batch, chanEdge)
+			total++
+
+			return nil
+		}
+
+		for hasMore {
+			var batch []ChannelEdge
+
+			s.cacheMu.RLock()
+
+			err := s.db.ExecTx(ctx, sqldb.ReadTxOpt(),
+				func(db SQLQueries) error {
+					rows, err := queryChannels(db)
+					if err != nil {
+						return err
+					}
+
+					hasMore = len(rows) == batchSize
+
+					for _, row := range rows {
+						err := processRow(
+							ctx, db, row, &batch,
+						)
+						if err != nil {
+							return err
+						}
+					}
+
+					return nil
+				}, func() {
+					batch = nil
+					edgesSeen = make(
+						map[uint64]struct{},
+					)
+					edgesToCache = make(
+						map[uint64]ChannelEdge,
+					)
+				},
+			)
+
+			s.cacheMu.RUnlock()
+
+			if err != nil {
+				log.Errorf("ChanUpdatesInHorizon(v2) "+
+					"batch error: %v", err)
+
+				yield(ChannelEdge{}, err)
+
+				return
+			}
+
+			for _, edge := range batch {
+				if !yield(edge, nil) {
+					return
+				}
+			}
+
+			s.updateChanCacheBatch(gossipV2, edgesToCache)
+			edgesToCache = make(map[uint64]ChannelEdge)
+
+			if len(batch) == 0 {
+				break
+			}
+		}
+
+		if total > 0 {
+			log.Debugf("ChanUpdatesInHorizon(v2) hit "+
+				"percentage: %.2f (%d/%d)",
+				float64(hits)*100/float64(total), hits,
+				total)
+		} else {
+			log.Debugf("ChanUpdatesInHorizon(v2) returned " +
+				"no edges in horizon")
 		}
 	}
 }
@@ -5556,6 +5752,54 @@ func extractChannelPolicies(row any) (*sqlc.GraphChannelPolicy,
 		return policy1, policy2, nil
 
 	case sqlc.GetChannelsByPolicyLastUpdateRangeRow:
+		if r.Policy1ID.Valid {
+			policy1 = &sqlc.GraphChannelPolicy{
+				ID:                      r.Policy1ID.Int64,
+				Version:                 r.Policy1Version.Int16,
+				ChannelID:               r.GraphChannel.ID,
+				NodeID:                  r.Policy1NodeID.Int64,
+				Timelock:                r.Policy1Timelock.Int32,
+				FeePpm:                  r.Policy1FeePpm.Int64,
+				BaseFeeMsat:             r.Policy1BaseFeeMsat.Int64,
+				MinHtlcMsat:             r.Policy1MinHtlcMsat.Int64,
+				MaxHtlcMsat:             r.Policy1MaxHtlcMsat,
+				LastUpdate:              r.Policy1LastUpdate,
+				InboundBaseFeeMsat:      r.Policy1InboundBaseFeeMsat,
+				InboundFeeRateMilliMsat: r.Policy1InboundFeeRateMilliMsat,
+				Disabled:                r.Policy1Disabled,
+				MessageFlags:            r.Policy1MessageFlags,
+				ChannelFlags:            r.Policy1ChannelFlags,
+				Signature:               r.Policy1Signature,
+				BlockHeight:             r.Policy1BlockHeight,
+				DisableFlags:            r.Policy1DisableFlags,
+			}
+		}
+		if r.Policy2ID.Valid {
+			policy2 = &sqlc.GraphChannelPolicy{
+				ID:                      r.Policy2ID.Int64,
+				Version:                 r.Policy2Version.Int16,
+				ChannelID:               r.GraphChannel.ID,
+				NodeID:                  r.Policy2NodeID.Int64,
+				Timelock:                r.Policy2Timelock.Int32,
+				FeePpm:                  r.Policy2FeePpm.Int64,
+				BaseFeeMsat:             r.Policy2BaseFeeMsat.Int64,
+				MinHtlcMsat:             r.Policy2MinHtlcMsat.Int64,
+				MaxHtlcMsat:             r.Policy2MaxHtlcMsat,
+				LastUpdate:              r.Policy2LastUpdate,
+				InboundBaseFeeMsat:      r.Policy2InboundBaseFeeMsat,
+				InboundFeeRateMilliMsat: r.Policy2InboundFeeRateMilliMsat,
+				Disabled:                r.Policy2Disabled,
+				MessageFlags:            r.Policy2MessageFlags,
+				ChannelFlags:            r.Policy2ChannelFlags,
+				Signature:               r.Policy2Signature,
+				BlockHeight:             r.Policy2BlockHeight,
+				DisableFlags:            r.Policy2DisableFlags,
+			}
+		}
+
+		return policy1, policy2, nil
+
+	case sqlc.GetChannelsByPolicyBlockRangeRow:
 		if r.Policy1ID.Valid {
 			policy1 = &sqlc.GraphChannelPolicy{
 				ID:                      r.Policy1ID.Int64,

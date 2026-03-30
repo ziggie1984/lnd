@@ -3311,6 +3311,215 @@ func TestChanUpdatesInHorizonExclusiveEnd(t *testing.T) {
 	}
 }
 
+// TestChanUpdatesInHorizonV2 tests that ChanUpdatesInHorizon works correctly
+// for v2 gossip using block-height-based ranges with [start, end) semantics.
+func TestChanUpdatesInHorizonV2(t *testing.T) {
+	t.Parallel()
+
+	if !isSQLDB {
+		t.Skip("v2 gossip only supported with SQL backend")
+	}
+
+	ctx := t.Context()
+
+	graph := NewVersionedGraph(
+		MakeTestGraph(t), lnwire.GossipVersion2,
+	)
+
+	node1 := createTestVertex(t, lnwire.GossipVersion2)
+	node2 := createTestVertex(t, lnwire.GossipVersion2)
+	require.NoError(t, graph.AddNode(ctx, node1))
+	require.NoError(t, graph.AddNode(ctx, node2))
+
+	// Query before any channels exist — should return empty.
+	iter := graph.ChanUpdatesInHorizon(
+		ctx, ChanUpdateRange{
+			StartHeight: fn.Some(uint32(0)),
+			EndHeight:   fn.Some(uint32(9999)),
+		},
+	)
+	channels, err := fn.CollectErr(iter)
+	require.NoError(t, err)
+	require.Empty(t, channels)
+
+	// Create 10 v2 channels with policy block heights at
+	// 100, 110, 120, ..., 190.
+	const numChans = 10
+	const startHeight uint32 = 100
+	const heightStep uint32 = 10
+
+	for i := 0; i < numChans; i++ {
+		height := startHeight + uint32(i)*heightStep
+
+		channel, chanID := createEdge(
+			lnwire.GossipVersion2, uint32(i*10), 0, 0, 0,
+			node1, node2,
+		)
+		require.NoError(t, graph.AddChannelEdge(ctx, channel))
+
+		edge1 := newEdgePolicy(
+			lnwire.GossipVersion2, chanID.ToUint64(), 0, true,
+		)
+		edge1.LastBlockHeight = height
+		edge1.ToNode = node2.PubKeyBytes
+		edge1.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge1))
+
+		edge2 := newEdgePolicy(
+			lnwire.GossipVersion2, chanID.ToUint64(), 0, false,
+		)
+		edge2.LastBlockHeight = height
+		edge2.ToNode = node1.PubKeyBytes
+		edge2.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge2))
+	}
+
+	endHeight := startHeight + uint32(numChans)*heightStep
+
+	tests := []struct {
+		name  string
+		start uint32
+		end   uint32
+		want  int
+	}{
+		{
+			name:  "below range",
+			start: 0,
+			end:   50,
+			want:  0,
+		},
+		{
+			name:  "above range",
+			start: 500,
+			end:   600,
+			want:  0,
+		},
+		{
+			name:  "start height is inclusive",
+			start: startHeight,
+			end:   startHeight + 1,
+			want:  1,
+		},
+		{
+			// End is exclusive: channel at exactly
+			// endHeight-10 (=190) should NOT be included
+			// when end=190.
+			name:  "end height is exclusive",
+			start: startHeight,
+			end:   endHeight - heightStep,
+			want:  numChans - 1,
+		},
+		{
+			name:  "one past end includes last",
+			start: startHeight,
+			end:   endHeight - heightStep + 1,
+			want:  numChans,
+		},
+		{
+			name:  "full range",
+			start: startHeight,
+			end:   endHeight,
+			want:  numChans,
+		},
+		{
+			name:  "skip first",
+			start: startHeight + heightStep,
+			end:   endHeight,
+			want:  numChans - 1,
+		},
+		{
+			// Heights [120, 170) = channels at
+			// 120, 130, 140, 150, 160 = 5 channels.
+			name:  "middle slice",
+			start: 120,
+			end:   170,
+			want:  5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.ChanUpdatesInHorizon(
+				ctx, ChanUpdateRange{
+					StartHeight: fn.Some(tc.start),
+					EndHeight:   fn.Some(tc.end),
+				},
+			)
+
+			results, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, results, tc.want)
+		})
+	}
+
+	// Test with asymmetric policy block heights: one policy inside
+	// the range, the other outside. The SQL query uses OR across the
+	// two policies, so the channel should still be returned if
+	// either policy is in range.
+	t.Run("asymmetric policy heights", func(t *testing.T) {
+		channel, chanID := createEdge(
+			lnwire.GossipVersion2, 500, 0, 0, 0,
+			node1, node2,
+		)
+		require.NoError(t, graph.AddChannelEdge(ctx, channel))
+
+		// Policy 1 at height 300 (inside range).
+		edge1 := newEdgePolicy(
+			lnwire.GossipVersion2,
+			chanID.ToUint64(), 0, true,
+		)
+		edge1.LastBlockHeight = 300
+		edge1.ToNode = node2.PubKeyBytes
+		edge1.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge1))
+
+		// Policy 2 at height 900 (outside range).
+		edge2 := newEdgePolicy(
+			lnwire.GossipVersion2,
+			chanID.ToUint64(), 0, false,
+		)
+		edge2.LastBlockHeight = 900
+		edge2.ToNode = node1.PubKeyBytes
+		edge2.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge2))
+
+		// Query [250, 350) — only policy 1 is in range, but the
+		// channel should still be returned.
+		iter := graph.ChanUpdatesInHorizon(
+			ctx, ChanUpdateRange{
+				StartHeight: fn.Some(uint32(250)),
+				EndHeight:   fn.Some(uint32(350)),
+			},
+		)
+		results, err := fn.CollectErr(iter)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+
+		// Query [850, 950) — only policy 2 is in range, channel
+		// should still be returned.
+		iter = graph.ChanUpdatesInHorizon(
+			ctx, ChanUpdateRange{
+				StartHeight: fn.Some(uint32(850)),
+				EndHeight:   fn.Some(uint32(950)),
+			},
+		)
+		results, err = fn.CollectErr(iter)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+
+		// Query [400, 500) — neither policy is in range.
+		iter = graph.ChanUpdatesInHorizon(
+			ctx, ChanUpdateRange{
+				StartHeight: fn.Some(uint32(400)),
+				EndHeight:   fn.Some(uint32(500)),
+			},
+		)
+		results, err = fn.CollectErr(iter)
+		require.NoError(t, err)
+		require.Empty(t, results)
+	})
+}
+
 // TestFilterKnownChanIDsZombieRevival tests that if a ChannelUpdateInfo is
 // passed to FilterKnownChanIDs that contains a channel that we have marked as
 // a zombie, then we will mark it as live again if the new ChannelUpdate has

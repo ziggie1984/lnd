@@ -3077,6 +3077,143 @@ func TestNodeUpdatesInHorizonExclusiveEnd(t *testing.T) {
 	}
 }
 
+// TestNodeUpdatesInHorizonV2 tests that NodeUpdatesInHorizon works correctly
+// for v2 gossip using block-height-based ranges with [start, end) semantics.
+func TestNodeUpdatesInHorizonV2(t *testing.T) {
+	t.Parallel()
+
+	if !isSQLDB {
+		t.Skip("v2 gossip only supported with SQL backend")
+	}
+
+	ctx := t.Context()
+
+	graph := NewVersionedGraph(
+		MakeTestGraph(t), lnwire.GossipVersion2,
+	)
+
+	// Query before any nodes exist — should return empty.
+	iter := graph.NodeUpdatesInHorizon(
+		ctx, NodeUpdateRange{
+			StartHeight: fn.Some(uint32(0)),
+			EndHeight:   fn.Some(uint32(9999)),
+		},
+	)
+	nodes, err := fn.CollectErr(iter)
+	require.NoError(t, err)
+	require.Empty(t, nodes)
+
+	// Create 10 v2 nodes at block heights 100, 110, 120, ..., 190.
+	const numNodes = 10
+	const startHeight uint32 = 100
+	const heightStep uint32 = 10
+
+	nodeAnns := make([]models.Node, 0, numNodes)
+	for i := 0; i < numNodes; i++ {
+		node := createTestVertex(t, lnwire.GossipVersion2)
+		node.LastBlockHeight = startHeight + uint32(i)*heightStep
+		nodeAnns = append(nodeAnns, *node)
+		require.NoError(t, graph.AddNode(ctx, node))
+	}
+
+	// endHeight is one past the last node's height (exclusive).
+	endHeight := startHeight + uint32(numNodes)*heightStep
+
+	tests := []struct {
+		name  string
+		start uint32
+		end   uint32
+		want  int
+	}{
+		{
+			// Range strictly below all nodes.
+			name:  "below range",
+			start: 0,
+			end:   50,
+			want:  0,
+		},
+		{
+			// Range strictly above all nodes.
+			name:  "above range",
+			start: 500,
+			end:   600,
+			want:  0,
+		},
+		{
+			// Start is inclusive: node at exactly startHeight
+			// should be included.
+			name:  "start height is inclusive",
+			start: startHeight,
+			end:   startHeight + 1,
+			want:  1,
+		},
+		{
+			// End is exclusive: node at exactly endHeight-10
+			// (=190) should NOT be included when end=190.
+			name:  "end height is exclusive",
+			start: startHeight,
+			end:   endHeight - heightStep,
+			want:  numNodes - 1,
+		},
+		{
+			// One past the last node includes it.
+			name:  "one past end includes last",
+			start: startHeight,
+			end:   endHeight - heightStep + 1,
+			want:  numNodes,
+		},
+		{
+			// Full range returns all nodes.
+			name:  "full range",
+			start: startHeight,
+			end:   endHeight,
+			want:  numNodes,
+		},
+		{
+			// Skip the first node.
+			name:  "skip first",
+			start: startHeight + heightStep,
+			end:   endHeight,
+			want:  numNodes - 1,
+		},
+		{
+			// Middle slice: heights [120, 170) = nodes at
+			// 120, 130, 140, 150, 160 = 5 nodes.
+			name:  "middle slice",
+			start: 120,
+			end:   170,
+			want:  5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.NodeUpdatesInHorizon(
+				ctx, NodeUpdateRange{
+					StartHeight: fn.Some(tc.start),
+					EndHeight:   fn.Some(tc.end),
+				},
+			)
+
+			results, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, results, tc.want)
+
+			// Verify nodes are in ascending block height
+			// order.
+			for i := 1; i < len(results); i++ {
+				require.LessOrEqual(
+					t,
+					results[i-1].LastBlockHeight,
+					results[i].LastBlockHeight,
+					"nodes should be in ascending "+
+						"block height order",
+				)
+			}
+		})
+	}
+}
+
 // TestChanUpdatesInHorizonExclusiveEnd verifies that ChanUpdatesInHorizon uses
 // an exclusive end time per BOLT 07: "timestamp is greater or equal to
 // first_timestamp, and less than first_timestamp plus timestamp_range".

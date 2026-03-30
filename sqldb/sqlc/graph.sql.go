@@ -2070,6 +2070,89 @@ func (q *Queries) GetNodeIDByPubKey(ctx context.Context, arg GetNodeIDByPubKeyPa
 	return id, err
 }
 
+const getNodesByBlockHeightRange = `-- name: GetNodesByBlockHeightRange :many
+SELECT id, version, pub_key, alias, last_update, color, signature, block_height
+FROM graph_nodes
+WHERE graph_nodes.version = $1
+  AND block_height >= $2
+  AND block_height < $3
+  -- Pagination: We use (block_height, pub_key) as a compound cursor.
+  -- This ensures stable ordering and allows us to resume from where we left off.
+  -- We use COALESCE with -1 as sentinel since block heights are always positive.
+  AND (
+    block_height > COALESCE($4, -1)
+    OR
+    (block_height = COALESCE($4, -1)
+     AND pub_key > $5)
+  )
+  -- Optional filter for public nodes only.
+  AND (
+    COALESCE($6, FALSE) IS FALSE
+    OR
+    -- For V2 protocol, a node is public if it has at least one announced
+    -- v2 channel (indicated by a non-empty channel announcement signature).
+    EXISTS (
+      SELECT 1
+      FROM graph_channels c
+      WHERE c.version = graph_nodes.version
+        AND COALESCE(length(c.signature), 0) > 0
+        AND (c.node_id_1 = graph_nodes.id OR c.node_id_2 = graph_nodes.id)
+    )
+  )
+ORDER BY block_height ASC, pub_key ASC
+LIMIT COALESCE($7, 999999999)
+`
+
+type GetNodesByBlockHeightRangeParams struct {
+	Version         int16
+	StartHeight     sql.NullInt64
+	EndHeight       sql.NullInt64
+	LastBlockHeight sql.NullInt64
+	LastPubKey      []byte
+	OnlyPublic      interface{}
+	MaxResults      interface{}
+}
+
+func (q *Queries) GetNodesByBlockHeightRange(ctx context.Context, arg GetNodesByBlockHeightRangeParams) ([]GraphNode, error) {
+	rows, err := q.db.QueryContext(ctx, getNodesByBlockHeightRange,
+		arg.Version,
+		arg.StartHeight,
+		arg.EndHeight,
+		arg.LastBlockHeight,
+		arg.LastPubKey,
+		arg.OnlyPublic,
+		arg.MaxResults,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GraphNode
+	for rows.Next() {
+		var i GraphNode
+		if err := rows.Scan(
+			&i.ID,
+			&i.Version,
+			&i.PubKey,
+			&i.Alias,
+			&i.LastUpdate,
+			&i.Color,
+			&i.Signature,
+			&i.BlockHeight,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getNodesByIDs = `-- name: GetNodesByIDs :many
 SELECT id, version, pub_key, alias, last_update, color, signature, block_height
 FROM graph_nodes

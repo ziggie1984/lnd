@@ -52,6 +52,7 @@ type SQLQueries interface {
 	GetNodesByIDs(ctx context.Context, ids []int64) ([]sqlc.GraphNode, error)
 	GetNodeIDByPubKey(ctx context.Context, arg sqlc.GetNodeIDByPubKeyParams) (int64, error)
 	GetNodesByLastUpdateRange(ctx context.Context, arg sqlc.GetNodesByLastUpdateRangeParams) ([]sqlc.GraphNode, error)
+	GetNodesByBlockHeightRange(ctx context.Context, arg sqlc.GetNodesByBlockHeightRangeParams) ([]sqlc.GraphNode, error)
 	ListNodesPaginated(ctx context.Context, arg sqlc.ListNodesPaginatedParams) ([]sqlc.GraphNode, error)
 	ListNodeIDsAndPubKeys(ctx context.Context, arg sqlc.ListNodeIDsAndPubKeysParams) ([]sqlc.ListNodeIDsAndPubKeysRow, error)
 	IsPublicV1Node(ctx context.Context, pubKey []byte) (bool, error)
@@ -632,11 +633,7 @@ func (s *SQLStore) NodeUpdatesInHorizon(ctx context.Context,
 		return s.nodeUpdatesInHorizonV1(ctx, r, cfg)
 
 	case gossipV2:
-		err := fmt.Errorf("v2 node updates in horizon not yet " +
-			"implemented")
-		return func(yield func(*models.Node, error) bool) {
-			_ = yield(nil, err)
-		}
+		return s.nodeUpdatesInHorizonV2(ctx, r, cfg)
 
 	default:
 		err := fmt.Errorf("unknown gossip version: %v", v)
@@ -739,6 +736,111 @@ func (s *SQLStore) nodeUpdatesInHorizonV1(ctx context.Context,
 			}
 
 			// If the batch didn't yield anything, then we're done.
+			if len(batch) == 0 {
+				break
+			}
+		}
+	}
+}
+
+// nodeUpdatesInHorizonV2 implements the v2 block-height-based node horizon
+// query.
+func (s *SQLStore) nodeUpdatesInHorizonV2(ctx context.Context,
+	r NodeUpdateRange,
+	cfg *iterConfig) iter.Seq2[*models.Node, error] {
+
+	startHeight := int64(r.StartHeight.UnwrapOr(0))
+	endHeight := int64(r.EndHeight.UnwrapOr(0))
+	batchSize := cfg.nodeUpdateIterBatchSize
+
+	return func(yield func(*models.Node, error) bool) {
+		var (
+			lastBlock  sql.NullInt64
+			lastPubKey = make([]byte, 33)
+			hasMore    = true
+		)
+
+		// queryNodes fetches the next page of v2 nodes in the
+		// block-height range.
+		queryNodes := func(db SQLQueries) ([]sqlc.GraphNode, error) {
+			return db.GetNodesByBlockHeightRange(
+				ctx, sqlc.GetNodesByBlockHeightRangeParams{
+					Version: int16(gossipV2),
+					StartHeight: sqldb.SQLInt64(
+						startHeight,
+					),
+					EndHeight: sqldb.SQLInt64(
+						endHeight,
+					),
+					LastBlockHeight: lastBlock,
+					LastPubKey:      lastPubKey,
+					OnlyPublic: sql.NullBool{
+						Bool:  cfg.iterPublicNodes,
+						Valid: true,
+					},
+					MaxResults: sqldb.SQLInt32(batchSize),
+				},
+			)
+		}
+
+		// processNode accumulates a node into the batch and
+		// advances the pagination cursors.
+		processNode := func(node *models.Node,
+			batch *[]*models.Node) error {
+
+			*batch = append(*batch, node)
+
+			lastBlock = sql.NullInt64{
+				Int64: int64(node.LastBlockHeight),
+				Valid: true,
+			}
+			lastPubKey = node.PubKeyBytes[:]
+
+			return nil
+		}
+
+		for hasMore {
+			var batch []*models.Node
+
+			err := s.db.ExecTx(
+				ctx, sqldb.ReadTxOpt(),
+				func(db SQLQueries) error {
+					rows, err := queryNodes(db)
+					if err != nil {
+						return err
+					}
+
+					hasMore = len(rows) == batchSize
+
+					return forEachNodeInBatch(
+						ctx, s.cfg.QueryCfg, db,
+						rows, func(_ int64,
+							n *models.Node) error {
+
+							return processNode(
+								n, &batch,
+							)
+						},
+					)
+				}, func() {
+					batch = nil
+				},
+			)
+			if err != nil {
+				log.Errorf("NodeUpdatesInHorizon(v2) "+
+					"batch error: %v", err)
+
+				yield(nil, err)
+
+				return
+			}
+
+			for _, node := range batch {
+				if !yield(node, nil) {
+					return
+				}
+			}
+
 			if len(batch) == 0 {
 				break
 			}
@@ -1387,7 +1489,7 @@ func (s *SQLStore) chanUpdatesInHorizonV1(ctx context.Context,
 				"percentage: %.2f (%d/%d)",
 				float64(hits)*100/float64(total), hits, total)
 		} else {
-			log.Debugf("ChanUpdatesInHorizon(v1) returned no "+
+			log.Debugf("ChanUpdatesInHorizon(v1) returned no " +
 				"edges in horizon")
 		}
 	}

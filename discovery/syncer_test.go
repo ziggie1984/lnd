@@ -31,7 +31,6 @@ var (
 )
 
 type horizonQuery struct {
-	chain chainhash.Hash
 	start time.Time
 	end   time.Time
 }
@@ -87,12 +86,12 @@ func (m *mockChannelGraphTimeSeries) HighestChanID(_ context.Context,
 	return &m.highestID, nil
 }
 
-func (m *mockChannelGraphTimeSeries) UpdatesInHorizon(chain chainhash.Hash,
+func (m *mockChannelGraphTimeSeries) UpdatesInHorizon(_ context.Context,
 	startTime, endTime time.Time) iter.Seq2[lnwire.Message, error] {
 
 	return func(yield func(lnwire.Message, error) bool) {
 		m.horizonReq <- horizonQuery{
-			chain, startTime, endTime,
+			startTime, endTime,
 		}
 
 		// We'll get the response from the channel, then yield it

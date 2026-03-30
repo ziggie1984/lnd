@@ -606,9 +606,10 @@ func (s *SQLStore) SetSourceNode(ctx context.Context,
 	}, sqldb.NoOpReset)
 }
 
-// NodeUpdatesInHorizon returns all the known lightning node which have an
-// update timestamp within the passed range. This method can be used by two
-// nodes to quickly determine if they have the same set of up to date node
+// NodeUpdatesInHorizon returns all the known lightning nodes which have an
+// update timestamp greater than or equal to startTime and less than endTime,
+// i.e. the range [startTime, endTime) per BOLT 07. This method can be used by
+// two nodes to quickly determine if they have the same set of up to date node
 // announcements.
 //
 // NOTE: This is part of the Store interface.
@@ -1161,7 +1162,8 @@ func (s *SQLStore) updateChanCacheBatch(v lnwire.GossipVersion,
 }
 
 // ChanUpdatesInHorizon returns all the known channel edges which have at least
-// one edge that has an update timestamp within the specified horizon.
+// one edge that has an update timestamp greater than or equal to startTime and
+// less than endTime, i.e. the range [startTime, endTime) per BOLT 07.
 //
 // Iterator Lifecycle:
 // 1. Initialize state (edgesSeen map, cache tracking, pagination cursors)

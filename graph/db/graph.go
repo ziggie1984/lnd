@@ -721,8 +721,8 @@ func (c *ChannelGraph) ForEachNodeCacheable(ctx context.Context,
 	return c.db.ForEachNodeCacheable(ctx, v, cb, reset)
 }
 
-// NodeUpdatesInHorizon returns all known lightning nodes with updates in the
-// range.
+// NodeUpdatesInHorizon returns all known lightning nodes with an update
+// timestamp in [startTime, endTime) per BOLT 07.
 func (c *ChannelGraph) NodeUpdatesInHorizon(ctx context.Context,
 	startTime, endTime time.Time,
 	opts ...IteratorOption) iter.Seq2[*models.Node, error] {
@@ -783,8 +783,8 @@ func (c *ChannelGraph) HighestChanID(ctx context.Context,
 	return c.db.HighestChanID(ctx, v)
 }
 
-// ChanUpdatesInHorizon returns all known channel edges with updates in the
-// horizon.
+// ChanUpdatesInHorizon returns all known channel edges with at least one
+// policy update timestamp in [startTime, endTime) per BOLT 07.
 func (c *ChannelGraph) ChanUpdatesInHorizon(ctx context.Context,
 	startTime, endTime time.Time,
 	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
@@ -944,8 +944,8 @@ func (c *VersionedGraph) NumZombies(ctx context.Context) (uint64, error) {
 	return c.db.NumZombies(ctx, c.v)
 }
 
-// NodeUpdatesInHorizon returns all known lightning nodes which have an update
-// timestamp within the passed range.
+// NodeUpdatesInHorizon returns all known lightning nodes with an update
+// timestamp in [startTime, endTime) per BOLT 07.
 func (c *VersionedGraph) NodeUpdatesInHorizon(ctx context.Context,
 	startTime, endTime time.Time,
 	opts ...IteratorOption) iter.Seq2[*models.Node, error] {

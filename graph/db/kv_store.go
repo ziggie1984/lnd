@@ -2286,8 +2286,9 @@ func (c *KVStore) fetchNextChanUpdateBatch(
 		// Now we'll read items up to the batch size, exiting early if
 		// we exceed the ending time.
 		for len(batch) < state.batchSize && indexKey != nil {
-			// If we're at the end, then we'll break out now.
-			if bytes.Compare(indexKey, endTimeBytes[:]) > 0 {
+			// If we've reached or passed the end time, break
+			// out. Per BOLT 07, the end time is exclusive.
+			if bytes.Compare(indexKey, endTimeBytes[:]) >= 0 {
 				break
 			}
 
@@ -2373,10 +2374,11 @@ func (c *KVStore) fetchNextChanUpdateBatch(
 			indexKey, _ = updateCursor.Next()
 		}
 
-		// If we haven't yet crossed the endTimeBytes, then we still
-		// have more entries to deliver.
+		// If we haven't yet reached the endTimeBytes, then we still
+		// have more entries to deliver. The end time is exclusive
+		// per BOLT 07.
 		if indexKey != nil &&
-			bytes.Compare(indexKey, endTimeBytes[:]) <= 0 {
+			bytes.Compare(indexKey, endTimeBytes[:]) < 0 {
 
 			hasMore = true
 		}
@@ -2394,7 +2396,8 @@ func (c *KVStore) fetchNextChanUpdateBatch(
 }
 
 // ChanUpdatesInHorizon returns all the known channel edges which have at least
-// one edge that has an update timestamp within the specified horizon.
+// one edge that has an update timestamp greater than or equal to startTime and
+// less than endTime, i.e. the range [startTime, endTime) per BOLT 07.
 func (c *KVStore) ChanUpdatesInHorizon(_ context.Context,
 	startTime, endTime time.Time,
 	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
@@ -2568,9 +2571,10 @@ func (c *KVStore) fetchNextNodeBatch(
 			// Extract the timestamp from the index key (first 8
 			// bytes). Only compare timestamps, not the full key
 			// with pubkey.
+			// The end time is exclusive per BOLT 07.
 			keyTimestamp := byteOrder.Uint64(indexKey[:8])
 			endTimestamp := uint64(state.endTime.Unix())
-			if keyTimestamp > endTimestamp {
+			if keyTimestamp >= endTimestamp {
 				break
 			}
 
@@ -2607,12 +2611,13 @@ func (c *KVStore) fetchNextNodeBatch(
 			indexKey, _ = updateCursor.Next()
 		}
 
-		// If we haven't yet crossed the endTime, then we still
-		// have more entries to deliver.
+		// If we haven't yet reached the endTime, then we still
+		// have more entries to deliver. The end time is exclusive
+		// per BOLT 07.
 		if indexKey != nil {
 			keyTimestamp := byteOrder.Uint64(indexKey[:8])
 			endTimestamp := uint64(state.endTime.Unix())
-			if keyTimestamp <= endTimestamp {
+			if keyTimestamp < endTimestamp {
 				hasMore = true
 			}
 		}
@@ -2644,8 +2649,9 @@ func (c *KVStore) fetchNextNodeBatch(
 	return nodeBatch, hasMore, nil
 }
 
-// NodeUpdatesInHorizon returns all the known lightning node which have an
-// update timestamp within the passed range.
+// NodeUpdatesInHorizon returns all the known lightning nodes which have an
+// update timestamp greater than or equal to startTime and less than endTime,
+// i.e. the range [startTime, endTime) per BOLT 07.
 func (c *KVStore) NodeUpdatesInHorizon(_ context.Context, startTime,
 	endTime time.Time,
 	opts ...IteratorOption) iter.Seq2[*models.Node, error] {

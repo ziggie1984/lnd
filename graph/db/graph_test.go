@@ -2708,12 +2708,15 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 			end:   startTime.Add(26 * time.Hour),
 			want:  25,
 		},
+		// The end time is exclusive per BOLT 07, so we
+		// add one extra hour to include the last node in
+		// the desired range.
 		{
 			name:  "first batch only",
 			start: startTime,
 			end: startTime.Add(
 				time.Duration(
-					min(batchSize, 25)-1,
+					min(batchSize, 25),
 				) * time.Hour,
 			),
 			want: min(batchSize, 25),
@@ -2723,7 +2726,7 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 			start: startTime,
 			end: startTime.Add(
 				time.Duration(
-					min(batchSize, 24),
+					min(batchSize+1, 25),
 				) * time.Hour,
 			),
 			want: min(batchSize+1, 25),
@@ -2748,16 +2751,19 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 				)
 			}(),
 			end: func() time.Time {
+				// End is exclusive, so we add
+				// one hour to include the node
+				// at exactly the start time.
 				if batchSize <= 25 {
 					return startTime.Add(
 						time.Duration(
-							batchSize-1,
+							batchSize,
 						) * time.Hour,
 					)
 				}
 
 				return startTime.Add(
-					time.Duration(25) * time.Hour,
+					time.Duration(26) * time.Hour,
 				)
 			}(),
 			want: func() int {
@@ -2960,6 +2966,177 @@ func TestChanUpdatesInHorizonBoundaryConditions(t *testing.T) {
 				"expected %d channels, got %d", numChans,
 				len(channels),
 			)
+		})
+	}
+}
+
+// TestNodeUpdatesInHorizonExclusiveEnd verifies that NodeUpdatesInHorizon uses
+// an exclusive end time per BOLT 07: "timestamp is greater or equal to
+// first_timestamp, and less than first_timestamp plus timestamp_range".
+func TestNodeUpdatesInHorizonExclusiveEnd(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	graph := MakeTestGraph(t)
+
+	// Create three nodes at timestamps 100, 200, and 300.
+	timestamps := []int64{100, 200, 300}
+	for _, ts := range timestamps {
+		node := createTestVertex(t, lnwire.GossipVersion1)
+		node.LastUpdate = time.Unix(ts, 0)
+		require.NoError(t, graph.AddNode(ctx, node))
+	}
+
+	tests := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+		want  int
+	}{
+		{
+			// Start is inclusive: node at exactly startTime
+			// should be included.
+			name:  "start time is inclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(101, 0),
+			want:  1,
+		},
+		{
+			// End is exclusive: node at exactly endTime should
+			// NOT be included.
+			name:  "end time is exclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(200, 0),
+			want:  1,
+		},
+		{
+			// One second past the boundary includes the node.
+			name:  "one past end includes boundary node",
+			start: time.Unix(100, 0),
+			end:   time.Unix(201, 0),
+			want:  2,
+		},
+		{
+			// Range [200, 300) should include node at 200 but
+			// not node at 300.
+			name:  "mid range excludes end",
+			start: time.Unix(200, 0),
+			end:   time.Unix(300, 0),
+			want:  1,
+		},
+		{
+			// Range [200, 301) should include nodes at 200
+			// and 300.
+			name:  "mid range includes end plus one",
+			start: time.Unix(200, 0),
+			end:   time.Unix(301, 0),
+			want:  2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.NodeUpdatesInHorizon(
+				ctx, tc.start, tc.end,
+			)
+
+			nodes, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, nodes, tc.want)
+		})
+	}
+}
+
+// TestChanUpdatesInHorizonExclusiveEnd verifies that ChanUpdatesInHorizon uses
+// an exclusive end time per BOLT 07: "timestamp is greater or equal to
+// first_timestamp, and less than first_timestamp plus timestamp_range".
+func TestChanUpdatesInHorizonExclusiveEnd(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	graph := MakeTestGraph(t)
+
+	node1 := createTestVertex(t, lnwire.GossipVersion1)
+	node2 := createTestVertex(t, lnwire.GossipVersion1)
+	require.NoError(t, graph.AddNode(ctx, node1))
+	require.NoError(t, graph.AddNode(ctx, node2))
+
+	// Create three channels with policy updates at timestamps 100, 200,
+	// and 300.
+	timestamps := []int64{100, 200, 300}
+	for i, ts := range timestamps {
+		channel, chanID := createEdge(
+			lnwire.GossipVersion1, uint32(i*10), 0, 0, 0,
+			node1, node2,
+		)
+		require.NoError(t, graph.AddChannelEdge(ctx, channel))
+
+		edge := newEdgePolicy(
+			lnwire.GossipVersion1, chanID.ToUint64(), ts, true,
+		)
+		edge.ChannelFlags = 0
+		edge.ToNode = node2.PubKeyBytes
+		edge.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge))
+	}
+
+	tests := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+		want  int
+	}{
+		{
+			// Start is inclusive: channel at exactly startTime
+			// should be included.
+			name:  "start time is inclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(101, 0),
+			want:  1,
+		},
+		{
+			// End is exclusive: channel at exactly endTime
+			// should NOT be included.
+			name:  "end time is exclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(200, 0),
+			want:  1,
+		},
+		{
+			// One second past the boundary includes the
+			// channel.
+			name:  "one past end includes boundary channel",
+			start: time.Unix(100, 0),
+			end:   time.Unix(201, 0),
+			want:  2,
+		},
+		{
+			// Range [200, 300) should include channel at 200
+			// but not channel at 300.
+			name:  "mid range excludes end",
+			start: time.Unix(200, 0),
+			end:   time.Unix(300, 0),
+			want:  1,
+		},
+		{
+			// Range [200, 301) should include channels at 200
+			// and 300.
+			name:  "mid range includes end plus one",
+			start: time.Unix(200, 0),
+			end:   time.Unix(301, 0),
+			want:  2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.ChanUpdatesInHorizon(
+				ctx, tc.start, tc.end,
+			)
+
+			channels, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, channels, tc.want)
 		})
 	}
 }

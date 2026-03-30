@@ -2435,12 +2435,12 @@ func TestChanUpdatesInHorizon(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	// If we issue an arbitrary query before any channel updates are
 	// inserted in the database, we should get zero results.
 	chanIter := graph.ChanUpdatesInHorizon(
-		ctx, lnwire.GossipVersion1, ChanUpdateRange{
+		ctx, ChanUpdateRange{
 			StartTime: fn.Some(time.Unix(999, 0)),
 			EndTime:   fn.Some(time.Unix(9999, 0)),
 		},
@@ -2550,7 +2550,7 @@ func TestChanUpdatesInHorizon(t *testing.T) {
 	}
 	for _, queryCase := range queryCases {
 		respIter := graph.ChanUpdatesInHorizon(
-			ctx, lnwire.GossipVersion1, ChanUpdateRange{
+			ctx, ChanUpdateRange{
 				StartTime: fn.Some(queryCase.start),
 				EndTime:   fn.Some(queryCase.end),
 			},
@@ -2582,7 +2582,7 @@ func TestNodeUpdatesInHorizon(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	startTime := time.Unix(1234, 0)
 	endTime := startTime
@@ -2590,7 +2590,7 @@ func TestNodeUpdatesInHorizon(t *testing.T) {
 	// If we issue an arbitrary query before we insert any nodes into the
 	// database, then we shouldn't get any results back.
 	nodeUpdatesIter := graph.NodeUpdatesInHorizon(
-		ctx, lnwire.GossipVersion1, NodeUpdateRange{
+		ctx, NodeUpdateRange{
 			StartTime: fn.Some(time.Unix(999, 0)),
 			EndTime:   fn.Some(time.Unix(9999, 0)),
 		},
@@ -2668,7 +2668,7 @@ func TestNodeUpdatesInHorizon(t *testing.T) {
 	}
 	for _, queryCase := range queryCases {
 		iter := graph.NodeUpdatesInHorizon(
-			ctx, lnwire.GossipVersion1, NodeUpdateRange{
+			ctx, NodeUpdateRange{
 				StartTime: fn.Some(queryCase.start),
 				EndTime:   fn.Some(queryCase.end),
 			},
@@ -2691,7 +2691,7 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 	batchSize int) {
 
 	// Create a fresh graph for each test.
-	testGraph := MakeTestGraph(t)
+	testGraph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	// Add 25 nodes with increasing timestamps.
 	startTime := time.Unix(1234567890, 0)
@@ -2805,8 +2805,7 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			iter := testGraph.NodeUpdatesInHorizon(
-				ctx, lnwire.GossipVersion1,
-				NodeUpdateRange{
+				ctx, NodeUpdateRange{
 					StartTime: fn.Some(tc.start),
 					EndTime:   fn.Some(tc.end),
 				},
@@ -2865,7 +2864,7 @@ func TestNodeUpdatesInHorizonEarlyTermination(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	// We'll start by creating 100 nodes, each with an update time spaced
 	// one hour apart.
@@ -2882,8 +2881,7 @@ func TestNodeUpdatesInHorizonEarlyTermination(t *testing.T) {
 	for _, stopAt := range terminationPoints {
 		t.Run(fmt.Sprintf("StopAt%d", stopAt), func(t *testing.T) {
 			iter := graph.NodeUpdatesInHorizon(
-				ctx, lnwire.GossipVersion1,
-				NodeUpdateRange{
+				ctx, NodeUpdateRange{
 					StartTime: fn.Some(startTime),
 					EndTime: fn.Some(
 						startTime.Add(200 * time.Hour),
@@ -2925,7 +2923,9 @@ func TestChanUpdatesInHorizonBoundaryConditions(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			// Create a fresh graph for each test, then add two new
 			// nodes to the graph.
-			graph := MakeTestGraph(t)
+			graph := NewVersionedGraph(
+				MakeTestGraph(t), lnwire.GossipVersion1,
+			)
 			node1 := createTestVertex(t, lnwire.GossipVersion1)
 			node2 := createTestVertex(t, lnwire.GossipVersion1)
 			require.NoError(t, graph.AddNode(ctx, node1))
@@ -2977,8 +2977,7 @@ func TestChanUpdatesInHorizonBoundaryConditions(t *testing.T) {
 			// Now we'll run the main query, and verify that we get
 			// back the expected number of channels.
 			iter := graph.ChanUpdatesInHorizon(
-				ctx, lnwire.GossipVersion1,
-				ChanUpdateRange{
+				ctx, ChanUpdateRange{
 					StartTime: fn.Some(startTime),
 					EndTime: fn.Some(
 						startTime.Add(26 * time.Hour),
@@ -3005,7 +3004,7 @@ func TestNodeUpdatesInHorizonExclusiveEnd(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	// Create three nodes at timestamps 100, 200, and 300.
 	timestamps := []int64{100, 200, 300}
@@ -3065,8 +3064,7 @@ func TestNodeUpdatesInHorizonExclusiveEnd(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			iter := graph.NodeUpdatesInHorizon(
-				ctx, lnwire.GossipVersion1,
-				NodeUpdateRange{
+				ctx, NodeUpdateRange{
 					StartTime: fn.Some(tc.start),
 					EndTime:   fn.Some(tc.end),
 				},
@@ -3086,7 +3084,7 @@ func TestChanUpdatesInHorizonExclusiveEnd(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	node1 := createTestVertex(t, lnwire.GossipVersion1)
 	node2 := createTestVertex(t, lnwire.GossipVersion1)
@@ -3163,8 +3161,7 @@ func TestChanUpdatesInHorizonExclusiveEnd(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			iter := graph.ChanUpdatesInHorizon(
-				ctx, lnwire.GossipVersion1,
-				ChanUpdateRange{
+				ctx, ChanUpdateRange{
 					StartTime: fn.Some(tc.start),
 					EndTime:   fn.Some(tc.end),
 				},
@@ -3441,7 +3438,7 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	node1 := createTestVertex(t, lnwire.GossipVersion1)
 	require.NoError(t, graph.AddNode(ctx, node1))
@@ -3609,8 +3606,7 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 				}
 
 				_, _, err := graph.HasChannelEdge(
-					ctx, lnwire.GossipVersion1,
-					channel.id.ToUint64(),
+					ctx, channel.id.ToUint64(),
 				)
 
 				return err
@@ -3641,8 +3637,7 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 			fn: func() error {
 				now := time.Now()
 				iter := graph.ChanUpdatesInHorizon(
-					ctx, lnwire.GossipVersion1,
-					ChanUpdateRange{
+					ctx, ChanUpdateRange{
 						StartTime: fn.Some(
 							now.Add(-time.Hour),
 						),
@@ -3672,8 +3667,7 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 				}
 
 				err := graph.DeleteChannelEdges(
-					ctx, lnwire.GossipVersion1,
-					strictPruning, markZombie,
+					ctx, strictPruning, markZombie,
 					chanIDs...,
 				)
 				if err != nil &&

@@ -721,15 +721,6 @@ func (c *ChannelGraph) ForEachNodeCacheable(ctx context.Context,
 	return c.db.ForEachNodeCacheable(ctx, v, cb, reset)
 }
 
-// NodeUpdatesInHorizon returns all known lightning nodes with updates within
-// the passed range for the given gossip version.
-func (c *ChannelGraph) NodeUpdatesInHorizon(ctx context.Context,
-	v lnwire.GossipVersion, r NodeUpdateRange,
-	opts ...IteratorOption) iter.Seq2[*models.Node, error] {
-
-	return c.db.NodeUpdatesInHorizon(ctx, v, r, opts...)
-}
-
 // HasV1Node determines if the graph has a vertex identified by the target node
 // in the V1 graph.
 func (c *ChannelGraph) HasV1Node(ctx context.Context,
@@ -781,15 +772,6 @@ func (c *ChannelGraph) HighestChanID(ctx context.Context,
 	v lnwire.GossipVersion) (uint64, error) {
 
 	return c.db.HighestChanID(ctx, v)
-}
-
-// ChanUpdatesInHorizon returns all known channel edges with at least one
-// policy update within the specified range for the given gossip version.
-func (c *ChannelGraph) ChanUpdatesInHorizon(ctx context.Context,
-	v lnwire.GossipVersion, r ChanUpdateRange,
-	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
-
-	return c.db.ChanUpdatesInHorizon(ctx, v, r, opts...)
 }
 
 // FilterChannelRange returns channel IDs within the passed block height range

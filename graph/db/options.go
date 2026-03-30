@@ -2,7 +2,6 @@ package graphdb
 
 import (
 	"fmt"
-	"iter"
 	"time"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -134,13 +133,6 @@ func (r ChanUpdateRange) validateForVersion(v lnwire.GossipVersion) error {
 	}
 
 	return nil
-}
-
-// chanUpdateRangeErrIter returns an iterator that yields a single error.
-func chanUpdateRangeErrIter(err error) iter.Seq2[ChannelEdge, error] {
-	return func(yield func(ChannelEdge, error) bool) {
-		_ = yield(ChannelEdge{}, err)
-	}
 }
 
 // NodeUpdateRange describes a range for node updates. Only one of the time or

@@ -606,21 +606,53 @@ func (s *SQLStore) SetSourceNode(ctx context.Context,
 	}, sqldb.NoOpReset)
 }
 
-// NodeUpdatesInHorizon returns all the known lightning nodes which have an
-// update timestamp greater than or equal to startTime and less than endTime,
-// i.e. the range [startTime, endTime) per BOLT 07. This method can be used by
-// two nodes to quickly determine if they have the same set of up to date node
-// announcements.
+// NodeUpdatesInHorizon returns all the known lightning nodes which have
+// updates within the passed range for the given gossip version. This method
+// can be used by two nodes to quickly determine if they have the same set of
+// up-to-date node announcements.
 //
 // NOTE: This is part of the Store interface.
 func (s *SQLStore) NodeUpdatesInHorizon(ctx context.Context,
-	startTime, endTime time.Time,
+	v lnwire.GossipVersion, r NodeUpdateRange,
 	opts ...IteratorOption) iter.Seq2[*models.Node, error] {
+
+	if err := r.validateForVersion(v); err != nil {
+		return func(yield func(*models.Node, error) bool) {
+			_ = yield(nil, err)
+		}
+	}
 
 	cfg := defaultIteratorConfig()
 	for _, opt := range opts {
 		opt(cfg)
 	}
+
+	switch v {
+	case gossipV1:
+		return s.nodeUpdatesInHorizonV1(ctx, r, cfg)
+
+	case gossipV2:
+		err := fmt.Errorf("v2 node updates in horizon not yet " +
+			"implemented")
+		return func(yield func(*models.Node, error) bool) {
+			_ = yield(nil, err)
+		}
+
+	default:
+		err := fmt.Errorf("unknown gossip version: %v", v)
+		return func(yield func(*models.Node, error) bool) {
+			_ = yield(nil, err)
+		}
+	}
+}
+
+// nodeUpdatesInHorizonV1 implements the v1 time-based node horizon query.
+func (s *SQLStore) nodeUpdatesInHorizonV1(ctx context.Context,
+	r NodeUpdateRange,
+	cfg *iterConfig) iter.Seq2[*models.Node, error] {
+
+	startTime := r.StartTime.UnwrapOr(time.Time{})
+	endTime := r.EndTime.UnwrapOr(time.Time{})
 
 	return func(yield func(*models.Node, error) bool) {
 		var (
@@ -1162,27 +1194,51 @@ func (s *SQLStore) updateChanCacheBatch(v lnwire.GossipVersion,
 }
 
 // ChanUpdatesInHorizon returns all the known channel edges which have at least
-// one edge that has an update timestamp greater than or equal to startTime and
-// less than endTime, i.e. the range [startTime, endTime) per BOLT 07.
-//
-// Iterator Lifecycle:
-// 1. Initialize state (edgesSeen map, cache tracking, pagination cursors)
-// 2. Query batch of channels with policies in time range
-// 3. For each channel: check if seen, check cache, or build from DB
-// 4. Yield channels to caller
-// 5. Update cache after successful batch
-// 6. Repeat with updated pagination cursor until no more results
+// one edge update within the specified range for the given gossip version. For
+// v1, the range is time-based with [start, end) per BOLT 07.
 //
 // NOTE: This is part of the Store interface.
 func (s *SQLStore) ChanUpdatesInHorizon(ctx context.Context,
-	startTime, endTime time.Time,
+	v lnwire.GossipVersion, r ChanUpdateRange,
 	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
 
-	// Apply options.
+	if err := r.validateForVersion(v); err != nil {
+		return func(yield func(ChannelEdge, error) bool) {
+			_ = yield(ChannelEdge{}, err)
+		}
+	}
+
 	cfg := defaultIteratorConfig()
 	for _, opt := range opts {
 		opt(cfg)
 	}
+
+	switch v {
+	case gossipV1:
+		return s.chanUpdatesInHorizonV1(ctx, r, cfg)
+
+	case gossipV2:
+		err := fmt.Errorf("v2 chan updates in horizon not yet " +
+			"implemented")
+		return func(yield func(ChannelEdge, error) bool) {
+			_ = yield(ChannelEdge{}, err)
+		}
+
+	default:
+		err := fmt.Errorf("unknown gossip version: %v", v)
+		return func(yield func(ChannelEdge, error) bool) {
+			_ = yield(ChannelEdge{}, err)
+		}
+	}
+}
+
+// chanUpdatesInHorizonV1 implements the v1 time-based channel horizon query.
+func (s *SQLStore) chanUpdatesInHorizonV1(ctx context.Context,
+	r ChanUpdateRange,
+	cfg *iterConfig) iter.Seq2[ChannelEdge, error] {
+
+	startTime := r.StartTime.UnwrapOr(time.Time{})
+	endTime := r.EndTime.UnwrapOr(time.Time{})
 
 	return func(yield func(ChannelEdge, error) bool) {
 		var (
@@ -1210,7 +1266,7 @@ func (s *SQLStore) ChanUpdatesInHorizon(ctx context.Context,
 				func(db SQLQueries) error {
 					//nolint:ll
 					params := sqlc.GetChannelsByPolicyLastUpdateRangeParams{
-						Version: int16(lnwire.GossipVersion1),
+						Version: int16(gossipV1),
 						StartTime: sqldb.SQLInt64(
 							startTime.Unix(),
 						),
@@ -1261,7 +1317,7 @@ func (s *SQLStore) ChanUpdatesInHorizon(ctx context.Context,
 						// Check cache (we already hold
 						// shared read lock).
 						channel, ok := s.chanCache.get(
-							lnwire.GossipVersion1,
+							gossipV1,
 							chanIDInt,
 						)
 						if ok {
@@ -1317,9 +1373,7 @@ func (s *SQLStore) ChanUpdatesInHorizon(ctx context.Context,
 
 			// Update cache after successful batch yield, setting
 			// the cache lock only once for the entire batch.
-			s.updateChanCacheBatch(
-				lnwire.GossipVersion1, edgesToCache,
-			)
+			s.updateChanCacheBatch(gossipV1, edgesToCache)
 			edgesToCache = make(map[uint64]ChannelEdge)
 
 			// If the batch didn't yield anything, then we're done.
@@ -1329,12 +1383,12 @@ func (s *SQLStore) ChanUpdatesInHorizon(ctx context.Context,
 		}
 
 		if total > 0 {
-			log.Debugf("ChanUpdatesInHorizon hit percentage: "+
-				"%.2f (%d/%d)",
+			log.Debugf("ChanUpdatesInHorizon(v1) hit "+
+				"percentage: %.2f (%d/%d)",
 				float64(hits)*100/float64(total), hits, total)
 		} else {
-			log.Debugf("ChanUpdatesInHorizon returned no edges "+
-				"in horizon (%s, %s)", startTime, endTime)
+			log.Debugf("ChanUpdatesInHorizon(v1) returned no "+
+				"edges in horizon")
 		}
 	}
 }

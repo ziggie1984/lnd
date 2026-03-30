@@ -2396,10 +2396,10 @@ func (c *KVStore) fetchNextChanUpdateBatch(
 }
 
 // ChanUpdatesInHorizon returns all the known channel edges which have at least
-// one edge that has an update timestamp greater than or equal to startTime and
-// less than endTime, i.e. the range [startTime, endTime) per BOLT 07.
+// one edge update within the specified range for the given gossip version. For
+// v1, the range is time-based with [start, end) per BOLT 07.
 func (c *KVStore) ChanUpdatesInHorizon(_ context.Context,
-	startTime, endTime time.Time,
+	v lnwire.GossipVersion, r ChanUpdateRange,
 	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
 
 	cfg := defaultIteratorConfig()
@@ -2408,8 +2408,19 @@ func (c *KVStore) ChanUpdatesInHorizon(_ context.Context,
 	}
 
 	return func(yield func(ChannelEdge, error) bool) {
+		if v != lnwire.GossipVersion1 {
+			yield(ChannelEdge{}, ErrVersionNotSupportedForKVDB)
+			return
+		}
+		if err := r.validateForVersion(v); err != nil {
+			yield(ChannelEdge{}, err)
+			return
+		}
+
 		iterState := newChanUpdatesIterator(
-			cfg.chanUpdateIterBatchSize, startTime, endTime,
+			cfg.chanUpdateIterBatchSize,
+			r.StartTime.UnwrapOr(time.Time{}),
+			r.EndTime.UnwrapOr(time.Time{}),
 		)
 
 		for {
@@ -2458,8 +2469,8 @@ func (c *KVStore) ChanUpdatesInHorizon(_ context.Context,
 				float64(iterState.total), iterState.hits,
 				iterState.total)
 		} else {
-			log.Tracef("ChanUpdatesInHorizon returned no edges "+
-				"in horizon (%s, %s)", startTime, endTime)
+			log.Tracef("ChanUpdatesInHorizon(v%d) returned "+
+				"no edges in horizon", v)
 		}
 	}
 }
@@ -2649,11 +2660,11 @@ func (c *KVStore) fetchNextNodeBatch(
 	return nodeBatch, hasMore, nil
 }
 
-// NodeUpdatesInHorizon returns all the known lightning nodes which have an
-// update timestamp greater than or equal to startTime and less than endTime,
-// i.e. the range [startTime, endTime) per BOLT 07.
-func (c *KVStore) NodeUpdatesInHorizon(_ context.Context, startTime,
-	endTime time.Time,
+// NodeUpdatesInHorizon returns all the known lightning nodes which have
+// updates within the passed range for the given gossip version. For v1, the
+// range is time-based with [start, end) per BOLT 07.
+func (c *KVStore) NodeUpdatesInHorizon(_ context.Context,
+	v lnwire.GossipVersion, r NodeUpdateRange,
 	opts ...IteratorOption) iter.Seq2[*models.Node, error] {
 
 	cfg := defaultIteratorConfig()
@@ -2662,10 +2673,20 @@ func (c *KVStore) NodeUpdatesInHorizon(_ context.Context, startTime,
 	}
 
 	return func(yield func(*models.Node, error) bool) {
+		if v != lnwire.GossipVersion1 {
+			yield(nil, ErrVersionNotSupportedForKVDB)
+			return
+		}
+		if err := r.validateForVersion(v); err != nil {
+			yield(nil, err)
+			return
+		}
+
 		// Initialize iterator state.
 		state := newNodeUpdatesIterator(
 			cfg.nodeUpdateIterBatchSize,
-			startTime, endTime,
+			r.StartTime.UnwrapOr(time.Time{}),
+			r.EndTime.UnwrapOr(time.Time{}),
 			cfg.iterPublicNodes,
 		)
 

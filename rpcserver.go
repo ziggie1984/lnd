@@ -785,6 +785,9 @@ func (r *rpcServer) addDeps(ctx context.Context, s *server,
 		ShouldSetExpAccountability: func() bool {
 			return !s.cfg.ProtocolOptions.NoExpAccountability()
 		},
+		ForwardingLog:             s.miscDB.ForwardingLog(),
+		MinForwardingHistoryAge:   s.cfg.Dev.GetMinFwdHistoryAge(),
+		FwdHistoryDeleteBatchSize: s.cfg.FwdHistoryDeleteBatchSize,
 	}
 
 	genInvoiceFeatures := func() *lnwire.FeatureVector {

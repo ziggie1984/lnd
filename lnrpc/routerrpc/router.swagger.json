@@ -16,6 +16,39 @@
     "application/json"
   ],
   "paths": {
+    "/v2/router/fwdhistory/delete": {
+      "post": {
+        "summary": "lncli: `deletefwdhistory`\nDeleteForwardingHistory allows the caller to delete forwarding history\nevents with a timestamp at or before a specified time. This is useful\nfor implementing data retention policies for privacy purposes. The call\ndeletes events in batches and returns statistics including the total number\nof events deleted and the aggregate fees earned from those events. The\ndeletion is performed in a transaction-safe manner with configurable batch\nsizes to avoid holding large database locks.",
+        "operationId": "Router_DeleteForwardingHistory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/routerrpcDeleteForwardingHistoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/routerrpcDeleteForwardingHistoryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Router"
+        ]
+      }
+    },
     "/v2/router/htlcevents": {
       "get": {
         "summary": "SubscribeHtlcEvents creates a uni-directional stream from the server to\nthe client which delivers a stream of htlc events.",
@@ -1401,6 +1434,39 @@
             "type": "object",
             "$ref": "#/definitions/lnrpcAliasMap"
           }
+        }
+      }
+    },
+    "routerrpcDeleteForwardingHistoryRequest": {
+      "type": "object",
+      "properties": {
+        "delete_before_time": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Absolute Unix timestamp (seconds). Events at or before this time\nare deleted."
+        },
+        "delete_before_duration": {
+          "type": "string",
+          "description": "Relative duration string indicating how far back to delete, e.g.\n\"-30d\" deletes events at or before 30 days ago.\nStandard Go: \"-24h\", \"-1.5h\"\nCustom units: \"-1d\", \"-1w\", \"-1M\", \"-1y\"\nSupported: ns, us/µs, ms, s, m, h, d (days), w (weeks),\nM (months=30.44d), y (years=365.25d).\nUse negative values to specify time in the past."
+        }
+      }
+    },
+    "routerrpcDeleteForwardingHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "events_deleted": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Number of forwarding events deleted."
+        },
+        "total_fee_msat": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total fees earned from deleted events (in millisatoshis).\nThis is the sum of (amt_in - amt_out) for all deleted events, which\ncan be used for accounting purposes."
+        },
+        "status": {
+          "type": "string",
+          "description": "Status message."
         }
       }
     },

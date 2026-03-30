@@ -168,6 +168,10 @@ var (
 			Entity: "offchain",
 			Action: "write",
 		}},
+		"/routerrpc.Router/DeleteForwardingHistory": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
 	}
 
 	// DefaultRouterMacFilename is the default name of the router macaroon
@@ -1971,4 +1975,91 @@ func (s *Server) UpdateChanStatus(_ context.Context,
 		return nil, err
 	}
 	return &UpdateChanStatusResponse{}, nil
+}
+
+// DeleteForwardingHistory deletes forwarding history events with a timestamp
+// at or before a specified time. This method is useful for implementing data
+// retention policies for privacy purposes.
+func (s *Server) DeleteForwardingHistory(ctx context.Context,
+	req *DeleteForwardingHistoryRequest) (*DeleteForwardingHistoryResponse,
+	error) {
+
+	now := s.cfg.RouterBackend.Clock.Now()
+
+	// Determine the deletion cutoff time from the request.
+	var deleteBeforeTime time.Time
+	switch timeSpec := req.TimeSpec.(type) {
+	case *DeleteForwardingHistoryRequest_DeleteBeforeTime:
+		deleteBeforeTime = time.Unix(
+			int64(timeSpec.DeleteBeforeTime), 0,
+		)
+
+	case *DeleteForwardingHistoryRequest_DeleteBeforeDuration:
+		// Parse duration using hybrid approach: try standard library
+		// first, fall back to custom units (d, w, M, y) if needed.
+		duration, err := parseDuration(timeSpec.DeleteBeforeDuration)
+		if err != nil {
+			return nil, fmt.Errorf("invalid duration format: %w",
+				err)
+		}
+
+		// Calculate the absolute time by adding the (negative)
+		// duration to now.
+		deleteBeforeTime = now.Add(duration)
+
+	default:
+		return nil, fmt.Errorf("time specification required: either " +
+			"delete_before_time or delete_before_duration must " +
+			"be provided")
+	}
+
+	// Guard against pre-epoch timestamps. A very large negative duration
+	// (e.g. -100y) would push deleteBeforeTime before the Unix epoch,
+	// causing uint64(endTime.UnixNano()) in the DB layer to wrap to a
+	// near-max value and delete the entire bucket.
+	if deleteBeforeTime.Before(time.Unix(0, 0)) {
+		return nil, fmt.Errorf("delete_before_time must not be " +
+			"before the Unix epoch")
+	}
+
+	// Require the cutoff to be at least minAge in the past to prevent
+	// accidental deletion of recent data. The default is 1 hour;
+	// integration tests may lower this via the dev config flag.
+	minAge := s.cfg.RouterBackend.MinForwardingHistoryAge
+	if minAge == 0 {
+		minAge = time.Hour
+	}
+	if now.Sub(deleteBeforeTime) < minAge {
+		return nil, fmt.Errorf("delete_before_time must be at "+
+			"least %v in the past to prevent accidental deletion "+
+			"of recent data (requested: %v, now: %v)",
+			minAge, deleteBeforeTime, now)
+	}
+
+	batchSize := s.cfg.RouterBackend.FwdHistoryDeleteBatchSize
+
+	log.Infof("DeleteForwardingHistory: deleting events at or before %v "+
+		"with batch size %d", deleteBeforeTime, batchSize)
+
+	// Call the database deletion method, threading the request context
+	// through so the operation can be aborted between batches if the
+	// caller disconnects or times out. A batch size of 0 is fine — the
+	// DB layer applies the default.
+	stats, err := s.cfg.RouterBackend.ForwardingLog.DeleteForwardingEvents(
+		ctx, deleteBeforeTime, batchSize,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete forwarding events: %w",
+			err)
+	}
+
+	log.Infof("DeleteForwardingHistory: deleted %d events, total fees: "+
+		"%d msat", stats.NumEventsDeleted, stats.TotalFeeMsat)
+
+	return &DeleteForwardingHistoryResponse{
+		EventsDeleted: stats.NumEventsDeleted,
+		TotalFeeMsat:  stats.TotalFeeMsat,
+		Status: fmt.Sprintf("Successfully deleted %d forwarding events",
+			stats.NumEventsDeleted),
+	}, nil
 }

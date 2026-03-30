@@ -101,6 +101,12 @@
 
 ## RPC Additions
 
+* [Added `DeleteForwardingHistory`
+  RPC](https://github.com/lightningnetwork/lnd/pull/10666) to the router
+  sub-server, allowing operators to selectively purge old forwarding events from
+  the database. Deletion requires the target cutoff timestamp to be at least 1
+  hour in the past, preventing accidental removal of recent data.
+
 * The `WaitingCloseChannel` response in `PendingChannels` now includes two
   new fields via [#10509](https://github.com/lightningnetwork/lnd/pull/10509):
   `blocks_til_close_confirmed`, showing the remaining confirmations until a

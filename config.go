@@ -212,6 +212,10 @@ const (
 	// commitment.
 	defaultChannelCommitBatchSize = 10
 
+	// defaultFwdHistoryDeleteBatchSize is the default number of forwarding
+	// events deleted per database transaction when purging history.
+	defaultFwdHistoryDeleteBatchSize = 10_000
+
 	// defaultCoinSelectionStrategy is the coin selection strategy that is
 	// used by default to fund transactions.
 	defaultCoinSelectionStrategy = "largest"
@@ -417,6 +421,8 @@ type Config struct {
 	PendingCommitInterval time.Duration `long:"pending-commit-interval" description:"The maximum time that is allowed to pass while waiting for the remote party to revoke a locally initiated commitment state. Setting this to a longer duration if a slow response is expected from the remote party or large number of payments are attempted at the same time."`
 
 	ChannelCommitBatchSize uint32 `long:"channel-commit-batch-size" description:"The maximum number of channel state updates that is accumulated before signing a new commitment."`
+
+	FwdHistoryDeleteBatchSize int `long:"fwd-history-delete-batch-size" description:"The number of forwarding events deleted per database transaction when running deletefwdhistory. Lower this on resource-constrained nodes to reduce lock contention (max: 50000)."`
 
 	KeepFailedPaymentAttempts bool `long:"keep-failed-payment-attempts" description:"Keeps persistent record of all failed payment attempts for successfully settled payments."`
 
@@ -755,6 +761,7 @@ func DefaultConfig() Config {
 		ChannelCommitInterval:     defaultChannelCommitInterval,
 		PendingCommitInterval:     defaultPendingCommitInterval,
 		ChannelCommitBatchSize:    defaultChannelCommitBatchSize,
+		FwdHistoryDeleteBatchSize: defaultFwdHistoryDeleteBatchSize,
 		CoinSelectionStrategy:     defaultCoinSelectionStrategy,
 		KeepFailedPaymentAttempts: defaultKeepFailedPaymentAttempts,
 		RemoteSigner: &lncfg.RemoteSigner{
@@ -1720,6 +1727,19 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		return nil, mkErr("pending-commit-interval (%v) must be less "+
 			"than %v", cfg.PendingCommitInterval,
 			maxPendingCommitInterval)
+	}
+
+	// Warn and clamp fwd-history-delete-batch-size if it exceeds the DB
+	// layer maximum. The DB silently clamps anyway, but surfacing this at
+	// startup gives the operator immediate feedback that their configured
+	// value is not being honoured.
+	if cfg.FwdHistoryDeleteBatchSize > channeldb.MaxResponseEvents {
+		ltndLog.Warnf("fwd-history-delete-batch-size=%d exceeds "+
+			"maximum (%d), clamping to maximum",
+			cfg.FwdHistoryDeleteBatchSize,
+			channeldb.MaxResponseEvents)
+
+		cfg.FwdHistoryDeleteBatchSize = channeldb.MaxResponseEvents
 	}
 
 	if err := cfg.Gossip.Parse(); err != nil {

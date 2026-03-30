@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	sphinx "github.com/lightningnetwork/lightning-onion"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -129,6 +130,36 @@ type RouterBackend struct {
 	// Clock is the clock used to validate payment requests expiry.
 	// It is useful for testing.
 	Clock clock.Clock
+
+	// ForwardingLog provides access to forwarding log database operations.
+	ForwardingLog ForwardingLogDB
+
+	// MinForwardingHistoryAge is the minimum age a forwarding event must
+	// have before it can be deleted. If zero the handler defaults to 1
+	// hour.
+	MinForwardingHistoryAge time.Duration
+
+	// FwdHistoryDeleteBatchSize is the number of forwarding events deleted
+	// per database transaction. If zero the DB layer applies its own
+	// default (10 000). Exposed here so operators can tune the value via
+	// lnd.conf on resource-constrained nodes.
+	FwdHistoryDeleteBatchSize int
+}
+
+// ForwardingLogDB defines the interface for forwarding log database operations.
+// This interface allows the router RPC to interact with the forwarding log
+// without depending directly on the channeldb implementation, making testing
+// and future refactoring easier.
+type ForwardingLogDB interface {
+	// DeleteForwardingEvents deletes all forwarding events with a
+	// timestamp at or before the specified endTime. The deletion is
+	// performed in batches of the given size to avoid holding large
+	// database locks. It returns statistics about the deletion including
+	// the number of events deleted and the total fees earned from those
+	// events. If the context is cancelled between batches, partial
+	// statistics are returned along with the context error.
+	DeleteForwardingEvents(ctx context.Context, endTime time.Time,
+		batchSize int) (channeldb.DeleteStats, error)
 }
 
 // MissionControl defines the mission control dependencies of routerrpc.

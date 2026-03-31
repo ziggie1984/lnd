@@ -2286,8 +2286,9 @@ func (c *KVStore) fetchNextChanUpdateBatch(
 		// Now we'll read items up to the batch size, exiting early if
 		// we exceed the ending time.
 		for len(batch) < state.batchSize && indexKey != nil {
-			// If we're at the end, then we'll break out now.
-			if bytes.Compare(indexKey, endTimeBytes[:]) > 0 {
+			// If we've reached or passed the end time, break
+			// out. Per BOLT 07, the end time is exclusive.
+			if bytes.Compare(indexKey, endTimeBytes[:]) >= 0 {
 				break
 			}
 
@@ -2373,10 +2374,11 @@ func (c *KVStore) fetchNextChanUpdateBatch(
 			indexKey, _ = updateCursor.Next()
 		}
 
-		// If we haven't yet crossed the endTimeBytes, then we still
-		// have more entries to deliver.
+		// If we haven't yet reached the endTimeBytes, then we still
+		// have more entries to deliver. The end time is exclusive
+		// per BOLT 07.
 		if indexKey != nil &&
-			bytes.Compare(indexKey, endTimeBytes[:]) <= 0 {
+			bytes.Compare(indexKey, endTimeBytes[:]) < 0 {
 
 			hasMore = true
 		}
@@ -2394,9 +2396,10 @@ func (c *KVStore) fetchNextChanUpdateBatch(
 }
 
 // ChanUpdatesInHorizon returns all the known channel edges which have at least
-// one edge that has an update timestamp within the specified horizon.
+// one edge update within the specified range for the given gossip version. For
+// v1, the range is time-based with [start, end) per BOLT 07.
 func (c *KVStore) ChanUpdatesInHorizon(_ context.Context,
-	startTime, endTime time.Time,
+	v lnwire.GossipVersion, r ChanUpdateRange,
 	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
 
 	cfg := defaultIteratorConfig()
@@ -2405,8 +2408,19 @@ func (c *KVStore) ChanUpdatesInHorizon(_ context.Context,
 	}
 
 	return func(yield func(ChannelEdge, error) bool) {
+		if v != lnwire.GossipVersion1 {
+			yield(ChannelEdge{}, ErrVersionNotSupportedForKVDB)
+			return
+		}
+		if err := r.validateForVersion(v); err != nil {
+			yield(ChannelEdge{}, err)
+			return
+		}
+
 		iterState := newChanUpdatesIterator(
-			cfg.chanUpdateIterBatchSize, startTime, endTime,
+			cfg.chanUpdateIterBatchSize,
+			r.StartTime.UnwrapOr(time.Time{}),
+			r.EndTime.UnwrapOr(time.Time{}),
 		)
 
 		for {
@@ -2455,8 +2469,8 @@ func (c *KVStore) ChanUpdatesInHorizon(_ context.Context,
 				float64(iterState.total), iterState.hits,
 				iterState.total)
 		} else {
-			log.Tracef("ChanUpdatesInHorizon returned no edges "+
-				"in horizon (%s, %s)", startTime, endTime)
+			log.Tracef("ChanUpdatesInHorizon(v%d) returned "+
+				"no edges in horizon", v)
 		}
 	}
 }
@@ -2568,9 +2582,10 @@ func (c *KVStore) fetchNextNodeBatch(
 			// Extract the timestamp from the index key (first 8
 			// bytes). Only compare timestamps, not the full key
 			// with pubkey.
+			// The end time is exclusive per BOLT 07.
 			keyTimestamp := byteOrder.Uint64(indexKey[:8])
 			endTimestamp := uint64(state.endTime.Unix())
-			if keyTimestamp > endTimestamp {
+			if keyTimestamp >= endTimestamp {
 				break
 			}
 
@@ -2607,12 +2622,13 @@ func (c *KVStore) fetchNextNodeBatch(
 			indexKey, _ = updateCursor.Next()
 		}
 
-		// If we haven't yet crossed the endTime, then we still
-		// have more entries to deliver.
+		// If we haven't yet reached the endTime, then we still
+		// have more entries to deliver. The end time is exclusive
+		// per BOLT 07.
 		if indexKey != nil {
 			keyTimestamp := byteOrder.Uint64(indexKey[:8])
 			endTimestamp := uint64(state.endTime.Unix())
-			if keyTimestamp <= endTimestamp {
+			if keyTimestamp < endTimestamp {
 				hasMore = true
 			}
 		}
@@ -2644,10 +2660,11 @@ func (c *KVStore) fetchNextNodeBatch(
 	return nodeBatch, hasMore, nil
 }
 
-// NodeUpdatesInHorizon returns all the known lightning node which have an
-// update timestamp within the passed range.
-func (c *KVStore) NodeUpdatesInHorizon(_ context.Context, startTime,
-	endTime time.Time,
+// NodeUpdatesInHorizon returns all the known lightning nodes which have
+// updates within the passed range for the given gossip version. For v1, the
+// range is time-based with [start, end) per BOLT 07.
+func (c *KVStore) NodeUpdatesInHorizon(_ context.Context,
+	v lnwire.GossipVersion, r NodeUpdateRange,
 	opts ...IteratorOption) iter.Seq2[*models.Node, error] {
 
 	cfg := defaultIteratorConfig()
@@ -2656,10 +2673,20 @@ func (c *KVStore) NodeUpdatesInHorizon(_ context.Context, startTime,
 	}
 
 	return func(yield func(*models.Node, error) bool) {
+		if v != lnwire.GossipVersion1 {
+			yield(nil, ErrVersionNotSupportedForKVDB)
+			return
+		}
+		if err := r.validateForVersion(v); err != nil {
+			yield(nil, err)
+			return
+		}
+
 		// Initialize iterator state.
 		state := newNodeUpdatesIterator(
 			cfg.nodeUpdateIterBatchSize,
-			startTime, endTime,
+			r.StartTime.UnwrapOr(time.Time{}),
+			r.EndTime.UnwrapOr(time.Time{}),
 			cfg.iterPublicNodes,
 		)
 

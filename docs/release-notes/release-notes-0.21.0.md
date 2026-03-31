@@ -292,6 +292,12 @@
     [4](https://github.com/lightningnetwork/lnd/pull/10542),
     [5](https://github.com/lightningnetwork/lnd/pull/10572),
     [6](https://github.com/lightningnetwork/lnd/pull/10582).
+* [Version the graph horizon queries (`NodeUpdatesInHorizon`,
+  `ChanUpdatesInHorizon`)](https://github.com/lightningnetwork/lnd/pull/10691)
+  to support both v1 (time-based) and v2 (block-height-based) gossip ranges.
+  The v1 end-time bound is corrected from inclusive to exclusive to match the
+  BOLT 07 `gossip_timestamp_filter` spec. New SQL queries and composite indexes
+  are added for efficient v2 block-height range scans.
 * Updated waiting proof persistence for gossip upgrades by introducing typed
   waiting proof keys and payloads, with a DB migration to rewrite legacy
   waiting proof records to the new key/value format

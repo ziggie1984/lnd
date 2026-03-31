@@ -1,3 +1,7 @@
+-- Drop v2 block-height indexes.
+DROP INDEX IF EXISTS graph_node_block_height_idx;
+DROP INDEX IF EXISTS graph_channel_policy_block_height_idx;
+
 -- Remove the block_height column from graph_nodes
 ALTER TABLE graph_nodes DROP COLUMN block_height;
 

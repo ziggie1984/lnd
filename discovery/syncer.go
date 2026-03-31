@@ -1475,7 +1475,7 @@ func (g *GossipSyncer) ApplyGossipFilter(ctx context.Context,
 	// Now that the remote peer has applied their filter, we'll query the
 	// database for all the messages that are beyond this filter.
 	newUpdatestoSend := g.cfg.channelSeries.UpdatesInHorizon(
-		g.cfg.chainHash, startTime, endTime,
+		ctx, startTime, endTime,
 	)
 
 	// Create a pull-based iterator so we can check if there are any

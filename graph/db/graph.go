@@ -721,15 +721,6 @@ func (c *ChannelGraph) ForEachNodeCacheable(ctx context.Context,
 	return c.db.ForEachNodeCacheable(ctx, v, cb, reset)
 }
 
-// NodeUpdatesInHorizon returns all known lightning nodes with updates in the
-// range.
-func (c *ChannelGraph) NodeUpdatesInHorizon(ctx context.Context,
-	startTime, endTime time.Time,
-	opts ...IteratorOption) iter.Seq2[*models.Node, error] {
-
-	return c.db.NodeUpdatesInHorizon(ctx, startTime, endTime, opts...)
-}
-
 // HasV1Node determines if the graph has a vertex identified by the target node
 // in the V1 graph.
 func (c *ChannelGraph) HasV1Node(ctx context.Context,
@@ -781,15 +772,6 @@ func (c *ChannelGraph) HighestChanID(ctx context.Context,
 	v lnwire.GossipVersion) (uint64, error) {
 
 	return c.db.HighestChanID(ctx, v)
-}
-
-// ChanUpdatesInHorizon returns all known channel edges with updates in the
-// horizon.
-func (c *ChannelGraph) ChanUpdatesInHorizon(ctx context.Context,
-	startTime, endTime time.Time,
-	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
-
-	return c.db.ChanUpdatesInHorizon(ctx, startTime, endTime, opts...)
 }
 
 // FilterChannelRange returns channel IDs within the passed block height range
@@ -944,13 +926,23 @@ func (c *VersionedGraph) NumZombies(ctx context.Context) (uint64, error) {
 	return c.db.NumZombies(ctx, c.v)
 }
 
-// NodeUpdatesInHorizon returns all known lightning nodes which have an update
-// timestamp within the passed range.
+// NodeUpdatesInHorizon returns all known lightning nodes with updates within
+// the passed range. The version is supplied by the embedded field.
 func (c *VersionedGraph) NodeUpdatesInHorizon(ctx context.Context,
-	startTime, endTime time.Time,
+	r NodeUpdateRange,
 	opts ...IteratorOption) iter.Seq2[*models.Node, error] {
 
-	return c.db.NodeUpdatesInHorizon(ctx, startTime, endTime, opts...)
+	return c.db.NodeUpdatesInHorizon(ctx, c.v, r, opts...)
+}
+
+// ChanUpdatesInHorizon returns all known channel edges with at least one
+// policy update within the specified range. The version is supplied by the
+// embedded field.
+func (c *VersionedGraph) ChanUpdatesInHorizon(ctx context.Context,
+	r ChanUpdateRange,
+	opts ...IteratorOption) iter.Seq2[ChannelEdge, error] {
+
+	return c.db.ChanUpdatesInHorizon(ctx, c.v, r, opts...)
 }
 
 // ChannelView returns the verifiable edge information for each active channel.

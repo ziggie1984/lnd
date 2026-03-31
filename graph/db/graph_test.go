@@ -2435,12 +2435,15 @@ func TestChanUpdatesInHorizon(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	// If we issue an arbitrary query before any channel updates are
 	// inserted in the database, we should get zero results.
 	chanIter := graph.ChanUpdatesInHorizon(
-		ctx, time.Unix(999, 0), time.Unix(9999, 0),
+		ctx, ChanUpdateRange{
+			StartTime: fn.Some(time.Unix(999, 0)),
+			EndTime:   fn.Some(time.Unix(9999, 0)),
+		},
 	)
 
 	chanUpdates, err := fn.CollectErr(chanIter)
@@ -2547,7 +2550,10 @@ func TestChanUpdatesInHorizon(t *testing.T) {
 	}
 	for _, queryCase := range queryCases {
 		respIter := graph.ChanUpdatesInHorizon(
-			ctx, queryCase.start, queryCase.end,
+			ctx, ChanUpdateRange{
+				StartTime: fn.Some(queryCase.start),
+				EndTime:   fn.Some(queryCase.end),
+			},
 		)
 
 		resp, err := fn.CollectErr(respIter)
@@ -2576,7 +2582,7 @@ func TestNodeUpdatesInHorizon(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	startTime := time.Unix(1234, 0)
 	endTime := startTime
@@ -2584,7 +2590,10 @@ func TestNodeUpdatesInHorizon(t *testing.T) {
 	// If we issue an arbitrary query before we insert any nodes into the
 	// database, then we shouldn't get any results back.
 	nodeUpdatesIter := graph.NodeUpdatesInHorizon(
-		ctx, time.Unix(999, 0), time.Unix(9999, 0),
+		ctx, NodeUpdateRange{
+			StartTime: fn.Some(time.Unix(999, 0)),
+			EndTime:   fn.Some(time.Unix(9999, 0)),
+		},
 	)
 	nodeUpdates, err := fn.CollectErr(nodeUpdatesIter)
 	require.NoError(t, err, "unable to query for node updates")
@@ -2659,7 +2668,10 @@ func TestNodeUpdatesInHorizon(t *testing.T) {
 	}
 	for _, queryCase := range queryCases {
 		iter := graph.NodeUpdatesInHorizon(
-			ctx, queryCase.start, queryCase.end,
+			ctx, NodeUpdateRange{
+				StartTime: fn.Some(queryCase.start),
+				EndTime:   fn.Some(queryCase.end),
+			},
 		)
 
 		resp, err := fn.CollectErr(iter)
@@ -2679,7 +2691,7 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 	batchSize int) {
 
 	// Create a fresh graph for each test.
-	testGraph := MakeTestGraph(t)
+	testGraph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	// Add 25 nodes with increasing timestamps.
 	startTime := time.Unix(1234567890, 0)
@@ -2708,12 +2720,15 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 			end:   startTime.Add(26 * time.Hour),
 			want:  25,
 		},
+		// The end time is exclusive per BOLT 07, so we
+		// add one extra hour to include the last node in
+		// the desired range.
 		{
 			name:  "first batch only",
 			start: startTime,
 			end: startTime.Add(
 				time.Duration(
-					min(batchSize, 25)-1,
+					min(batchSize, 25),
 				) * time.Hour,
 			),
 			want: min(batchSize, 25),
@@ -2723,7 +2738,7 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 			start: startTime,
 			end: startTime.Add(
 				time.Duration(
-					min(batchSize, 24),
+					min(batchSize+1, 25),
 				) * time.Hour,
 			),
 			want: min(batchSize+1, 25),
@@ -2748,16 +2763,19 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 				)
 			}(),
 			end: func() time.Time {
+				// End is exclusive, so we add
+				// one hour to include the node
+				// at exactly the start time.
 				if batchSize <= 25 {
 					return startTime.Add(
 						time.Duration(
-							batchSize-1,
+							batchSize,
 						) * time.Hour,
 					)
 				}
 
 				return startTime.Add(
-					time.Duration(25) * time.Hour,
+					time.Duration(26) * time.Hour,
 				)
 			}(),
 			want: func() int {
@@ -2787,7 +2805,10 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			iter := testGraph.NodeUpdatesInHorizon(
-				ctx, tc.start, tc.end,
+				ctx, NodeUpdateRange{
+					StartTime: fn.Some(tc.start),
+					EndTime:   fn.Some(tc.end),
+				},
 				WithNodeUpdateIterBatchSize(
 					batchSize,
 				),
@@ -2843,7 +2864,7 @@ func TestNodeUpdatesInHorizonEarlyTermination(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	// We'll start by creating 100 nodes, each with an update time spaced
 	// one hour apart.
@@ -2860,7 +2881,12 @@ func TestNodeUpdatesInHorizonEarlyTermination(t *testing.T) {
 	for _, stopAt := range terminationPoints {
 		t.Run(fmt.Sprintf("StopAt%d", stopAt), func(t *testing.T) {
 			iter := graph.NodeUpdatesInHorizon(
-				ctx, startTime, startTime.Add(200*time.Hour),
+				ctx, NodeUpdateRange{
+					StartTime: fn.Some(startTime),
+					EndTime: fn.Some(
+						startTime.Add(200 * time.Hour),
+					),
+				},
 				WithNodeUpdateIterBatchSize(10),
 			)
 
@@ -2897,7 +2923,9 @@ func TestChanUpdatesInHorizonBoundaryConditions(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			// Create a fresh graph for each test, then add two new
 			// nodes to the graph.
-			graph := MakeTestGraph(t)
+			graph := NewVersionedGraph(
+				MakeTestGraph(t), lnwire.GossipVersion1,
+			)
 			node1 := createTestVertex(t, lnwire.GossipVersion1)
 			node2 := createTestVertex(t, lnwire.GossipVersion1)
 			require.NoError(t, graph.AddNode(ctx, node1))
@@ -2949,7 +2977,12 @@ func TestChanUpdatesInHorizonBoundaryConditions(t *testing.T) {
 			// Now we'll run the main query, and verify that we get
 			// back the expected number of channels.
 			iter := graph.ChanUpdatesInHorizon(
-				ctx, startTime, startTime.Add(26*time.Hour),
+				ctx, ChanUpdateRange{
+					StartTime: fn.Some(startTime),
+					EndTime: fn.Some(
+						startTime.Add(26 * time.Hour),
+					),
+				},
 				WithChanUpdateIterBatchSize(batchSize),
 			)
 
@@ -2962,6 +2995,529 @@ func TestChanUpdatesInHorizonBoundaryConditions(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestNodeUpdatesInHorizonExclusiveEnd verifies that NodeUpdatesInHorizon uses
+// an exclusive end time per BOLT 07: "timestamp is greater or equal to
+// first_timestamp, and less than first_timestamp plus timestamp_range".
+func TestNodeUpdatesInHorizonExclusiveEnd(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
+
+	// Create three nodes at timestamps 100, 200, and 300.
+	timestamps := []int64{100, 200, 300}
+	for _, ts := range timestamps {
+		node := createTestVertex(t, lnwire.GossipVersion1)
+		node.LastUpdate = time.Unix(ts, 0)
+		require.NoError(t, graph.AddNode(ctx, node))
+	}
+
+	tests := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+		want  int
+	}{
+		{
+			// Start is inclusive: node at exactly startTime
+			// should be included.
+			name:  "start time is inclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(101, 0),
+			want:  1,
+		},
+		{
+			// End is exclusive: node at exactly endTime should
+			// NOT be included.
+			name:  "end time is exclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(200, 0),
+			want:  1,
+		},
+		{
+			// One second past the boundary includes the node.
+			name:  "one past end includes boundary node",
+			start: time.Unix(100, 0),
+			end:   time.Unix(201, 0),
+			want:  2,
+		},
+		{
+			// Range [200, 300) should include node at 200 but
+			// not node at 300.
+			name:  "mid range excludes end",
+			start: time.Unix(200, 0),
+			end:   time.Unix(300, 0),
+			want:  1,
+		},
+		{
+			// Range [200, 301) should include nodes at 200
+			// and 300.
+			name:  "mid range includes end plus one",
+			start: time.Unix(200, 0),
+			end:   time.Unix(301, 0),
+			want:  2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.NodeUpdatesInHorizon(
+				ctx, NodeUpdateRange{
+					StartTime: fn.Some(tc.start),
+					EndTime:   fn.Some(tc.end),
+				},
+			)
+
+			nodes, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, nodes, tc.want)
+		})
+	}
+}
+
+// TestNodeUpdatesInHorizonV2 tests that NodeUpdatesInHorizon works correctly
+// for v2 gossip using block-height-based ranges with [start, end) semantics.
+func TestNodeUpdatesInHorizonV2(t *testing.T) {
+	t.Parallel()
+
+	if !isSQLDB {
+		t.Skip("v2 gossip only supported with SQL backend")
+	}
+
+	ctx := t.Context()
+
+	graph := NewVersionedGraph(
+		MakeTestGraph(t), lnwire.GossipVersion2,
+	)
+
+	// Query before any nodes exist — should return empty.
+	iter := graph.NodeUpdatesInHorizon(
+		ctx, NodeUpdateRange{
+			StartHeight: fn.Some(uint32(0)),
+			EndHeight:   fn.Some(uint32(9999)),
+		},
+	)
+	nodes, err := fn.CollectErr(iter)
+	require.NoError(t, err)
+	require.Empty(t, nodes)
+
+	// Create 10 v2 nodes at block heights 100, 110, 120, ..., 190.
+	const numNodes = 10
+	const startHeight uint32 = 100
+	const heightStep uint32 = 10
+
+	nodeAnns := make([]models.Node, 0, numNodes)
+	for i := 0; i < numNodes; i++ {
+		node := createTestVertex(t, lnwire.GossipVersion2)
+		node.LastBlockHeight = startHeight + uint32(i)*heightStep
+		nodeAnns = append(nodeAnns, *node)
+		require.NoError(t, graph.AddNode(ctx, node))
+	}
+
+	// endHeight is one past the last node's height (exclusive).
+	endHeight := startHeight + uint32(numNodes)*heightStep
+
+	tests := []struct {
+		name  string
+		start uint32
+		end   uint32
+		want  int
+	}{
+		{
+			// Range strictly below all nodes.
+			name:  "below range",
+			start: 0,
+			end:   50,
+			want:  0,
+		},
+		{
+			// Range strictly above all nodes.
+			name:  "above range",
+			start: 500,
+			end:   600,
+			want:  0,
+		},
+		{
+			// Start is inclusive: node at exactly startHeight
+			// should be included.
+			name:  "start height is inclusive",
+			start: startHeight,
+			end:   startHeight + 1,
+			want:  1,
+		},
+		{
+			// End is exclusive: node at exactly endHeight-10
+			// (=190) should NOT be included when end=190.
+			name:  "end height is exclusive",
+			start: startHeight,
+			end:   endHeight - heightStep,
+			want:  numNodes - 1,
+		},
+		{
+			// One past the last node includes it.
+			name:  "one past end includes last",
+			start: startHeight,
+			end:   endHeight - heightStep + 1,
+			want:  numNodes,
+		},
+		{
+			// Full range returns all nodes.
+			name:  "full range",
+			start: startHeight,
+			end:   endHeight,
+			want:  numNodes,
+		},
+		{
+			// Skip the first node.
+			name:  "skip first",
+			start: startHeight + heightStep,
+			end:   endHeight,
+			want:  numNodes - 1,
+		},
+		{
+			// Middle slice: heights [120, 170) = nodes at
+			// 120, 130, 140, 150, 160 = 5 nodes.
+			name:  "middle slice",
+			start: 120,
+			end:   170,
+			want:  5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.NodeUpdatesInHorizon(
+				ctx, NodeUpdateRange{
+					StartHeight: fn.Some(tc.start),
+					EndHeight:   fn.Some(tc.end),
+				},
+			)
+
+			results, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, results, tc.want)
+
+			// Verify nodes are in ascending block height
+			// order.
+			for i := 1; i < len(results); i++ {
+				require.LessOrEqual(
+					t,
+					results[i-1].LastBlockHeight,
+					results[i].LastBlockHeight,
+					"nodes should be in ascending "+
+						"block height order",
+				)
+			}
+		})
+	}
+}
+
+// TestChanUpdatesInHorizonExclusiveEnd verifies that ChanUpdatesInHorizon uses
+// an exclusive end time per BOLT 07: "timestamp is greater or equal to
+// first_timestamp, and less than first_timestamp plus timestamp_range".
+func TestChanUpdatesInHorizonExclusiveEnd(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
+
+	node1 := createTestVertex(t, lnwire.GossipVersion1)
+	node2 := createTestVertex(t, lnwire.GossipVersion1)
+	require.NoError(t, graph.AddNode(ctx, node1))
+	require.NoError(t, graph.AddNode(ctx, node2))
+
+	// Create three channels with policy updates at timestamps 100, 200,
+	// and 300.
+	timestamps := []int64{100, 200, 300}
+	for i, ts := range timestamps {
+		channel, chanID := createEdge(
+			lnwire.GossipVersion1, uint32(i*10), 0, 0, 0,
+			node1, node2,
+		)
+		require.NoError(t, graph.AddChannelEdge(ctx, channel))
+
+		edge := newEdgePolicy(
+			lnwire.GossipVersion1, chanID.ToUint64(), ts, true,
+		)
+		edge.ChannelFlags = 0
+		edge.ToNode = node2.PubKeyBytes
+		edge.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge))
+	}
+
+	tests := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+		want  int
+	}{
+		{
+			// Start is inclusive: channel at exactly startTime
+			// should be included.
+			name:  "start time is inclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(101, 0),
+			want:  1,
+		},
+		{
+			// End is exclusive: channel at exactly endTime
+			// should NOT be included.
+			name:  "end time is exclusive",
+			start: time.Unix(100, 0),
+			end:   time.Unix(200, 0),
+			want:  1,
+		},
+		{
+			// One second past the boundary includes the
+			// channel.
+			name:  "one past end includes boundary channel",
+			start: time.Unix(100, 0),
+			end:   time.Unix(201, 0),
+			want:  2,
+		},
+		{
+			// Range [200, 300) should include channel at 200
+			// but not channel at 300.
+			name:  "mid range excludes end",
+			start: time.Unix(200, 0),
+			end:   time.Unix(300, 0),
+			want:  1,
+		},
+		{
+			// Range [200, 301) should include channels at 200
+			// and 300.
+			name:  "mid range includes end plus one",
+			start: time.Unix(200, 0),
+			end:   time.Unix(301, 0),
+			want:  2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.ChanUpdatesInHorizon(
+				ctx, ChanUpdateRange{
+					StartTime: fn.Some(tc.start),
+					EndTime:   fn.Some(tc.end),
+				},
+			)
+
+			channels, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, channels, tc.want)
+		})
+	}
+}
+
+// TestChanUpdatesInHorizonV2 tests that ChanUpdatesInHorizon works correctly
+// for v2 gossip using block-height-based ranges with [start, end) semantics.
+func TestChanUpdatesInHorizonV2(t *testing.T) {
+	t.Parallel()
+
+	if !isSQLDB {
+		t.Skip("v2 gossip only supported with SQL backend")
+	}
+
+	ctx := t.Context()
+
+	graph := NewVersionedGraph(
+		MakeTestGraph(t), lnwire.GossipVersion2,
+	)
+
+	node1 := createTestVertex(t, lnwire.GossipVersion2)
+	node2 := createTestVertex(t, lnwire.GossipVersion2)
+	require.NoError(t, graph.AddNode(ctx, node1))
+	require.NoError(t, graph.AddNode(ctx, node2))
+
+	// Query before any channels exist — should return empty.
+	iter := graph.ChanUpdatesInHorizon(
+		ctx, ChanUpdateRange{
+			StartHeight: fn.Some(uint32(0)),
+			EndHeight:   fn.Some(uint32(9999)),
+		},
+	)
+	channels, err := fn.CollectErr(iter)
+	require.NoError(t, err)
+	require.Empty(t, channels)
+
+	// Create 10 v2 channels with policy block heights at
+	// 100, 110, 120, ..., 190.
+	const numChans = 10
+	const startHeight uint32 = 100
+	const heightStep uint32 = 10
+
+	for i := 0; i < numChans; i++ {
+		height := startHeight + uint32(i)*heightStep
+
+		channel, chanID := createEdge(
+			lnwire.GossipVersion2, uint32(i*10), 0, 0, 0,
+			node1, node2,
+		)
+		require.NoError(t, graph.AddChannelEdge(ctx, channel))
+
+		edge1 := newEdgePolicy(
+			lnwire.GossipVersion2, chanID.ToUint64(), 0, true,
+		)
+		edge1.LastBlockHeight = height
+		edge1.ToNode = node2.PubKeyBytes
+		edge1.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge1))
+
+		edge2 := newEdgePolicy(
+			lnwire.GossipVersion2, chanID.ToUint64(), 0, false,
+		)
+		edge2.LastBlockHeight = height
+		edge2.ToNode = node1.PubKeyBytes
+		edge2.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge2))
+	}
+
+	endHeight := startHeight + uint32(numChans)*heightStep
+
+	tests := []struct {
+		name  string
+		start uint32
+		end   uint32
+		want  int
+	}{
+		{
+			name:  "below range",
+			start: 0,
+			end:   50,
+			want:  0,
+		},
+		{
+			name:  "above range",
+			start: 500,
+			end:   600,
+			want:  0,
+		},
+		{
+			name:  "start height is inclusive",
+			start: startHeight,
+			end:   startHeight + 1,
+			want:  1,
+		},
+		{
+			// End is exclusive: channel at exactly
+			// endHeight-10 (=190) should NOT be included
+			// when end=190.
+			name:  "end height is exclusive",
+			start: startHeight,
+			end:   endHeight - heightStep,
+			want:  numChans - 1,
+		},
+		{
+			name:  "one past end includes last",
+			start: startHeight,
+			end:   endHeight - heightStep + 1,
+			want:  numChans,
+		},
+		{
+			name:  "full range",
+			start: startHeight,
+			end:   endHeight,
+			want:  numChans,
+		},
+		{
+			name:  "skip first",
+			start: startHeight + heightStep,
+			end:   endHeight,
+			want:  numChans - 1,
+		},
+		{
+			// Heights [120, 170) = channels at
+			// 120, 130, 140, 150, 160 = 5 channels.
+			name:  "middle slice",
+			start: 120,
+			end:   170,
+			want:  5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := graph.ChanUpdatesInHorizon(
+				ctx, ChanUpdateRange{
+					StartHeight: fn.Some(tc.start),
+					EndHeight:   fn.Some(tc.end),
+				},
+			)
+
+			results, err := fn.CollectErr(iter)
+			require.NoError(t, err)
+			require.Len(t, results, tc.want)
+		})
+	}
+
+	// Test with asymmetric policy block heights: one policy inside
+	// the range, the other outside. The SQL query uses OR across the
+	// two policies, so the channel should still be returned if
+	// either policy is in range.
+	t.Run("asymmetric policy heights", func(t *testing.T) {
+		channel, chanID := createEdge(
+			lnwire.GossipVersion2, 500, 0, 0, 0,
+			node1, node2,
+		)
+		require.NoError(t, graph.AddChannelEdge(ctx, channel))
+
+		// Policy 1 at height 300 (inside range).
+		edge1 := newEdgePolicy(
+			lnwire.GossipVersion2,
+			chanID.ToUint64(), 0, true,
+		)
+		edge1.LastBlockHeight = 300
+		edge1.ToNode = node2.PubKeyBytes
+		edge1.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge1))
+
+		// Policy 2 at height 900 (outside range).
+		edge2 := newEdgePolicy(
+			lnwire.GossipVersion2,
+			chanID.ToUint64(), 0, false,
+		)
+		edge2.LastBlockHeight = 900
+		edge2.ToNode = node1.PubKeyBytes
+		edge2.SigBytes = testSig.Serialize()
+		require.NoError(t, graph.UpdateEdgePolicy(ctx, edge2))
+
+		// Query [250, 350) — only policy 1 is in range, but the
+		// channel should still be returned.
+		iter := graph.ChanUpdatesInHorizon(
+			ctx, ChanUpdateRange{
+				StartHeight: fn.Some(uint32(250)),
+				EndHeight:   fn.Some(uint32(350)),
+			},
+		)
+		results, err := fn.CollectErr(iter)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+
+		// Query [850, 950) — only policy 2 is in range, channel
+		// should still be returned.
+		iter = graph.ChanUpdatesInHorizon(
+			ctx, ChanUpdateRange{
+				StartHeight: fn.Some(uint32(850)),
+				EndHeight:   fn.Some(uint32(950)),
+			},
+		)
+		results, err = fn.CollectErr(iter)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+
+		// Query [400, 500) — neither policy is in range.
+		iter = graph.ChanUpdatesInHorizon(
+			ctx, ChanUpdateRange{
+				StartHeight: fn.Some(uint32(400)),
+				EndHeight:   fn.Some(uint32(500)),
+			},
+		)
+		results, err = fn.CollectErr(iter)
+		require.NoError(t, err)
+		require.Empty(t, results)
+	})
 }
 
 // TestFilterKnownChanIDsZombieRevival tests that if a ChannelUpdateInfo is
@@ -3228,7 +3784,7 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 
 	ctx := t.Context()
 
-	graph := MakeTestGraph(t)
+	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
 
 	node1 := createTestVertex(t, lnwire.GossipVersion1)
 	require.NoError(t, graph.AddNode(ctx, node1))
@@ -3396,8 +3952,7 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 				}
 
 				_, _, err := graph.HasChannelEdge(
-					ctx, lnwire.GossipVersion1,
-					channel.id.ToUint64(),
+					ctx, channel.id.ToUint64(),
 				)
 
 				return err
@@ -3426,9 +3981,14 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 		{
 			name: "ChanUpdateInHorizon",
 			fn: func() error {
+				now := time.Now()
 				iter := graph.ChanUpdatesInHorizon(
-					ctx, time.Now().Add(-time.Hour),
-					time.Now(),
+					ctx, ChanUpdateRange{
+						StartTime: fn.Some(
+							now.Add(-time.Hour),
+						),
+						EndTime: fn.Some(now),
+					},
 				)
 				_, err := fn.CollectErr(iter)
 
@@ -3453,8 +4013,7 @@ func TestStressTestChannelGraphAPI(t *testing.T) {
 				}
 
 				err := graph.DeleteChannelEdges(
-					ctx, lnwire.GossipVersion1,
-					strictPruning, markZombie,
+					ctx, strictPruning, markZombie,
 					chanIDs...,
 				)
 				if err != nil &&
@@ -4288,7 +4847,10 @@ func TestNodePruningUpdateIndexDeletion(t *testing.T) {
 	startTime := time.Unix(9, 0)
 	endTime := node1.LastUpdate.Add(time.Minute)
 	nodesInHorizonIter := graph.NodeUpdatesInHorizon(
-		ctx, startTime, endTime,
+		ctx, NodeUpdateRange{
+			StartTime: fn.Some(startTime),
+			EndTime:   fn.Some(endTime),
+		},
 	)
 
 	// We should only have a single node, and that node should exactly
@@ -4306,7 +4868,10 @@ func TestNodePruningUpdateIndexDeletion(t *testing.T) {
 	// Now that the node has been deleted, we'll again query the nodes in
 	// the horizon. This time we should have no nodes at all.
 	nodesInHorizonIter = graph.NodeUpdatesInHorizon(
-		ctx, startTime, endTime,
+		ctx, NodeUpdateRange{
+			StartTime: fn.Some(startTime),
+			EndTime:   fn.Some(endTime),
+		},
 	)
 	nodesInHorizon, err = fn.CollectErr(nodesInHorizonIter)
 	require.NoError(t, err, "unable to fetch nodes in horizon")
@@ -5854,4 +6419,208 @@ func TestLightningNodePersistence(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, nodeAnnBytes, b.Bytes())
+}
+
+// TestUpdateRangeValidateForVersion verifies that ChanUpdateRange and
+// NodeUpdateRange reject invalid field combinations for each gossip version.
+func TestUpdateRangeValidateForVersion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	tests := []struct {
+		name    string
+		fn      func() error
+		wantErr string
+	}{
+		{
+			name: "v1 chan range with time - ok",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartTime: fn.Some(now),
+					EndTime:   fn.Some(now),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion1,
+				)
+			},
+		},
+		{
+			name: "v1 chan range with height - rejected",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartHeight: fn.Some(uint32(1)),
+					EndHeight:   fn.Some(uint32(100)),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion1,
+				)
+			},
+			wantErr: "v1 chan update range must use time",
+		},
+		{
+			name: "v2 chan range with height - ok",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartHeight: fn.Some(uint32(1)),
+					EndHeight:   fn.Some(uint32(100)),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion2,
+				)
+			},
+		},
+		{
+			name: "v2 chan range with time - rejected",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartTime: fn.Some(now),
+					EndTime:   fn.Some(now),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion2,
+				)
+			},
+			wantErr: "v2 chan update range must use blocks",
+		},
+		{
+			name: "mixed chan range - rejected",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartTime:   fn.Some(now),
+					StartHeight: fn.Some(uint32(1)),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion1,
+				)
+			},
+			wantErr: "both time and block",
+		},
+		{
+			name: "v1 node range with time - ok",
+			fn: func() error {
+				r := NodeUpdateRange{
+					StartTime: fn.Some(now),
+					EndTime:   fn.Some(now),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion1,
+				)
+			},
+		},
+		{
+			name: "v2 node range with height - ok",
+			fn: func() error {
+				r := NodeUpdateRange{
+					StartHeight: fn.Some(uint32(1)),
+					EndHeight:   fn.Some(uint32(100)),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion2,
+				)
+			},
+		},
+		{
+			name: "v2 node range with time - rejected",
+			fn: func() error {
+				r := NodeUpdateRange{
+					StartTime: fn.Some(now),
+					EndTime:   fn.Some(now),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion2,
+				)
+			},
+			wantErr: "v2 node update range must use height",
+		},
+		{
+			name: "v1 chan range missing bounds - rejected",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartTime: fn.Some(now),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion1,
+				)
+			},
+			wantErr: "missing time bounds",
+		},
+		{
+			name: "v1 chan range inverted - rejected",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartTime: fn.Some(now.Add(time.Hour)),
+					EndTime:   fn.Some(now),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion1,
+				)
+			},
+			wantErr: "start time after end time",
+		},
+		{
+			name: "v2 chan range inverted - rejected",
+			fn: func() error {
+				r := ChanUpdateRange{
+					StartHeight: fn.Some(uint32(100)),
+					EndHeight:   fn.Some(uint32(50)),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion2,
+				)
+			},
+			wantErr: "start height after end height",
+		},
+		{
+			name: "v1 node range inverted - rejected",
+			fn: func() error {
+				r := NodeUpdateRange{
+					StartTime: fn.Some(now.Add(time.Hour)),
+					EndTime:   fn.Some(now),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion1,
+				)
+			},
+			wantErr: "start time after end time",
+		},
+		{
+			name: "v2 node range inverted - rejected",
+			fn: func() error {
+				r := NodeUpdateRange{
+					StartHeight: fn.Some(uint32(100)),
+					EndHeight:   fn.Some(uint32(50)),
+				}
+
+				return r.validateForVersion(
+					lnwire.GossipVersion2,
+				)
+			},
+			wantErr: "start height after end height",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.fn()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err,
+					tc.wantErr)
+			}
+		})
+	}
 }

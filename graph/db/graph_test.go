@@ -2684,6 +2684,91 @@ func TestNodeUpdatesInHorizon(t *testing.T) {
 	}
 }
 
+// TestNodeUpdatesInHorizonPublicOnly tests that NodeUpdatesInHorizon with
+// WithIterPublicNodesOnly returns only nodes that have at least one public
+// channel (one with a channel announcement proof).
+func TestNodeUpdatesInHorizonPublicOnly(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	chanGraph := MakeTestGraph(t)
+	graph := NewVersionedGraph(chanGraph, lnwire.GossipVersion1)
+
+	startTime := time.Unix(1000, 0)
+
+	// Create 4 nodes: we'll make node pairs where one pair has a public
+	// channel (with proof) and the other has a private channel (no proof).
+	publicNode1 := createTestVertex(t, lnwire.GossipVersion1)
+	publicNode1.LastUpdate = startTime.Add(10 * time.Second)
+
+	// Set publicNode1 as the source node (required before adding
+	// channel edges).
+	require.NoError(t, chanGraph.SetSourceNode(ctx, publicNode1))
+
+	publicNode2 := createTestVertex(t, lnwire.GossipVersion1)
+	publicNode2.LastUpdate = startTime.Add(20 * time.Second)
+	require.NoError(t, chanGraph.AddNode(ctx, publicNode2))
+
+	// privateNode has a channel to the source node (publicNode1) but
+	// without a proof, so it remains private in both KV and SQL backends.
+	privateNode := createTestVertex(t, lnwire.GossipVersion1)
+	privateNode.LastUpdate = startTime.Add(30 * time.Second)
+	require.NoError(t, chanGraph.AddNode(ctx, privateNode))
+
+	// Create a standalone node with no channels at all.
+	lonelyNode := createTestVertex(t, lnwire.GossipVersion1)
+	lonelyNode.LastUpdate = startTime.Add(40 * time.Second)
+	require.NoError(t, chanGraph.AddNode(ctx, lonelyNode))
+
+	// Add a public channel between publicNode1 and publicNode2
+	// (with proof, making both nodes public).
+	publicEdge, _ := createEdge(
+		lnwire.GossipVersion1, 100, 0, 0, 0,
+		publicNode1, publicNode2,
+	)
+	require.NoError(t, chanGraph.AddChannelEdge(ctx, publicEdge))
+
+	// Add a private channel between publicNode1 (source) and
+	// privateNode (no proof, so privateNode remains private).
+	privateEdge, _ := createEdge(
+		lnwire.GossipVersion1, 200, 0, 0, 1,
+		publicNode1, privateNode, true, // skipProof
+	)
+	require.NoError(t, chanGraph.AddChannelEdge(ctx, privateEdge))
+
+	// Query without the public-only filter — should return all 4 nodes.
+	endTime := startTime.Add(60 * time.Second)
+	r := NodeUpdateRange{
+		StartTime: fn.Some(startTime),
+		EndTime:   fn.Some(endTime),
+	}
+	allIter := graph.NodeUpdatesInHorizon(ctx, r)
+	allNodes, err := fn.CollectErr(allIter)
+	require.NoError(t, err)
+	require.Len(t, allNodes, 4)
+
+	// Query with the public-only filter — should return only the 2
+	// public nodes.
+	publicIter := graph.NodeUpdatesInHorizon(
+		ctx, r, WithIterPublicNodesOnly(),
+	)
+	publicNodes, err := fn.CollectErr(publicIter)
+	require.NoError(t, err)
+	require.Len(t, publicNodes, 2)
+
+	// Verify the returned nodes are exactly the public ones.
+	pub1Key := publicNode1.PubKeyBytes
+	pub2Key := publicNode2.PubKeyBytes
+	for _, node := range publicNodes {
+		require.True(
+			t, node.PubKeyBytes == pub1Key ||
+				node.PubKeyBytes == pub2Key,
+			"unexpected node in public-only results: %x",
+			node.PubKeyBytes,
+		)
+	}
+}
+
 // testNodeUpdatesWithBatchSize is a helper function that tests node updates
 // with a specific batch size to ensure the iterator works correctly across
 // batch boundaries.

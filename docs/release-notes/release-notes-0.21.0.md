@@ -228,6 +228,16 @@
     targeting uniquely-constrained columns. Also drop four redundant indexes
     that duplicated UNIQUE constraints or were never used as query filters.
 
+* [Optimize the v1 node horizon
+    query](https://github.com/lightningnetwork/lnd/pull/10692). Split the
+    `GetNodesByLastUpdateRange` query into separate all-nodes and public-only
+    variants, removing a dynamic `COALESCE`/`OR` branch that defeated the query
+    planner. The public-only `EXISTS` check is rewritten as two direct index
+    probes instead of `node_id_1 OR node_id_2`. Supporting indexes are upgraded
+    to composite keys matching the full query shapes. On SQLite, the hot
+    public-only path sees a ~42% speedup; on the previous code it could stall
+    for minutes.
+
 ## Deprecations
 
 ### ⚠️ **Warning:** Deprecated fields in `lnrpc.Hop` will be removed in release version **0.22**

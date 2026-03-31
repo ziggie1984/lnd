@@ -53,6 +53,7 @@ type SQLQueries interface {
 	GetNodeIDByPubKey(ctx context.Context, arg sqlc.GetNodeIDByPubKeyParams) (int64, error)
 	GetNodesByLastUpdateRange(ctx context.Context, arg sqlc.GetNodesByLastUpdateRangeParams) ([]sqlc.GraphNode, error)
 	GetNodesByBlockHeightRange(ctx context.Context, arg sqlc.GetNodesByBlockHeightRangeParams) ([]sqlc.GraphNode, error)
+	GetPublicNodesByLastUpdateRange(ctx context.Context, arg sqlc.GetPublicNodesByLastUpdateRangeParams) ([]sqlc.GraphNode, error)
 	ListNodesPaginated(ctx context.Context, arg sqlc.ListNodesPaginatedParams) ([]sqlc.GraphNode, error)
 	ListNodeIDsAndPubKeys(ctx context.Context, arg sqlc.ListNodeIDsAndPubKeysParams) ([]sqlc.ListNodeIDsAndPubKeysRow, error)
 	IsPublicV1Node(ctx context.Context, pubKey []byte) (bool, error)
@@ -666,26 +667,10 @@ func (s *SQLStore) nodeUpdatesInHorizonV1(ctx context.Context,
 
 			//nolint:ll
 			err := s.db.ExecTx(ctx, sqldb.ReadTxOpt(), func(db SQLQueries) error {
-				//nolint:ll
-				params := sqlc.GetNodesByLastUpdateRangeParams{
-					StartTime: sqldb.SQLInt64(
-						startTime.Unix(),
-					),
-					EndTime: sqldb.SQLInt64(
-						endTime.Unix(),
-					),
-					LastUpdate: lastUpdateTime,
-					LastPubKey: lastPubKey,
-					OnlyPublic: sql.NullBool{
-						Bool:  cfg.iterPublicNodes,
-						Valid: true,
-					},
-					MaxResults: sqldb.SQLInt32(
-						cfg.nodeUpdateIterBatchSize,
-					),
-				}
-				rows, err := db.GetNodesByLastUpdateRange(
-					ctx, params,
+				rows, err := nodesByLastUpdateRange(
+					ctx, db, cfg, startTime,
+					endTime, lastUpdateTime,
+					lastPubKey,
 				)
 				if err != nil {
 					return err
@@ -847,6 +832,48 @@ func (s *SQLStore) nodeUpdatesInHorizonV2(ctx context.Context,
 			}
 		}
 	}
+}
+
+// nodesByLastUpdateRange dispatches to either the all-nodes or public-only
+// variant of the v1 node horizon query based on the iterator config.
+func nodesByLastUpdateRange(ctx context.Context, db SQLQueries,
+	cfg *iterConfig, startTime, endTime time.Time,
+	lastUpdateTime sql.NullInt64,
+	lastPubKey []byte) ([]sqlc.GraphNode, error) {
+
+	if cfg.iterPublicNodes {
+		return db.GetPublicNodesByLastUpdateRange(
+			ctx, sqlc.GetPublicNodesByLastUpdateRangeParams{
+				StartTime: sqldb.SQLInt64(
+					startTime.Unix(),
+				),
+				EndTime: sqldb.SQLInt64(
+					endTime.Unix(),
+				),
+				LastUpdate: lastUpdateTime,
+				LastPubKey: lastPubKey,
+				MaxResults: sqldb.SQLInt32(
+					cfg.nodeUpdateIterBatchSize,
+				),
+			},
+		)
+	}
+
+	return db.GetNodesByLastUpdateRange(
+		ctx, sqlc.GetNodesByLastUpdateRangeParams{
+			StartTime: sqldb.SQLInt64(
+				startTime.Unix(),
+			),
+			EndTime: sqldb.SQLInt64(
+				endTime.Unix(),
+			),
+			LastUpdate: lastUpdateTime,
+			LastPubKey: lastPubKey,
+			MaxResults: sqldb.SQLInt32(
+				cfg.nodeUpdateIterBatchSize,
+			),
+		},
+	)
 }
 
 // AddChannelEdge adds a new (undirected, blank) edge to the graph database. An

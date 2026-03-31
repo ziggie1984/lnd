@@ -64,7 +64,7 @@ var (
 
 	closeTx = wire.NewMsgTx(2)
 
-	defaultTimeout = 500 * time.Millisecond
+	defaultTimeout = wait.DefaultTimeout
 )
 
 func sigMustParse(sigBytes []byte) ecdsa.Signature {

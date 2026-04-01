@@ -41,3 +41,48 @@ func TestSqliteConfigMaxConns(t *testing.T) {
 		})
 	}
 }
+
+// TestSqliteConfigMaxIdleConns verifies that SQLite defaults its idle
+// connections to the open connection limit unless the caller overrides it.
+func TestSqliteConfigMaxIdleConns(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name             string
+		maxConns         int
+		maxIdleConns     int
+		expectedIdleConn int
+	}{
+		{
+			name:             "default idle limit",
+			expectedIdleConn: DefaultSqliteMaxConns,
+		},
+		{
+			name:             "inherits explicit open limit",
+			maxConns:         4,
+			expectedIdleConn: 4,
+		},
+		{
+			name:             "explicit idle limit",
+			maxConns:         4,
+			maxIdleConns:     3,
+			expectedIdleConn: 3,
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &SqliteConfig{
+				MaxConnections:     testCase.maxConns,
+				MaxIdleConnections: testCase.maxIdleConns,
+			}
+
+			require.Equal(t, testCase.expectedIdleConn,
+				cfg.MaxIdleConns())
+		})
+	}
+}

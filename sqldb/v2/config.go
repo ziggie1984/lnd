@@ -77,6 +77,16 @@ func (s *SqliteConfig) MaxConns() int {
 	return DefaultSqliteMaxConns
 }
 
+// MaxIdleConns returns the effective maximum number of idle SQLite
+// connections.
+func (s *SqliteConfig) MaxIdleConns() int {
+	if s.MaxIdleConnections > 0 {
+		return s.MaxIdleConnections
+	}
+
+	return s.MaxConns()
+}
+
 // Validate checks that the SqliteConfig values are valid.
 func (p *SqliteConfig) Validate() error {
 	if err := p.QueryConfig.Validate(true); err != nil {

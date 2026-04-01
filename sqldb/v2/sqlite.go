@@ -277,7 +277,7 @@ func (s *SqliteStore) executeMigrations(target MigrationTarget,
 	if set.MakeProgrammaticMigrations != nil {
 		postMigSteps, err := set.MakeProgrammaticMigrations(s.BaseDB)
 		if err != nil {
-			return errPostgresMigration(err)
+			return errSqliteMigration(err)
 		}
 		opts.programmaticMigrs = postMigSteps
 	}

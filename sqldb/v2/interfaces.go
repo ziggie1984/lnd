@@ -84,20 +84,12 @@ func ReadTxOpt() TxOptions {
 	}
 }
 
-// BaseQuerier is a generic interface that represents the base methods that any
-// database backend implementation which uses a Querier for its operations must
-// implement.
-type BaseQuerier interface {
-	// Backend returns the type of the database backend used.
-	Backend() BackendType
-}
-
 // BatchedTx is a generic interface that represents the ability to execute
 // several operations to a given storage interface in a single atomic
 // transaction. Typically, Q here will be some subset of the main sqlc.Querier
 // interface allowing it to only depend on the routines it needs to implement
 // any additional business logic.
-type BatchedTx[Q BaseQuerier] interface {
+type BatchedTx[Q any] interface {
 	// ExecTx will execute the passed txBody, operating upon generic
 	// parameter Q (usually a storage interface) in a single transaction.
 	//
@@ -137,6 +129,9 @@ type BatchedQuerier interface {
 	// BeginTx creates a new database transaction given the set of
 	// transaction options.
 	BeginTx(ctx context.Context, options TxOptions) (*sql.Tx, error)
+
+	// Backend returns the type of the database backend used.
+	Backend() BackendType
 }
 
 // txExecutorOptions is a struct that holds the options for the transaction
@@ -188,7 +183,7 @@ func WithTxRetryDelay(delay time.Duration) TxExecutorOption {
 // query a type needs to run under a database transaction, and also the set of
 // options for that transaction. The QueryCreator is used to create a query
 // given a database transaction created by the BatchedQuerier.
-type TransactionExecutor[Query BaseQuerier] struct {
+type TransactionExecutor[Query any] struct {
 	BatchedQuerier
 
 	createQuery QueryCreator[Query]
@@ -196,10 +191,14 @@ type TransactionExecutor[Query BaseQuerier] struct {
 	opts *txExecutorOptions
 }
 
+// A compile-time assertion to ensure TransactionExecutor satisfies the
+// batched transaction interface.
+var _ BatchedTx[any] = (*TransactionExecutor[any])(nil)
+
 // NewTransactionExecutor creates a new instance of a TransactionExecutor given
 // a Querier query object and a concrete type for the type of transactions the
 // Querier understands.
-func NewTransactionExecutor[Querier BaseQuerier](db BatchedQuerier,
+func NewTransactionExecutor[Querier any](db BatchedQuerier,
 	createQuery QueryCreator[Querier],
 	opts ...TxExecutorOption) *TransactionExecutor[Querier] {
 
@@ -213,6 +212,11 @@ func NewTransactionExecutor[Querier BaseQuerier](db BatchedQuerier,
 		createQuery:    createQuery,
 		opts:           txOpts,
 	}
+}
+
+// Backend returns the type of database backend used by the executor.
+func (t *TransactionExecutor[Q]) Backend() BackendType {
+	return t.BatchedQuerier.Backend()
 }
 
 // randRetryDelay returns a random retry delay between -50% and +50% of the

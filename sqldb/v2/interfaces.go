@@ -266,6 +266,55 @@ type RollbackTx func(tx Tx) error
 // the delay before the next retry.
 type OnBackoff func(retry int, delay time.Duration)
 
+// executeTxAttempt runs a single transaction attempt and reports whether the
+// caller should retry it.
+func executeTxAttempt(tx Tx, txBody TxBody, rollbackTx RollbackTx,
+	waitBeforeRetry func(int) bool, attempt int) (bool, error) {
+
+	// Rollback is safe to call even if the tx is already closed, so if the tx
+	// commits successfully, this is a no-op.
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if bodyErr := txBody(tx); bodyErr != nil {
+		log.Tracef("Error in txBody: %v", bodyErr)
+
+		// Roll back the transaction, then attempt a random backoff and try
+		// again if the error was a serialization error.
+		if err := rollbackTx(tx); err != nil {
+			return false, MapSQLError(err)
+		}
+
+		dbErr := MapSQLError(bodyErr)
+		if IsSerializationOrDeadlockError(dbErr) {
+			return waitBeforeRetry(attempt), dbErr
+		}
+
+		return false, dbErr
+	}
+
+	// Commit transaction.
+	if commitErr := tx.Commit(); commitErr != nil {
+		log.Tracef("Failed to commit tx: %v", commitErr)
+
+		// Roll back the transaction, then attempt a random backoff and try
+		// again if the error was a serialization error.
+		if err := rollbackTx(tx); err != nil {
+			return false, MapSQLError(err)
+		}
+
+		dbErr := MapSQLError(commitErr)
+		if IsSerializationOrDeadlockError(dbErr) {
+			return waitBeforeRetry(attempt), dbErr
+		}
+
+		return false, dbErr
+	}
+
+	return false, nil
+}
+
 // ExecuteSQLTransactionWithRetry is a helper function that executes a
 // transaction with retry logic. It will retry the transaction if it fails with
 // a serialization error. The function will return an error if the transaction
@@ -314,51 +363,15 @@ func ExecuteSQLTransactionWithRetry(ctx context.Context, makeTx MakeTx,
 			return dbErr
 		}
 
-		// Rollback is safe to call even if the tx is already closed,
-		// so if the tx commits successfully, this is a no-op.
-		defer func() {
-			_ = tx.Rollback()
-		}()
-
-		if bodyErr := txBody(tx); bodyErr != nil {
-			log.Tracef("Error in txBody: %v", bodyErr)
-
-			// Roll back the transaction, then attempt a random
-			// backoff and try again if the error was a
-			// serialization error.
-			if err := rollbackTx(tx); err != nil {
-				return MapSQLError(err)
-			}
-
-			dbErr := MapSQLError(bodyErr)
-			if IsSerializationOrDeadlockError(dbErr) {
-				if waitBeforeRetry(i) {
-					continue
-				}
-			}
-
-			return dbErr
+		retry, err := executeTxAttempt(
+			tx, txBody, rollbackTx, waitBeforeRetry, i,
+		)
+		if retry {
+			// Transient serialization error, discard this attempt and retry.
+			continue
 		}
-
-		// Commit transaction.
-		if commitErr := tx.Commit(); commitErr != nil {
-			log.Tracef("Failed to commit tx: %v", commitErr)
-
-			// Roll back the transaction, then attempt a random
-			// backoff and try again if the error was a
-			// serialization error.
-			if err := rollbackTx(tx); err != nil {
-				return MapSQLError(err)
-			}
-
-			dbErr := MapSQLError(commitErr)
-			if IsSerializationOrDeadlockError(dbErr) {
-				if waitBeforeRetry(i) {
-					continue
-				}
-			}
-
-			return dbErr
+		if err != nil {
+			return err
 		}
 
 		return nil

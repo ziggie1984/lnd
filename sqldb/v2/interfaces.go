@@ -153,12 +153,6 @@ func defaultTxExecutorOptions() *txExecutorOptions {
 	}
 }
 
-// randRetryDelay returns a random retry delay between 0 and the configured max
-// delay.
-func (t *txExecutorOptions) randRetryDelay() time.Duration {
-	return time.Duration(rand.Int63n(int64(t.maxRetryDelay))) //nolint:gosec
-}
-
 // TxExecutorOption is a functional option that allows us to pass in optional
 // argument when creating the executor.
 type TxExecutorOption func(*txExecutorOptions)

@@ -28,6 +28,10 @@ func TestSqliteProgrammaticMigrationError(t *testing.T) {
 	err = store.ExecuteMigrations(MigrationSet{
 		TrackingTableName:      "migration_tracker",
 		LatestMigrationVersion: 1,
+		Descriptors: []MigrationDescriptor{{
+			Name:    "programmatic",
+			Version: 1,
+		}},
 		MakeProgrammaticMigrations: func(*BaseDB) (
 			map[uint]migrate.ProgrammaticMigrEntry, error) {
 

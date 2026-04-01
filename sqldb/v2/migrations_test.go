@@ -35,3 +35,71 @@ func TestPostgresSchemaReplacements(t *testing.T) {
 			"CURRENT_TIMESTAMP", string(content),
 	)
 }
+
+// TestMigrationSetValidate verifies that migration descriptors remain aligned
+// with the migration stream metadata.
+func TestMigrationSetValidate(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		set    MigrationSet
+		expect string
+	}{
+		{
+			name: "valid descriptors",
+			set: MigrationSet{
+				LatestMigrationVersion: 2,
+				Descriptors: []MigrationDescriptor{
+					{Version: 1},
+					{Version: 2},
+				},
+			},
+		},
+		{
+			name: "descriptor gap",
+			set: MigrationSet{
+				LatestMigrationVersion: 2,
+				Descriptors: []MigrationDescriptor{
+					{Version: 1},
+					{Version: 3},
+				},
+			},
+			expect: "out of order",
+		},
+		{
+			name: "missing descriptors for latest version",
+			set: MigrationSet{
+				LatestMigrationVersion: 1,
+			},
+			expect: "requires at least one descriptor",
+		},
+		{
+			name: "latest version mismatch",
+			set: MigrationSet{
+				LatestMigrationVersion: 3,
+				Descriptors: []MigrationDescriptor{
+					{Version: 1},
+					{Version: 2},
+				},
+			},
+			expect: "does not match",
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := testCase.set.validate()
+			if testCase.expect == "" {
+				require.NoError(t, err)
+				return
+			}
+
+			require.ErrorContains(t, err, testCase.expect)
+		})
+	}
+}

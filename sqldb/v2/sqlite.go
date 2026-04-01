@@ -261,6 +261,10 @@ func (s *SqliteStore) ExecuteMigrations(set MigrationSet) error {
 func (s *SqliteStore) executeMigrations(target MigrationTarget,
 	set MigrationSet) error {
 
+	if err := set.validate(); err != nil {
+		return err
+	}
+
 	driver, err := sqlite_migrate.WithInstance(
 		s.DB, &sqlite_migrate.Config{
 			MigrationsTable: set.TrackingTableName,

@@ -228,6 +228,10 @@ func (s *PostgresStore) ExecuteMigrations(set MigrationSet) error {
 func (s *PostgresStore) executeMigrations(target MigrationTarget,
 	set MigrationSet) error {
 
+	if err := set.validate(); err != nil {
+		return err
+	}
+
 	dbName, err := getDatabaseNameFromDSN(s.cfg.Dsn)
 	if err != nil {
 		return err

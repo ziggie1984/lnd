@@ -32,8 +32,8 @@ var (
 		// We need this space in front of the TIMESTAMP keyword to
 		// avoid replacing words which just have the word "TIMESTAMP" in
 		// them.
-		"TIMESTAMP": " TIMESTAMP WITHOUT TIME ZONE",
-		"UNHEX":     "DECODE",
+		" TIMESTAMP": " TIMESTAMP WITHOUT TIME ZONE",
+		"UNHEX":      "DECODE",
 	}
 
 	// Make sure PostgresStore implements the MigrationExecutor interface.

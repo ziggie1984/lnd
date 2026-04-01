@@ -43,6 +43,14 @@ var (
 	_ DB = (*PostgresStore)(nil)
 )
 
+// sslModesRequiringTLS lists sslmode values that already enforce TLS and
+// therefore do not need to be rewritten when RequireSSL is set.
+var sslModesRequiringTLS = map[string]struct{}{
+	"require":     {},
+	"verify-ca":   {},
+	"verify-full": {},
+}
+
 // replacePasswordInDSN takes a DSN string and returns it with the password
 // replaced by "***".
 func replacePasswordInDSN(dsn string) (string, error) {
@@ -84,6 +92,28 @@ func getDatabaseNameFromDSN(dsn string) (string, error) {
 	return path.Base(u.Path), nil
 }
 
+// ensureRequiredSSLMode rewrites the DSN to require TLS when requested.
+func ensureRequiredSSLMode(dsn string, requireSSL bool) (string, error) {
+	if !requireSSL {
+		return dsn, nil
+	}
+
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", err
+	}
+
+	query := u.Query()
+	sslMode := query.Get("sslmode")
+	if _, ok := sslModesRequiringTLS[sslMode]; !ok {
+		query.Set("sslmode", "require")
+	}
+
+	u.RawQuery = query.Encode()
+
+	return u.String(), nil
+}
+
 // PostgresStore is a database store implementation that uses a Postgres
 // backend.
 type PostgresStore struct {
@@ -95,13 +125,29 @@ type PostgresStore struct {
 // NewPostgresStore creates a new store that is backed by a Postgres database
 // backend.
 func NewPostgresStore(cfg *PostgresConfig) (*PostgresStore, error) {
-	sanitizedDSN, err := replacePasswordInDSN(cfg.Dsn)
+	if cfg == nil {
+		return nil, fmt.Errorf("postgres config is required")
+	}
+
+	// Copy the caller config so we can enforce RequireSSL on the DSN
+	// without mutating a config value that may be reused elsewhere.
+	effectiveCfg := *cfg
+
+	effectiveDSN, err := ensureRequiredSSLMode(
+		effectiveCfg.Dsn, effectiveCfg.RequireSSL,
+	)
+	if err != nil {
+		return nil, err
+	}
+	effectiveCfg.Dsn = effectiveDSN
+
+	sanitizedDSN, err := replacePasswordInDSN(effectiveCfg.Dsn)
 	if err != nil {
 		return nil, err
 	}
 	log.Infof("Using SQL database '%s'", sanitizedDSN)
 
-	db, err := sql.Open("pgx", cfg.Dsn)
+	db, err := sql.Open("pgx", effectiveCfg.Dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -148,11 +194,11 @@ func NewPostgresStore(cfg *PostgresConfig) (*PostgresStore, error) {
 	db.SetConnMaxIdleTime(connMaxIdleTime)
 
 	return &PostgresStore{
-		cfg: cfg,
+		cfg: &effectiveCfg,
 		BaseDB: &BaseDB{
 			DB:             db,
 			BackendType:    BackendTypePostgres,
-			SkipMigrations: cfg.SkipMigrations,
+			SkipMigrations: effectiveCfg.SkipMigrations,
 		},
 	}, nil
 }

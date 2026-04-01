@@ -216,7 +216,7 @@ func errPostgresMigration(err error) error {
 // ExecuteMigrations runs migrations for the Postgres database using the
 // default production migration target.
 func (s *PostgresStore) ExecuteMigrations(set MigrationSet) error {
-	if s.cfg.SkipMigrations {
+	if s.SkipMigrations {
 		return nil
 	}
 

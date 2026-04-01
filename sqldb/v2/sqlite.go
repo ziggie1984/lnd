@@ -249,7 +249,7 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 // ExecuteMigrations runs migrations for the sqlite database using the default
 // production migration target.
 func (s *SqliteStore) ExecuteMigrations(set MigrationSet) error {
-	if s.Config.SkipMigrations {
+	if s.SkipMigrations {
 		return nil
 	}
 

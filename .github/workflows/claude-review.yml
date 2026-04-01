@@ -45,13 +45,6 @@ jobs:
           gh pr checkout "$PR_NUMBER"
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
 
-      - name: Fetch agent-skills and copy skills
-        run: |
-          git clone --depth=1 https://github.com/lightninglabs/agent-skills.git agent-skills
-          mkdir -p .claude/commands .claude/skills
-          cp agent-skills/commands/code-review.md .claude/commands/
-          cp -r agent-skills/skills/differential-review .claude/skills/
-
       - name: Install Claude CLI
         run: npm install -g @anthropic-ai/claude-code
 

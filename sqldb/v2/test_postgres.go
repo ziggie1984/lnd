@@ -18,8 +18,8 @@ func NewTestDB(t *testing.T, sets []MigrationSet) *PostgresStore {
 
 // NewTestDBWithVersion is a helper function that creates a Postgres database
 // for testing and migrates it to the given version.
-func NewTestDBWithVersion(t *testing.T, version uint,
-	set MigrationSet) *PostgresStore {
+func NewTestDBWithVersion(t *testing.T, set MigrationSet,
+	version uint) *PostgresStore {
 
 	pgFixture := NewTestPgFixture(t, DefaultPostgresFixtureLifetime)
 	t.Cleanup(func() {

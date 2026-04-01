@@ -168,7 +168,7 @@ func NewPostgresStore(cfg *PostgresConfig) (*PostgresStore, error) {
 			err)
 	}
 
-	maxConns := defaultMaxConns
+	maxConns := DefaultPostgresMaxConns
 	if cfg.MaxOpenConnections > 0 {
 		maxConns = cfg.MaxOpenConnections
 	}

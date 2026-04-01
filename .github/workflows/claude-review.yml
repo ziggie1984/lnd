@@ -53,4 +53,5 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          claude -p "/code-review $PR_NUMBER" --output-format text
+          PROMPT=$(sed "s/\$ARGUMENTS/$PR_NUMBER/g" .claude/commands/code-review.md)
+          claude -p "$PROMPT" --output-format text

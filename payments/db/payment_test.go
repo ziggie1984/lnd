@@ -3008,6 +3008,80 @@ func TestFetchInFlightPaymentsMultipleAttempts(t *testing.T) {
 	require.Len(t, inFlightPayments[0].HTLCs, 2)
 }
 
+// TestFetchInFlightPaymentsIncludesRetryablePayments tests that payments with
+// only failed HTLCs but no payment-level failure reason are still returned as
+// in-flight. This matches the shared payment state machine used by the router.
+func TestFetchInFlightPaymentsIncludesRetryablePayments(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	paymentDB, _ := NewTestDB(t)
+
+	preimg := genPreimage(t)
+	rhash := sha256.Sum256(preimg[:])
+	info := genPaymentCreationInfo(t, rhash)
+
+	err := paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
+	require.NoError(t, err)
+
+	attempt := genAttemptWithHash(t, 0, genSessionKey(t), rhash)
+	_, err = paymentDB.RegisterAttempt(ctx, info.PaymentIdentifier, attempt)
+	require.NoError(t, err)
+
+	_, err = paymentDB.FailAttempt(
+		ctx, info.PaymentIdentifier, attempt.AttemptID,
+		&HTLCFailInfo{Reason: HTLCFailUnreadable},
+	)
+	require.NoError(t, err)
+
+	payment, err := paymentDB.FetchPayment(ctx, info.PaymentIdentifier)
+	require.NoError(t, err)
+	require.Equal(t, StatusInFlight, payment.Status)
+
+	inFlightPayments, err := paymentDB.FetchInFlightPayments(ctx)
+	require.NoError(t, err)
+
+	inFlightHashes := make(map[lntypes.Hash]struct{}, len(inFlightPayments))
+	for _, p := range inFlightPayments {
+		inFlightHashes[p.Info.PaymentIdentifier] = struct{}{}
+	}
+
+	require.Contains(t, inFlightHashes, info.PaymentIdentifier)
+}
+
+// TestFetchInFlightPaymentsIncludesInitiatedPayments tests that payments which
+// have been initialized but have not yet registered an HTLC are still returned
+// as non-terminal payments.
+func TestFetchInFlightPaymentsIncludesInitiatedPayments(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	paymentDB, _ := NewTestDB(t)
+
+	preimg := genPreimage(t)
+	rhash := sha256.Sum256(preimg[:])
+	info := genPaymentCreationInfo(t, rhash)
+
+	err := paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
+	require.NoError(t, err)
+
+	payment, err := paymentDB.FetchPayment(ctx, info.PaymentIdentifier)
+	require.NoError(t, err)
+	require.Equal(t, StatusInitiated, payment.Status)
+
+	inFlightPayments, err := paymentDB.FetchInFlightPayments(ctx)
+	require.NoError(t, err)
+
+	inFlightHashes := make(map[lntypes.Hash]struct{}, len(inFlightPayments))
+	for _, p := range inFlightPayments {
+		inFlightHashes[p.Info.PaymentIdentifier] = struct{}{}
+	}
+
+	require.Contains(t, inFlightHashes, info.PaymentIdentifier)
+}
+
 // TestRouteFirstHopData tests that Route.FirstHopAmount and
 // Route.FirstHopWireCustomRecords are correctly stored and retrieved.
 func TestRouteFirstHopData(t *testing.T) {

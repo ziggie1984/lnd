@@ -125,29 +125,6 @@ LEFT JOIN payment_intents pi ON pi.payment_id = p.id
 WHERE p.id IN (sqlc.slice('payment_ids')/*SLICE:payment_ids*/)
 ORDER BY p.id ASC;
 
--- name: FetchAllInflightAttempts :many
--- Fetch all inflight attempts with their payment data using pagination.
--- Returns attempt data joined with payment and intent data to avoid separate queries.
-SELECT
-    ha.id,
-    ha.attempt_index,
-    ha.payment_id,
-    ha.session_key,
-    ha.attempt_time,
-    ha.payment_hash,
-    ha.first_hop_amount_msat,
-    ha.route_total_time_lock,
-    ha.route_total_amount,
-    ha.route_source_key
-FROM payment_htlc_attempts ha
-WHERE NOT EXISTS (
-    SELECT 1 FROM payment_htlc_attempt_resolutions hr
-    WHERE hr.attempt_index = ha.attempt_index
-)
-AND ha.attempt_index > $1
-ORDER BY ha.attempt_index ASC
-LIMIT $2;
-
 -- name: FetchNonTerminalPayments :many
 -- Fetch all non-terminal payments using pagination. A payment is
 -- non-terminal if it has an unresolved attempt, or if it has not been

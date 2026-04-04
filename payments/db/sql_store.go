@@ -1597,13 +1597,17 @@ func (s *SQLStore) RegisterAttempt(ctx context.Context,
 		// Register the plain HTLC attempt next.
 		sessionKey := attempt.SessionKey()
 		sessionKeyBytes := sessionKey.Serialize()
+		attemptHash := paymentHash[:]
+		if attempt.Hash != nil {
+			attemptHash = attempt.Hash[:]
+		}
 
 		_, err = db.InsertHtlcAttempt(ctx, sqlc.InsertHtlcAttemptParams{
 			PaymentID:    dbPayment.Payment.ID,
 			AttemptIndex: int64(attempt.AttemptID),
 			SessionKey:   sessionKeyBytes,
 			AttemptTime:  attempt.AttemptTime,
-			PaymentHash:  paymentHash[:],
+			PaymentHash:  attemptHash,
 			FirstHopAmountMsat: int64(
 				attempt.Route.FirstHopAmount.Val.Int(),
 			),

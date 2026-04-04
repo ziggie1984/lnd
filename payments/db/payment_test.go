@@ -3118,6 +3118,41 @@ func TestRegisterAttemptWithAMP(t *testing.T) {
 	require.Equal(t, childIndex, finalHop.AMP.ChildIndex())
 }
 
+// TestRegisterAttemptPreservesAttemptHash tests that an attempt's own hash is
+// preserved independently from the payment identifier. This is especially
+// important for AMP payments where the payment identifier is the SetID and the
+// individual HTLC attempts each use their own payment hash.
+func TestRegisterAttemptPreservesAttemptHash(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	paymentDB, _ := NewTestDB(t)
+
+	setID := lntypes.Hash{1, 2, 3, 4}
+	attemptHash := lntypes.Hash{5, 6, 7, 8}
+	info := genPaymentCreationInfo(t, setID)
+
+	err := paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
+	require.NoError(t, err)
+
+	attempt := genAttemptWithHash(t, 0, genSessionKey(t), attemptHash)
+	finalHopIdx := len(attempt.Route.Hops) - 1
+	attempt.Route.Hops[finalHopIdx].AMP = record.NewAMP(
+		[32]byte{9, 10, 11, 12}, setID, 99,
+	)
+
+	_, err = paymentDB.RegisterAttempt(ctx, info.PaymentIdentifier, attempt)
+	require.NoError(t, err)
+
+	payment, err := paymentDB.FetchPayment(ctx, info.PaymentIdentifier)
+	require.NoError(t, err)
+	require.Len(t, payment.HTLCs, 1)
+	require.NotNil(t, payment.HTLCs[0].Hash)
+	require.Equal(t, attemptHash, *payment.HTLCs[0].Hash)
+	require.NotEqual(t, info.PaymentIdentifier, *payment.HTLCs[0].Hash)
+}
+
 // TestRegisterAttemptWithBlindedRoute tests that blinded route data
 // (EncryptedData, BlindingPoint, TotalAmtMsat) is correctly stored and
 // retrieved.

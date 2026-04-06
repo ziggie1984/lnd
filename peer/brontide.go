@@ -315,6 +315,19 @@ type Config struct {
 	// message actor. If nil, onion messaging is disabled.
 	SpawnOnionActor onionmessage.OnionActorFactory
 
+	// OnionLimiter is the combined per-peer + global onion message
+	// ingress rate limiter. It hides the split between the two
+	// underlying buckets behind a single interface: callers invoke
+	// OnionLimiter.AllowN on every incoming onion message and it
+	// consults the per-peer bucket first (so a hostile peer whose own
+	// budget is empty cannot drain the shared budget on rejected
+	// attempts) and then the global bucket. Per-peer state is retained
+	// across disconnect so a peer cannot reset its bucket by cycling
+	// the connection; see the PeerRateLimiter doc for the memory-bound
+	// argument. A nil value means onion message rate limiting is
+	// disabled.
+	OnionLimiter onionmessage.IngressLimiter
+
 	// OnionActorOpts returns ActorOptions for the onion peer actor
 	// being spawned for the given peer. This allows per-peer
 	// customization of mailbox size, drop predicates, etc.
@@ -2331,6 +2344,32 @@ out:
 			discStream.AddMsg(msg)
 
 		case *lnwire.OnionMessage:
+			// Charge the limiter the on-the-wire size of the
+			// message so the byte-granular bucket reflects
+			// actual ingress bandwidth rather than raw message
+			// counts. A rejection surfaces as a sentinel error
+			// wrapped in fn.Result; errors.Is lets us pick the
+			// right first-drop log path.
+			result := allowOnionMessage(
+				p.cfg.OnionLimiter, p.PubKey(),
+				msg.WireSize(),
+			)
+			if err := result.Err(); err != nil {
+				logFirstOnionDrop(
+					peerLog, p.log, err,
+					p.cfg.OnionLimiter,
+				)
+				// Keep repeated drops at trace so a
+				// sustained attack does not flood debug;
+				// the first-drop info log above already
+				// gives operators a clear "limiter
+				// engaged" signal.
+				p.log.Tracef("dropping onion message: %v",
+					err)
+
+				break
+			}
+
 			p.onionActorRef.WhenSome(
 				func(ref onionmessage.OnionPeerActorRef) {
 					// TODO(elle): thread contexts through

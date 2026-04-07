@@ -50,6 +50,7 @@ type SQLQueries interface {
 	FilterPaymentsDesc(ctx context.Context, query sqlc.FilterPaymentsDescParams) ([]sqlc.FilterPaymentsDescRow, error)
 	FetchPayment(ctx context.Context, paymentIdentifier []byte) (sqlc.FetchPaymentRow, error)
 	FetchPaymentsByIDs(ctx context.Context, paymentIDs []int64) ([]sqlc.FetchPaymentsByIDsRow, error)
+	FetchNonTerminalPayments(ctx context.Context, arg sqlc.FetchNonTerminalPaymentsParams) ([]sqlc.FetchNonTerminalPaymentsRow, error)
 
 	CountPayments(ctx context.Context) (int64, error)
 

@@ -454,6 +454,110 @@ func (q *Queries) FetchHtlcAttemptsForPayments(ctx context.Context, paymentIds [
 	return items, nil
 }
 
+const fetchNonTerminalPayments = `-- name: FetchNonTerminalPayments :many
+WITH non_terminal_ids AS (
+    SELECT ha.payment_id AS id
+    FROM payment_htlc_attempts ha
+    WHERE NOT EXISTS (
+        SELECT 1 FROM payment_htlc_attempt_resolutions hr
+        WHERE hr.attempt_index = ha.attempt_index
+    )
+
+    UNION
+
+    SELECT p.id
+    FROM payments p
+    WHERE p.fail_reason IS NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM payment_htlc_attempts ha
+        WHERE ha.payment_id = p.id
+    )
+
+    UNION
+
+    SELECT DISTINCT ha.payment_id AS id
+    FROM payment_htlc_attempts ha
+    JOIN payment_htlc_attempt_resolutions hr
+        ON hr.attempt_index = ha.attempt_index
+    JOIN payments p
+        ON p.id = ha.payment_id
+    WHERE p.fail_reason IS NULL
+    AND hr.resolution_type = 2
+    AND NOT EXISTS (
+        SELECT 1 FROM payment_htlc_attempts ha2
+        JOIN payment_htlc_attempt_resolutions hr2
+            ON hr2.attempt_index = ha2.attempt_index
+        WHERE ha2.payment_id = ha.payment_id
+        AND hr2.resolution_type = 1
+    )
+)
+SELECT
+    p.id,
+    p.amount_msat,
+    p.created_at,
+    p.payment_identifier,
+    p.fail_reason,
+    pi.intent_type,
+    pi.intent_payload
+FROM non_terminal_ids n
+JOIN payments p
+    ON p.id = n.id
+LEFT JOIN payment_intents pi
+    ON pi.payment_id = p.id
+WHERE p.id > $1
+ORDER BY p.id ASC
+LIMIT $2
+`
+
+type FetchNonTerminalPaymentsParams struct {
+	ID    int64
+	Limit int32
+}
+
+type FetchNonTerminalPaymentsRow struct {
+	ID                int64
+	AmountMsat        int64
+	CreatedAt         time.Time
+	PaymentIdentifier []byte
+	FailReason        sql.NullInt32
+	IntentType        sql.NullInt16
+	IntentPayload     []byte
+}
+
+// Fetch all non-terminal payments using pagination. A payment is
+// non-terminal if it has an unresolved attempt, or if it has not been
+// permanently failed and has no settled attempt yet.
+func (q *Queries) FetchNonTerminalPayments(ctx context.Context, arg FetchNonTerminalPaymentsParams) ([]FetchNonTerminalPaymentsRow, error) {
+	rows, err := q.db.QueryContext(ctx, fetchNonTerminalPayments, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FetchNonTerminalPaymentsRow
+	for rows.Next() {
+		var i FetchNonTerminalPaymentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AmountMsat,
+			&i.CreatedAt,
+			&i.PaymentIdentifier,
+			&i.FailReason,
+			&i.IntentType,
+			&i.IntentPayload,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const fetchPayment = `-- name: FetchPayment :one
 SELECT
     p.id, p.amount_msat, p.created_at, p.payment_identifier, p.fail_reason,

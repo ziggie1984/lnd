@@ -50,6 +50,10 @@ type Querier interface {
 	// group the resolutions by payment_id in the background.
 	FetchHtlcAttemptResolutionsForPayments(ctx context.Context, paymentIds []int64) ([]FetchHtlcAttemptResolutionsForPaymentsRow, error)
 	FetchHtlcAttemptsForPayments(ctx context.Context, paymentIds []int64) ([]FetchHtlcAttemptsForPaymentsRow, error)
+	// Fetch all non-terminal payments using pagination. A payment is
+	// non-terminal if it has an unresolved attempt, or if it has not been
+	// permanently failed and has no settled attempt yet.
+	FetchNonTerminalPayments(ctx context.Context, arg FetchNonTerminalPaymentsParams) ([]FetchNonTerminalPaymentsRow, error)
 	FetchPayment(ctx context.Context, paymentIdentifier []byte) (FetchPaymentRow, error)
 	// Fetch all duplicate payment records from the payment_duplicates table for
 	// a given payment ID.

@@ -239,6 +239,10 @@ var versionedTests = []versionedTest{
 		name: "filter known chan ids",
 		test: testFilterKnownChanIDs,
 	},
+	{
+		name: "fetch zombie edge versioning",
+		test: testFetchZombieEdgeVersioning,
+	},
 }
 
 // TestVersionedDBs runs various tests against both v1 and v2 versioned
@@ -5492,6 +5496,40 @@ func testGraphZombieIndex(t *testing.T, v lnwire.GossipVersion) {
 	require.NoError(t, err)
 	require.True(t, isZombie)
 	assertNumZombies(t, graph, v, 1)
+}
+
+// testFetchZombieEdgeVersioning verifies that when a zombie edge is fetched via
+// FetchChannelEdgesByID, the returned ChannelEdgeInfo carries the correct
+// gossip version.
+func testFetchZombieEdgeVersioning(t *testing.T, v lnwire.GossipVersion) {
+	t.Parallel()
+	ctx := t.Context()
+
+	graph := NewVersionedGraph(MakeTestGraph(t), v)
+
+	node1 := createTestVertex(t, v)
+	node2 := createTestVertex(t, v)
+
+	if bytes.Compare(node2.PubKeyBytes[:], node1.PubKeyBytes[:]) < 0 {
+		node1, node2 = node2, node1
+	}
+
+	edge, _, _ := createChannelEdge(node1, node2, v)
+	require.NoError(t, graph.AddChannelEdge(ctx, edge))
+
+	// Delete the edge and mark it as a zombie.
+	err := graph.DeleteChannelEdges(ctx, false, true, edge.ChannelID)
+	require.NoError(t, err)
+
+	// Fetch the zombie edge by ID. The returned edge info should carry
+	// the correct gossip version even though the channel data has been
+	// removed.
+	info, _, _, err := graph.FetchChannelEdgesByID(ctx, edge.ChannelID)
+	require.ErrorIs(t, err, ErrZombieEdge)
+	require.NotNil(t, info)
+	require.Equal(t, v, info.Version)
+	require.Equal(t, edge.NodeKey1Bytes, info.NodeKey1Bytes)
+	require.Equal(t, edge.NodeKey2Bytes, info.NodeKey2Bytes)
 }
 
 // compareNodes is used to compare two Nodes.

@@ -2544,14 +2544,21 @@ func (s *SQLStore) FetchChannelEdgesByID(ctx context.Context,
 			if err != nil {
 				return err
 			}
-			zombieEdge, err := models.NewV1Channel(
-				0, chainhash.Hash{}, node1, node2,
-				&models.ChannelV1Fields{},
-			)
+			switch v {
+			case gossipV1:
+				edge, err = models.NewV1Channel(
+					0, chainhash.Hash{}, node1,
+					node2, &models.ChannelV1Fields{},
+				)
+			case gossipV2:
+				edge, err = models.NewV2Channel(
+					0, chainhash.Hash{}, node1,
+					node2, &models.ChannelV2Fields{},
+				)
+			}
 			if err != nil {
 				return err
 			}
-			edge = zombieEdge
 
 			return ErrZombieEdge
 		} else if err != nil {

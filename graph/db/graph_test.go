@@ -4403,14 +4403,18 @@ func TestFilterChannelRangeVersionGuard(t *testing.T) {
 
 	store := NewTestDB(t)
 
-	_, err := store.FilterChannelRange(
+	resp, err := store.FilterChannelRange(
 		ctx, lnwire.GossipVersion2, 0, 1000, false,
 	)
 
-	// The KV store does not support v2 and must return the sentinel error.
-	// The SQL store accepts any known version (returning empty results
-	// since no v2 channels have been added).
-	if err != nil {
+	if isSQLDB {
+		// The SQL store accepts any known version and returns empty
+		// results since no v2 channels have been added.
+		require.NoError(t, err)
+		require.Empty(t, resp)
+	} else {
+		// The KV store does not support v2 and must return the
+		// sentinel error.
 		require.ErrorIs(t, err, ErrVersionNotSupportedForKVDB)
 	}
 }

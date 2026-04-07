@@ -214,6 +214,10 @@ var versionedTests = []versionedTest{
 		name: "channel view taproot v1 round trip",
 		test: testChannelViewTaprootV1RoundTrip,
 	},
+	{
+		name: "node pruning update index deletion",
+		test: testNodePruningUpdateIndexDeletion,
+	},
 }
 
 // TestVersionedDBs runs various tests against both v1 and v2 versioned
@@ -4915,27 +4919,45 @@ func testAddChannelEdgeShellNodes(t *testing.T, v lnwire.GossipVersion) {
 // TestNodePruningUpdateIndexDeletion tests that once a node has been removed
 // from the channel graph, we also remove the entry from the update index as
 // well.
-func TestNodePruningUpdateIndexDeletion(t *testing.T) {
+// testNodePruningUpdateIndexDeletion verifies that deleting a node also removes
+// it from the update index used by NodeUpdatesInHorizon.
+func testNodePruningUpdateIndexDeletion(t *testing.T,
+	v lnwire.GossipVersion) {
+
 	t.Parallel()
 	ctx := t.Context()
 
-	graph := NewVersionedGraph(MakeTestGraph(t), lnwire.GossipVersion1)
+	graph := NewVersionedGraph(MakeTestGraph(t), v)
 
 	// We'll first populate our graph with a single node that will be
 	// removed shortly.
-	node1 := createTestVertex(t, lnwire.GossipVersion1)
+	node1 := createTestVertex(t, v)
 	require.NoError(t, graph.AddNode(ctx, node1))
 
+	// Build a NodeUpdateRange that covers the node we just inserted. V1
+	// uses time-based ranges, v2 uses block-height-based ranges.
+	var updateRange NodeUpdateRange
+	switch v {
+	case lnwire.GossipVersion1:
+		updateRange = NodeUpdateRange{
+			StartTime: fn.Some(time.Unix(9, 0)),
+			EndTime: fn.Some(
+				node1.LastUpdate.Add(time.Minute),
+			),
+		}
+	case lnwire.GossipVersion2:
+		updateRange = NodeUpdateRange{
+			StartHeight: fn.Some(uint32(0)),
+			EndHeight: fn.Some(
+				node1.LastBlockHeight + 1,
+			),
+		}
+	}
+
 	// We'll confirm that we can retrieve the node using
-	// NodeUpdatesInHorizon, using a time that's slightly beyond the last
-	// update time of our test node.
-	startTime := time.Unix(9, 0)
-	endTime := node1.LastUpdate.Add(time.Minute)
+	// NodeUpdatesInHorizon.
 	nodesInHorizonIter := graph.NodeUpdatesInHorizon(
-		ctx, NodeUpdateRange{
-			StartTime: fn.Some(startTime),
-			EndTime:   fn.Some(endTime),
-		},
+		ctx, updateRange,
 	)
 
 	// We should only have a single node, and that node should exactly
@@ -4953,10 +4975,7 @@ func TestNodePruningUpdateIndexDeletion(t *testing.T) {
 	// Now that the node has been deleted, we'll again query the nodes in
 	// the horizon. This time we should have no nodes at all.
 	nodesInHorizonIter = graph.NodeUpdatesInHorizon(
-		ctx, NodeUpdateRange{
-			StartTime: fn.Some(startTime),
-			EndTime:   fn.Some(endTime),
-		},
+		ctx, updateRange,
 	)
 	nodesInHorizon, err = fn.CollectErr(nodesInHorizonIter)
 	require.NoError(t, err, "unable to fetch nodes in horizon")

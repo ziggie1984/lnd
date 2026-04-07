@@ -3121,6 +3121,7 @@ func (s *SQLStore) forEachChanWithPoliciesInSCIDList(ctx context.Context,
 //
 // NOTE: part of the Store interface.
 func (s *SQLStore) FilterKnownChanIDs(ctx context.Context,
+	v lnwire.GossipVersion,
 	chansInfo []ChannelUpdateInfo) ([]uint64, []ChannelUpdateInfo, error) {
 
 	var (
@@ -3152,7 +3153,7 @@ func (s *SQLStore) FilterKnownChanIDs(ctx context.Context,
 		}
 
 		err := s.forEachChanInSCIDList(
-			ctx, db, lnwire.GossipVersion1, cb, chansInfo,
+			ctx, db, v, cb, chansInfo,
 		)
 		if err != nil {
 			return fmt.Errorf("unable to iterate "+
@@ -3171,10 +3172,8 @@ func (s *SQLStore) FilterKnownChanIDs(ctx context.Context,
 
 			isZombie, err := db.IsZombieChannel(
 				ctx, sqlc.IsZombieChannelParams{
-					Scid: channelIDToBytes(channelID),
-					Version: int16(
-						chanInfo.Version,
-					),
+					Scid:    channelIDToBytes(channelID),
+					Version: int16(v),
 				},
 			)
 			if err != nil {

@@ -227,6 +227,10 @@ var versionedTests = []versionedTest{
 		name: "graph zombie index",
 		test: testGraphZombieIndex,
 	},
+	{
+		name: "disconnect block at height",
+		test: testDisconnectBlockAtHeight,
+	},
 }
 
 // TestVersionedDBs runs various tests against both v1 and v2 versioned
@@ -866,21 +870,21 @@ func createEdge(version lnwire.GossipVersion, height, txIndex uint32,
 	return edgeInfo, shortChanID
 }
 
-// TestDisconnectBlockAtHeight checks that the pruned state of the channel
+// testDisconnectBlockAtHeight checks that the pruned state of the channel
 // database is what we expect after calling DisconnectBlockAtHeight.
-func TestDisconnectBlockAtHeight(t *testing.T) {
+func testDisconnectBlockAtHeight(t *testing.T, v lnwire.GossipVersion) {
 	t.Parallel()
 	ctx := t.Context()
 
 	graph := MakeTestGraph(t, WithSyncGraphCachePopulation())
 
-	sourceNode := createTestVertex(t, lnwire.GossipVersion1)
+	sourceNode := createTestVertex(t, v)
 	require.NoError(t, graph.SetSourceNode(ctx, sourceNode))
 
 	// We'd like to test the insertion/deletion of edges, so we create two
 	// vertexes to connect.
-	node1 := createTestVertex(t, lnwire.GossipVersion1)
-	node2 := createTestVertex(t, lnwire.GossipVersion1)
+	node1 := createTestVertex(t, v)
+	node2 := createTestVertex(t, v)
 
 	// In addition to the fake vertexes we create some fake channel
 	// identifiers.
@@ -898,29 +902,20 @@ func TestDisconnectBlockAtHeight(t *testing.T) {
 	_, err = graph.PruneGraph(ctx, spendOutputs, &blockHash2, 156)
 	require.NoError(t, err, "unable to prune graph")
 
-	// We'll create 3 almost identical edges, so first create a helper
-	// method containing all logic for doing so.
-
 	// Create an edge which has its block height at 156.
 	height := uint32(156)
-	edgeInfo, _ := createEdge(
-		lnwire.GossipVersion1, height, 0, 0, 0, node1, node2,
-	)
+	edgeInfo, _ := createEdge(v, height, 0, 0, 0, node1, node2)
 
-	// Create an edge with block height 157. We give it
-	// maximum values for tx index and position, to make
-	// sure our database range scan get edges from the
-	// entire range.
+	// Create an edge with block height 157. We give it maximum values for
+	// tx index and position, to make sure our database range scan gets
+	// edges from the entire range.
 	edgeInfo2, _ := createEdge(
-		lnwire.GossipVersion1, height+1,
-		math.MaxUint32&0x00ffffff, math.MaxUint16, 1, node1,
-		node2,
+		v, height+1, math.MaxUint32&0x00ffffff, math.MaxUint16,
+		1, node1, node2,
 	)
 
 	// Create a third edge, this with a block height of 155.
-	edgeInfo3, _ := createEdge(
-		lnwire.GossipVersion1, height-1, 0, 0, 2, node1, node2,
-	)
+	edgeInfo3, _ := createEdge(v, height-1, 0, 0, 2, node1, node2)
 
 	// Now add all these new edges to the database.
 	require.NoError(t, graph.AddChannelEdge(ctx, edgeInfo))
@@ -945,13 +940,13 @@ func TestDisconnectBlockAtHeight(t *testing.T) {
 
 	// The two first edges should be removed from the db.
 	has, isZombie, err := graph.HasChannelEdge(
-		ctx, lnwire.GossipVersion1, edgeInfo.ChannelID,
+		ctx, v, edgeInfo.ChannelID,
 	)
 	require.NoError(t, err, "unable to query for edge")
 	require.False(t, has)
 	require.False(t, isZombie)
 	has, isZombie, err = graph.HasChannelEdge(
-		ctx, lnwire.GossipVersion1, edgeInfo2.ChannelID,
+		ctx, v, edgeInfo2.ChannelID,
 	)
 	require.NoError(t, err, "unable to query for edge")
 	require.False(t, has)
@@ -959,7 +954,7 @@ func TestDisconnectBlockAtHeight(t *testing.T) {
 
 	// Edge 3 should not be removed.
 	has, isZombie, err = graph.HasChannelEdge(
-		ctx, lnwire.GossipVersion1, edgeInfo3.ChannelID,
+		ctx, v, edgeInfo3.ChannelID,
 	)
 	require.NoError(t, err, "unable to query for edge")
 	require.True(t, has)

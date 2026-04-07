@@ -223,6 +223,10 @@ var versionedTests = []versionedTest{
 		name: "lightning node sig verification",
 		test: testLightningNodeSigVerification,
 	},
+	{
+		name: "graph zombie index",
+		test: testGraphZombieIndex,
+	},
 }
 
 // TestVersionedDBs runs various tests against both v1 and v2 versioned
@@ -5397,27 +5401,29 @@ func putSerializedPolicy(t *testing.T, db kvdb.Backend, from []byte,
 	require.NoError(t, err, "error writing db")
 }
 
-// assertNumZombies queries the provided ChannelGraph for NumZombies, and
-// asserts that the returned number is equal to expZombies.
-func assertNumZombies(t *testing.T, graph *ChannelGraph, expZombies uint64) {
+// assertNumZombies queries the provided ChannelGraph for NumZombies for the
+// given gossip version and asserts that the result equals the expected count.
+func assertNumZombies(t *testing.T, graph *ChannelGraph,
+	v lnwire.GossipVersion, expZombies uint64) {
+
 	t.Helper()
 
-	v1Graph := NewVersionedGraph(graph, lnwire.GossipVersion1)
-	numZombies, err := v1Graph.NumZombies(t.Context())
+	vGraph := NewVersionedGraph(graph, v)
+	numZombies, err := vGraph.NumZombies(t.Context())
 	require.NoError(t, err, "unable to query number of zombies")
 	require.Equal(t, expZombies, numZombies)
 }
 
-// TestGraphZombieIndex ensures that we can mark edges correctly as zombie/live.
-func TestGraphZombieIndex(t *testing.T) {
+// testGraphZombieIndex ensures that we can mark edges correctly as zombie/live.
+func testGraphZombieIndex(t *testing.T, v lnwire.GossipVersion) {
 	t.Parallel()
 	ctx := t.Context()
 
 	// We'll start by creating our test graph along with a test edge.
 	graph := MakeTestGraph(t)
 
-	node1 := createTestVertex(t, lnwire.GossipVersion1)
-	node2 := createTestVertex(t, lnwire.GossipVersion1)
+	node1 := createTestVertex(t, v)
+	node2 := createTestVertex(t, v)
 
 	// Swap the nodes if the second's pubkey is smaller than the first.
 	// Without this, the comparisons at the end will fail probabilistically.
@@ -5425,67 +5431,61 @@ func TestGraphZombieIndex(t *testing.T) {
 		node1, node2 = node2, node1
 	}
 
-	edge, _, _ := createChannelEdge(
-		node1, node2, lnwire.GossipVersion1,
-	)
+	edge, _, _ := createChannelEdge(node1, node2, v)
 	require.NoError(t, graph.AddChannelEdge(ctx, edge))
 
-	v1Graph := NewVersionedGraph(graph, lnwire.GossipVersion1)
+	vGraph := NewVersionedGraph(graph, v)
 
 	// Since the edge is known the graph and it isn't a zombie, IsZombieEdge
 	// should not report the channel as a zombie.
-	isZombie, _, _, err := v1Graph.IsZombieEdge(ctx, edge.ChannelID)
+	isZombie, _, _, err := vGraph.IsZombieEdge(ctx, edge.ChannelID)
 	require.NoError(t, err)
 	require.False(t, isZombie)
-	assertNumZombies(t, graph, 0)
+	assertNumZombies(t, graph, v, 0)
 
 	// If we delete the edge and mark it as a zombie, then we should expect
 	// to see it within the index.
-	err = graph.DeleteChannelEdges(
-		ctx, lnwire.GossipVersion1, false, true, edge.ChannelID,
-	)
+	err = graph.DeleteChannelEdges(ctx, v, false, true, edge.ChannelID)
 	require.NoError(t, err, "unable to mark edge as zombie")
-	isZombie, pubKey1, pubKey2, err := v1Graph.IsZombieEdge(
+	isZombie, pubKey1, pubKey2, err := vGraph.IsZombieEdge(
 		ctx, edge.ChannelID,
 	)
 	require.NoError(t, err)
 	require.True(t, isZombie)
 	require.Equal(t, node1.PubKeyBytes, pubKey1)
 	require.Equal(t, node2.PubKeyBytes, pubKey2)
-	assertNumZombies(t, graph, 1)
+	assertNumZombies(t, graph, v, 1)
 
 	// Similarly, if we mark the same edge as live, we should no longer see
 	// it within the index.
-	err = graph.MarkEdgeLive(ctx, lnwire.GossipVersion1, edge.ChannelID)
+	err = graph.MarkEdgeLive(ctx, v, edge.ChannelID)
 	require.NoError(t, err)
 
 	// Attempting to mark the edge as live again now that it is no longer
 	// in the zombie index should fail.
 	require.ErrorIs(
-		t, graph.MarkEdgeLive(
-			ctx, lnwire.GossipVersion1, edge.ChannelID,
-		),
+		t, graph.MarkEdgeLive(ctx, v, edge.ChannelID),
 		ErrZombieEdgeNotFound,
 	)
 
-	isZombie, _, _, err = v1Graph.IsZombieEdge(ctx, edge.ChannelID)
+	isZombie, _, _, err = vGraph.IsZombieEdge(ctx, edge.ChannelID)
 	require.NoError(t, err)
 	require.False(t, isZombie)
 
-	assertNumZombies(t, graph, 0)
+	assertNumZombies(t, graph, v, 0)
 
 	// If we mark the edge as a zombie manually, then it should show up as
 	// being a zombie once again.
 	err = graph.MarkEdgeZombie(
-		ctx, lnwire.GossipVersion1, edge.ChannelID,
+		ctx, v, edge.ChannelID,
 		node1.PubKeyBytes, node2.PubKeyBytes,
 	)
 	require.NoError(t, err, "unable to mark edge as zombie")
 
-	isZombie, _, _, err = v1Graph.IsZombieEdge(ctx, edge.ChannelID)
+	isZombie, _, _, err = vGraph.IsZombieEdge(ctx, edge.ChannelID)
 	require.NoError(t, err)
 	require.True(t, isZombie)
-	assertNumZombies(t, graph, 1)
+	assertNumZombies(t, graph, v, 1)
 }
 
 // compareNodes is used to compare two Nodes.

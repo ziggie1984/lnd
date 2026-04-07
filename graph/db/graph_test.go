@@ -17,6 +17,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -217,6 +218,10 @@ var versionedTests = []versionedTest{
 	{
 		name: "node pruning update index deletion",
 		test: testNodePruningUpdateIndexDeletion,
+	},
+	{
+		name: "lightning node sig verification",
+		test: testLightningNodeSigVerification,
 	},
 }
 
@@ -5541,9 +5546,11 @@ func compareEdgePolicies(t testing.TB, a, b *models.ChannelEdgePolicy) {
 	require.Equal(t, normalizedA, normalizedB)
 }
 
-// TestLightningNodeSigVerification checks that we can use the Node's
-// pubkey to verify signatures.
-func TestLightningNodeSigVerification(t *testing.T) {
+// testLightningNodeSigVerification checks that we can use the Node's pubkey to
+// verify signatures. For v1 this exercises ECDSA, for v2 Schnorr.
+func testLightningNodeSigVerification(t *testing.T,
+	v lnwire.GossipVersion) {
+
 	t.Parallel()
 
 	// Create some dummy data to sign.
@@ -5551,23 +5558,38 @@ func TestLightningNodeSigVerification(t *testing.T) {
 	_, err := prand.Read(data[:])
 	require.NoError(t, err)
 
-	// Create private key and sign the data with it.
+	// Create private key.
 	priv, err := btcec.NewPrivateKey()
-	require.NoError(t, err, "unable to crete priv key")
-
-	sign := ecdsa.Sign(priv, data[:])
-
-	// Sanity check that the signature checks out.
-	require.True(t, sign.Verify(data[:], priv.PubKey()))
+	require.NoError(t, err, "unable to create priv key")
 
 	// Create a Node from the same private key.
-	node := createNode(t, lnwire.GossipVersion1, priv)
+	node := createNode(t, v, priv)
 
-	// And finally check that we can verify the same signature from the
-	// pubkey returned from the lightning node.
+	// Retrieve the public key from the node and verify a signature
+	// produced by the same private key.
 	nodePub, err := node.PubKey()
 	require.NoError(t, err, "unable to get pubkey")
-	require.True(t, sign.Verify(data[:], nodePub))
+
+	// Sign the data using the appropriate scheme for the gossip version.
+	// V1 uses ECDSA, v2 uses Schnorr.
+	type verifiable interface {
+		Verify(hash []byte, pubKey *btcec.PublicKey) bool
+	}
+
+	var sig verifiable
+	switch v {
+	case lnwire.GossipVersion1:
+		sig = ecdsa.Sign(priv, data[:])
+	case lnwire.GossipVersion2:
+		schnorrSig, sErr := schnorr.Sign(priv, data[:])
+		require.NoError(t, sErr)
+		sig = schnorrSig
+	}
+
+	// Verify against the raw private key's pubkey, then against the
+	// pubkey extracted from the Node.
+	require.True(t, sig.Verify(data[:], priv.PubKey()))
+	require.True(t, sig.Verify(data[:], nodePub))
 }
 
 // TestComputeFee tests fee calculation based on the outgoing amt.

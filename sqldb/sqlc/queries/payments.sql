@@ -130,39 +130,24 @@ ORDER BY p.id ASC;
 -- non-terminal if it has an unresolved attempt, or if it has not been
 -- permanently failed and has no settled attempt yet.
 WITH non_terminal_ids AS (
-    SELECT ha.payment_id AS id
-    FROM payment_htlc_attempts ha
-    WHERE NOT EXISTS (
-        SELECT 1 FROM payment_htlc_attempt_resolutions hr
-        WHERE hr.attempt_index = ha.attempt_index
-    )
-
-    UNION
-
     SELECT p.id
     FROM payments p
     WHERE p.fail_reason IS NULL
     AND NOT EXISTS (
-        SELECT 1 FROM payment_htlc_attempts ha
+        SELECT 1 FROM payment_htlc_attempt_resolutions hr
+        JOIN payment_htlc_attempts ha
+            ON ha.attempt_index = hr.attempt_index
         WHERE ha.payment_id = p.id
+        AND hr.resolution_type = 1
     )
 
     UNION
 
     SELECT DISTINCT ha.payment_id AS id
     FROM payment_htlc_attempts ha
-    JOIN payment_htlc_attempt_resolutions hr
-        ON hr.attempt_index = ha.attempt_index
-    JOIN payments p
-        ON p.id = ha.payment_id
-    WHERE p.fail_reason IS NULL
-    AND hr.resolution_type = 2
-    AND NOT EXISTS (
-        SELECT 1 FROM payment_htlc_attempts ha2
-        JOIN payment_htlc_attempt_resolutions hr2
-            ON hr2.attempt_index = ha2.attempt_index
-        WHERE ha2.payment_id = ha.payment_id
-        AND hr2.resolution_type = 1
+    WHERE NOT EXISTS (
+        SELECT 1 FROM payment_htlc_attempt_resolutions hr
+        WHERE hr.attempt_index = ha.attempt_index
     )
 )
 SELECT

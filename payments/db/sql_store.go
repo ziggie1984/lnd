@@ -1477,6 +1477,10 @@ func (s *SQLStore) RegisterAttempt(ctx context.Context,
 		attemptHash := paymentHash[:]
 		if attempt.Hash != nil {
 			attemptHash = attempt.Hash[:]
+		} else {
+			log.Errorf("RegisterAttempt: attempt %d has nil hash, "+
+				"falling back to payment identifier %x",
+				attempt.AttemptID, paymentHash)
 		}
 
 		_, err = db.InsertHtlcAttempt(ctx, sqlc.InsertHtlcAttemptParams{

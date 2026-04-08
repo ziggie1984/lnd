@@ -8,19 +8,35 @@ import (
 	"github.com/lightningnetwork/lnd/onionmessage"
 )
 
-// allowOnionMessage delegates to the IngressLimiter for the
-// per-peer-then-global byte-granular rate limit check. A successful
-// result wraps fn.Unit; a rejection wraps one of the sentinel errors
-// onionmessage.ErrPeerRateLimit or onionmessage.ErrGlobalRateLimit so
+// ErrNoChannel is the sentinel error returned by allowOnionMessage when
+// the incoming peer has no fully open channel with us. It is the
+// primary Sybil-resistance layer on top of the byte-granular rate
+// limiters: an attacker that can cheaply spin up new identities cannot
+// burn any per-peer or global token budget because the channel gate
+// runs before the IngressLimiter is consulted at all.
+var ErrNoChannel = errors.New("peer has no open channel")
+
+// allowOnionMessage applies the channel-presence gate and then, if the
+// peer has at least one fully open channel with us, delegates to the
+// IngressLimiter for the per-peer-then-global byte-granular rate limit
+// check. The channel gate runs first on purpose: if it rejects, no rate
+// limiter state is allocated for the no-channel peer and neither bucket
+// is debited. A successful result wraps fn.Unit; a rejection wraps one
+// of the sentinel errors ErrNoChannel,
+// onionmessage.ErrPeerRateLimit, or onionmessage.ErrGlobalRateLimit so
 // that callers can distinguish the drop reason via errors.Is.
 //
 // A nil IngressLimiter is treated as "disabled" and always accepts the
-// message. This preserves the behavior of test and disabled-onion-
-// messaging configurations without forcing callers to construct a real
-// limiter.
+// message once the channel gate passes. This preserves the behavior of
+// test and disabled-onion-messaging configurations without forcing
+// callers to construct a real limiter.
 func allowOnionMessage(limiter onionmessage.IngressLimiter,
-	peerKey [33]byte, msgBytes int) fn.Result[fn.Unit] {
+	peerKey [33]byte, msgBytes int,
+	hasChannel bool) fn.Result[fn.Unit] {
 
+	if !hasChannel {
+		return fn.Err[fn.Unit](ErrNoChannel)
+	}
 	if limiter == nil {
 		return fn.Ok(fn.Unit{})
 	}

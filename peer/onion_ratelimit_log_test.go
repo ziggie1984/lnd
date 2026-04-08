@@ -2,7 +2,6 @@ package peer
 
 import (
 	"bytes"
-	"errors"
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
@@ -110,7 +109,7 @@ func TestLogFirstOnionDropUnknownReason(t *testing.T) {
 	peerLog, peerBuf := newCapturingLogger()
 	limiter := newRealIngressLimiter(t)
 
-	logFirstOnionDrop(pkgLog, peerLog, errors.New("unknown"), limiter)
+	logFirstOnionDrop(pkgLog, peerLog, ErrNoChannel, limiter)
 	require.Empty(t, pkgBuf.String())
 	require.Empty(t, peerBuf.String())
 

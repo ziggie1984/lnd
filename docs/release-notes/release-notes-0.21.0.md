@@ -316,6 +316,10 @@
   The v1 end-time bound is corrected from inclusive to exclusive to match the
   BOLT 07 `gossip_timestamp_filter` spec. New SQL queries and composite indexes
   are added for efficient v2 block-height range scans.
+* [Version `FilterKnownChanIDs` and fix `FetchChannelEdgesByID` zombie
+  fallback](https://github.com/lightningnetwork/lnd/pull/10717) so that gossip
+  channel filtering and zombie edge lookups use the correct gossip version
+  instead of hardcoding v1.
 * Updated waiting proof persistence for gossip upgrades by introducing typed
   waiting proof keys and payloads, with a DB migration to rewrite legacy
   waiting proof records to the new key/value format

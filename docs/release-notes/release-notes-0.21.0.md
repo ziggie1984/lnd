@@ -70,6 +70,13 @@
   the chain watch filter on restart. This was a pre-existing bug since
   private taproot channels were first introduced.
 
+* [Fixed a shutdown race in the 
+  channel link](https://github.com/lightningnetwork/lnd/pull/10719)
+  that could deadlock the invoice registry during concurrent peer disconnect.
+  The link now waits for `htlcManager` to fully exit before tearing down hodl
+  subscriptions and the hodl queue, preventing orphaned subscriptions from
+  blocking invoice resolution.
+
 # New Features
 
 - [Basic Support](https://github.com/lightningnetwork/lnd/pull/9868) for onion

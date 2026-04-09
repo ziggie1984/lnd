@@ -378,6 +378,12 @@
   and transitioning the documentation to focus on a more reliable "Simnet" 
   workflow while removing obsolete faucet references.
 
+* [Android Lndmobile 16 KB page size for native libraries](https://github.com/lightningnetwork/lnd/pull/10517)
+  The Android `Lndmobile.aar` build now passes `-Wl,-z,max-page-size=16384` to
+  the linker, keeping the generated native library compatible with newer
+  Android devices that use 16 KB memory pages while preserving compatibility
+  with existing 4 KB page-size devices.
+
 # Contributors (Alphabetical Order)
 
 * bitromortac

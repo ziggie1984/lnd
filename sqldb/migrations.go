@@ -126,6 +126,11 @@ var (
 			Version:       16,
 			SchemaVersion: 13,
 		},
+		{
+			Name:          "000014_payments_no_fail_reason_index",
+			Version:       17,
+			SchemaVersion: 14,
+		},
 	}, migrationAdditions...)
 
 	// ErrMigrationMismatch is returned when a migrated record does not

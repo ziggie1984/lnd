@@ -93,7 +93,7 @@ var (
 			// user if necessary.
 		},
 		{
-			Name:          "000009_graph_v2_columns",
+			Name:          "000009_graph_v2",
 			Version:       11,
 			SchemaVersion: 9,
 		},

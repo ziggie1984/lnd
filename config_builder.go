@@ -1248,15 +1248,35 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 		// (e.g. mainnet → testnet), which would otherwise lead to
 		// silent data corruption. This check applies to all native SQL
 		// backends.
-		chainParamsStore := chainparams.NewStore(baseDB)
-		err = chainParamsStore.ValidateNetwork(
-			ctx, d.cfg.ActiveNetParams.Params,
-		)
-		if err != nil {
-			cleanUp()
-			d.logger.Error(err)
+		//
+		// If migrations are explicitly skipped, we also skip this check
+		// because the chain_params table may not exist yet. We check
+		// only the active backend's flag since only one backend is
+		// used at a time.
+		var skipMigrations bool
+		switch d.cfg.DB.Backend {
+		case lncfg.SqliteBackend:
+			skipMigrations = d.cfg.DB.Sqlite.SkipMigrations
+		case lncfg.PostgresBackend:
+			skipMigrations = d.cfg.DB.Postgres.SkipMigrations
+		}
 
-			return nil, nil, err
+		if !skipMigrations {
+			chainParamsStore := chainparams.NewStore(baseDB)
+			err = chainParamsStore.ValidateNetwork(
+				ctx, d.cfg.ActiveNetParams.Params,
+			)
+			if err != nil {
+				cleanUp()
+				d.logger.Error(err)
+
+				return nil, nil, err
+			}
+		} else {
+			d.logger.Warnf("Database network validation skipped " +
+				"because SkipMigrations is enabled; " +
+				"cross-network database reuse would not be " +
+				"detected.")
 		}
 
 		// Create the invoice store.

@@ -40,9 +40,6 @@ type Querier interface {
 	FailPayment(ctx context.Context, arg FailPaymentParams) (sql.Result, error)
 	FetchAMPSubInvoiceHTLCs(ctx context.Context, arg FetchAMPSubInvoiceHTLCsParams) ([]FetchAMPSubInvoiceHTLCsRow, error)
 	FetchAMPSubInvoices(ctx context.Context, arg FetchAMPSubInvoicesParams) ([]AmpSubInvoice, error)
-	// Fetch all inflight attempts with their payment data using pagination.
-	// Returns attempt data joined with payment and intent data to avoid separate queries.
-	FetchAllInflightAttempts(ctx context.Context, arg FetchAllInflightAttemptsParams) ([]PaymentHtlcAttempt, error)
 	FetchHopLevelCustomRecords(ctx context.Context, hopIds []int64) ([]PaymentHopCustomRecord, error)
 	FetchHopsForAttempts(ctx context.Context, htlcAttemptIndices []int64) ([]FetchHopsForAttemptsRow, error)
 	// Batch query to fetch only HTLC resolution status for multiple payments.
@@ -50,6 +47,10 @@ type Querier interface {
 	// group the resolutions by payment_id in the background.
 	FetchHtlcAttemptResolutionsForPayments(ctx context.Context, paymentIds []int64) ([]FetchHtlcAttemptResolutionsForPaymentsRow, error)
 	FetchHtlcAttemptsForPayments(ctx context.Context, paymentIds []int64) ([]FetchHtlcAttemptsForPaymentsRow, error)
+	// Fetch all non-terminal payments using pagination. A payment is
+	// non-terminal if it has an unresolved attempt, or if it has not been
+	// permanently failed and has no settled attempt yet.
+	FetchNonTerminalPayments(ctx context.Context, arg FetchNonTerminalPaymentsParams) ([]FetchNonTerminalPaymentsRow, error)
 	FetchPayment(ctx context.Context, paymentIdentifier []byte) (FetchPaymentRow, error)
 	// Fetch all duplicate payment records from the payment_duplicates table for
 	// a given payment ID.

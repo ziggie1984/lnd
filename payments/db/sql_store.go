@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"time"
 
@@ -50,12 +49,12 @@ type SQLQueries interface {
 	FilterPaymentsDesc(ctx context.Context, query sqlc.FilterPaymentsDescParams) ([]sqlc.FilterPaymentsDescRow, error)
 	FetchPayment(ctx context.Context, paymentIdentifier []byte) (sqlc.FetchPaymentRow, error)
 	FetchPaymentsByIDs(ctx context.Context, paymentIDs []int64) ([]sqlc.FetchPaymentsByIDsRow, error)
+	FetchNonTerminalPayments(ctx context.Context, arg sqlc.FetchNonTerminalPaymentsParams) ([]sqlc.FetchNonTerminalPaymentsRow, error)
 
 	CountPayments(ctx context.Context) (int64, error)
 
 	FetchHtlcAttemptsForPayments(ctx context.Context, paymentIDs []int64) ([]sqlc.FetchHtlcAttemptsForPaymentsRow, error)
 	FetchHtlcAttemptResolutionsForPayments(ctx context.Context, paymentIDs []int64) ([]sqlc.FetchHtlcAttemptResolutionsForPaymentsRow, error)
-	FetchAllInflightAttempts(ctx context.Context, arg sqlc.FetchAllInflightAttemptsParams) ([]sqlc.PaymentHtlcAttempt, error)
 	FetchHopsForAttempts(ctx context.Context, htlcAttemptIndices []int64) ([]sqlc.FetchHopsForAttemptsRow, error)
 
 	FetchPaymentDuplicates(ctx context.Context, paymentID int64) ([]sqlc.PaymentDuplicate, error)
@@ -180,88 +179,6 @@ func fetchPaymentWithCompleteData(ctx context.Context,
 
 	// Build the payment from the batch data.
 	return buildPaymentFromBatchData(dbPayment, batchData, true)
-}
-
-// paymentsCompleteData holds the full payment data when batch loading base
-// payment data and all the related data for a payment.
-type paymentsCompleteData struct {
-	*paymentsBaseData
-	*paymentsDetailsData
-}
-
-// batchLoadPayments loads the full payment data for a batch of payment IDs.
-func batchLoadPayments(ctx context.Context, cfg *sqldb.QueryConfig,
-	db SQLQueries, paymentIDs []int64) (*paymentsCompleteData, error) {
-
-	baseData, err := batchLoadpaymentsBaseData(ctx, cfg, db, paymentIDs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load payment base data: %w",
-			err)
-	}
-
-	batchData, err := batchLoadPaymentDetailsData(
-		ctx, cfg, db, paymentIDs, true,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load payment batch data: %w",
-			err)
-	}
-
-	return &paymentsCompleteData{
-		paymentsBaseData:    baseData,
-		paymentsDetailsData: batchData,
-	}, nil
-}
-
-// paymentsBaseData holds the base payment and intent data for a batch of
-// payments.
-type paymentsBaseData struct {
-	// paymentsAndIntents maps payment ID to its payment and intent data.
-	paymentsAndIntents map[int64]sqlc.PaymentAndIntent
-}
-
-// batchLoadpaymentsBaseData loads the base payment and payment intent data for
-// a batch of payment IDs. This complements loadPaymentsBatchData which loads
-// related data (attempts, hops, custom records) but not the payment table
-// and payment intent table data.
-func batchLoadpaymentsBaseData(ctx context.Context,
-	cfg *sqldb.QueryConfig, db SQLQueries,
-	paymentIDs []int64) (*paymentsBaseData, error) {
-
-	baseData := &paymentsBaseData{
-		paymentsAndIntents: make(map[int64]sqlc.PaymentAndIntent),
-	}
-
-	if len(paymentIDs) == 0 {
-		return baseData, nil
-	}
-
-	err := sqldb.ExecuteBatchQuery(
-		ctx, cfg, paymentIDs,
-		func(id int64) int64 { return id },
-		func(ctx context.Context, ids []int64) (
-			[]sqlc.FetchPaymentsByIDsRow, error) {
-
-			records, err := db.FetchPaymentsByIDs(
-				ctx, ids,
-			)
-
-			return records, err
-		},
-		func(ctx context.Context,
-			payment sqlc.FetchPaymentsByIDsRow) error {
-
-			baseData.paymentsAndIntents[payment.ID] = payment
-
-			return nil
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch payment base "+
-			"data: %w", err)
-	}
-
-	return baseData, nil
 }
 
 // paymentsRelatedData holds all the batch-loaded data for multiple payments.
@@ -1047,103 +964,63 @@ func (s *SQLStore) FetchInFlightPayments(ctx context.Context) ([]*MPPayment,
 	var mpPayments []*MPPayment
 
 	err := s.db.ExecTx(ctx, sqldb.ReadTxOpt(), func(db SQLQueries) error {
-		// Track which payment IDs we've already processed across all
-		// pages to avoid loading the same payment multiple times when
-		// multiple inflight attempts belong to the same payment.
-		processedPayments := make(map[int64]*MPPayment)
+		extractCursor := func(
+			row sqlc.FetchNonTerminalPaymentsRow) int64 {
 
-		extractCursor := func(row sqlc.PaymentHtlcAttempt) int64 {
-			return row.AttemptIndex
+			return row.ID
 		}
 
-		// collectFunc extracts the payment ID from each attempt row.
-		collectFunc := func(row sqlc.PaymentHtlcAttempt) (
+		collectFunc := func(row sqlc.FetchNonTerminalPaymentsRow) (
 			int64, error) {
 
-			return row.PaymentID, nil
+			return row.ID, nil
 		}
 
-		// batchDataFunc loads payment data for a batch of payment IDs,
-		// but only for IDs we haven't processed yet.
 		batchDataFunc := func(ctx context.Context,
-			paymentIDs []int64) (*paymentsCompleteData, error) {
+			paymentIDs []int64) (*paymentsDetailsData, error) {
 
-			// Filter out already-processed payment IDs.
-			uniqueIDs := make([]int64, 0, len(paymentIDs))
-			for _, id := range paymentIDs {
-				_, processed := processedPayments[id]
-				if !processed {
-					uniqueIDs = append(uniqueIDs, id)
-				}
-			}
-
-			// If uniqueIDs is empty, the batch load will return
-			// empty batch data.
-			return batchLoadPayments(
-				ctx, s.cfg.QueryCfg, db, uniqueIDs,
+			return batchLoadPaymentDetailsData(
+				ctx, s.cfg.QueryCfg, db, paymentIDs, true,
 			)
 		}
 
-		// processAttempt processes each attempt. We only build and
-		// store the payment once per unique payment ID.
-		processAttempt := func(ctx context.Context,
-			row sqlc.PaymentHtlcAttempt,
-			batchData *paymentsCompleteData) error {
+		processPayment := func(ctx context.Context,
+			row sqlc.FetchNonTerminalPaymentsRow,
+			batchData *paymentsDetailsData) error {
 
-			// Skip if we've already processed this payment.
-			_, processed := processedPayments[row.PaymentID]
-			if processed {
-				return nil
-			}
-
-			dbPayment := batchData.paymentsAndIntents[row.PaymentID]
-
-			// Build the payment from batch data.
-			mpPayment, err := buildPaymentFromBatchData(
-				dbPayment, batchData.paymentsDetailsData, true,
+			payment, err := buildPaymentFromBatchData(
+				row, batchData, true,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to build payment: %w",
 					err)
 			}
 
-			// Store in our processed map.
-			processedPayments[row.PaymentID] = mpPayment
+			mpPayments = append(mpPayments, payment)
 
 			return nil
 		}
 
-		queryFunc := func(ctx context.Context, lastAttemptIndex int64,
-			limit int32) ([]sqlc.PaymentHtlcAttempt,
+		queryFunc := func(ctx context.Context, lastPaymentID int64,
+			limit int32) ([]sqlc.FetchNonTerminalPaymentsRow,
 			error) {
 
-			return db.FetchAllInflightAttempts(ctx,
-				sqlc.FetchAllInflightAttemptsParams{
-					AttemptIndex: lastAttemptIndex,
-					Limit:        limit,
+			return db.FetchNonTerminalPayments(ctx,
+				sqlc.FetchNonTerminalPaymentsParams{
+					ID:    lastPaymentID,
+					Limit: limit,
 				},
 			)
 		}
 
 		err := sqldb.ExecuteCollectAndBatchWithSharedDataQuery(
-			ctx, s.cfg.QueryCfg, int64(-1), queryFunc,
+			ctx, s.cfg.QueryCfg, int64(0), queryFunc,
 			extractCursor, collectFunc, batchDataFunc,
-			processAttempt,
+			processPayment,
 		)
 		if err != nil {
 			return err
 		}
-
-		// Convert map to slice and sort by sequence number to
-		// produce a deterministic ordering.
-		mpPayments = make([]*MPPayment, 0, len(processedPayments))
-		for _, payment := range processedPayments {
-			mpPayments = append(mpPayments, payment)
-		}
-		sort.Slice(mpPayments, func(i, j int) bool {
-			return mpPayments[i].SequenceNum <
-				mpPayments[j].SequenceNum
-		})
 
 		return nil
 	}, func() {
@@ -1597,13 +1474,21 @@ func (s *SQLStore) RegisterAttempt(ctx context.Context,
 		// Register the plain HTLC attempt next.
 		sessionKey := attempt.SessionKey()
 		sessionKeyBytes := sessionKey.Serialize()
+		attemptHash := paymentHash[:]
+		if attempt.Hash != nil {
+			attemptHash = attempt.Hash[:]
+		} else {
+			log.Errorf("RegisterAttempt: attempt %d has nil hash, "+
+				"falling back to payment identifier %x",
+				attempt.AttemptID, paymentHash)
+		}
 
 		_, err = db.InsertHtlcAttempt(ctx, sqlc.InsertHtlcAttemptParams{
 			PaymentID:    dbPayment.Payment.ID,
 			AttemptIndex: int64(attempt.AttemptID),
 			SessionKey:   sessionKeyBytes,
 			AttemptTime:  attempt.AttemptTime,
-			PaymentHash:  paymentHash[:],
+			PaymentHash:  attemptHash,
 			FirstHopAmountMsat: int64(
 				attempt.Route.FirstHopAmount.Val.Int(),
 			),

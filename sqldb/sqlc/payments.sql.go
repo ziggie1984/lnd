@@ -104,69 +104,6 @@ func (q *Queries) FailPayment(ctx context.Context, arg FailPaymentParams) (sql.R
 	return q.db.ExecContext(ctx, failPayment, arg.FailReason, arg.PaymentIdentifier)
 }
 
-const fetchAllInflightAttempts = `-- name: FetchAllInflightAttempts :many
-SELECT
-    ha.id,
-    ha.attempt_index,
-    ha.payment_id,
-    ha.session_key,
-    ha.attempt_time,
-    ha.payment_hash,
-    ha.first_hop_amount_msat,
-    ha.route_total_time_lock,
-    ha.route_total_amount,
-    ha.route_source_key
-FROM payment_htlc_attempts ha
-WHERE NOT EXISTS (
-    SELECT 1 FROM payment_htlc_attempt_resolutions hr
-    WHERE hr.attempt_index = ha.attempt_index
-)
-AND ha.attempt_index > $1
-ORDER BY ha.attempt_index ASC
-LIMIT $2
-`
-
-type FetchAllInflightAttemptsParams struct {
-	AttemptIndex int64
-	Limit        int32
-}
-
-// Fetch all inflight attempts with their payment data using pagination.
-// Returns attempt data joined with payment and intent data to avoid separate queries.
-func (q *Queries) FetchAllInflightAttempts(ctx context.Context, arg FetchAllInflightAttemptsParams) ([]PaymentHtlcAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, fetchAllInflightAttempts, arg.AttemptIndex, arg.Limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []PaymentHtlcAttempt
-	for rows.Next() {
-		var i PaymentHtlcAttempt
-		if err := rows.Scan(
-			&i.ID,
-			&i.AttemptIndex,
-			&i.PaymentID,
-			&i.SessionKey,
-			&i.AttemptTime,
-			&i.PaymentHash,
-			&i.FirstHopAmountMsat,
-			&i.RouteTotalTimeLock,
-			&i.RouteTotalAmount,
-			&i.RouteSourceKey,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const fetchHopLevelCustomRecords = `-- name: FetchHopLevelCustomRecords :many
 SELECT
     l.id,
@@ -440,6 +377,95 @@ func (q *Queries) FetchHtlcAttemptsForPayments(ctx context.Context, paymentIds [
 			&i.HtlcFailReason,
 			&i.FailureMsg,
 			&i.SettlePreimage,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const fetchNonTerminalPayments = `-- name: FetchNonTerminalPayments :many
+WITH non_terminal_ids AS (
+    SELECT p.id
+    FROM payments p
+    WHERE p.fail_reason IS NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM payment_htlc_attempt_resolutions hr
+        JOIN payment_htlc_attempts ha
+            ON ha.attempt_index = hr.attempt_index
+        WHERE ha.payment_id = p.id
+        AND hr.resolution_type = 1
+    )
+
+    UNION
+
+    SELECT DISTINCT ha.payment_id AS id
+    FROM payment_htlc_attempts ha
+    WHERE NOT EXISTS (
+        SELECT 1 FROM payment_htlc_attempt_resolutions hr
+        WHERE hr.attempt_index = ha.attempt_index
+    )
+)
+SELECT
+    p.id,
+    p.amount_msat,
+    p.created_at,
+    p.payment_identifier,
+    p.fail_reason,
+    pi.intent_type,
+    pi.intent_payload
+FROM non_terminal_ids n
+JOIN payments p
+    ON p.id = n.id
+LEFT JOIN payment_intents pi
+    ON pi.payment_id = p.id
+WHERE p.id > $1
+ORDER BY p.id ASC
+LIMIT $2
+`
+
+type FetchNonTerminalPaymentsParams struct {
+	ID    int64
+	Limit int32
+}
+
+type FetchNonTerminalPaymentsRow struct {
+	ID                int64
+	AmountMsat        int64
+	CreatedAt         time.Time
+	PaymentIdentifier []byte
+	FailReason        sql.NullInt32
+	IntentType        sql.NullInt16
+	IntentPayload     []byte
+}
+
+// Fetch all non-terminal payments using pagination. A payment is
+// non-terminal if it has an unresolved attempt, or if it has not been
+// permanently failed and has no settled attempt yet.
+func (q *Queries) FetchNonTerminalPayments(ctx context.Context, arg FetchNonTerminalPaymentsParams) ([]FetchNonTerminalPaymentsRow, error) {
+	rows, err := q.db.QueryContext(ctx, fetchNonTerminalPayments, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FetchNonTerminalPaymentsRow
+	for rows.Next() {
+		var i FetchNonTerminalPaymentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AmountMsat,
+			&i.CreatedAt,
+			&i.PaymentIdentifier,
+			&i.FailReason,
+			&i.IntentType,
+			&i.IntentPayload,
 		); err != nil {
 			return nil, err
 		}

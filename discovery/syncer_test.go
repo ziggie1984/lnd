@@ -2321,7 +2321,8 @@ func TestGossipSyncerSyncTransitions(t *testing.T) {
 			syncer.Start()
 			defer syncer.Stop()
 
-			syncer.ProcessSyncTransition(test.finalSyncType)
+			err := syncer.ProcessSyncTransition(test.finalSyncType)
+			require.NoError(t, err)
 
 			// The syncer should now have the expected final
 			// SyncerType that the test expects.

@@ -1438,6 +1438,12 @@ func (h *HarnessTest) IsNeutrinoBackend() bool {
 	return h.manager.chainBackend.Name() == NeutrinoBackendName
 }
 
+// IsPostgresBackend returns true if the test harness is configured to use a
+// Postgres database backend.
+func (h *HarnessTest) IsPostgresBackend() bool {
+	return h.manager.dbBackend == node.BackendPostgres
+}
+
 // fundCoins attempts to send amt satoshis from the internal mining node to the
 // targeted lightning node. The confirmed boolean indicates whether the
 // transaction that pays to the target should confirm. For neutrino backend,

@@ -33,7 +33,7 @@ require (
 	github.com/lightninglabs/neutrino v0.16.2
 	github.com/lightninglabs/neutrino/cache v1.1.3
 	github.com/lightningnetwork/lightning-onion v1.3.0
-	github.com/lightningnetwork/lnd/actor v0.0.5
+	github.com/lightningnetwork/lnd/actor v0.0.6
 	github.com/lightningnetwork/lnd/cert v1.2.2
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
@@ -209,10 +209,6 @@ replace github.com/lightningnetwork/lnd/queue => ./queue
 
 // TODO(elle): remove once the gossip V2 sqldb changes have been made.
 replace github.com/lightningnetwork/lnd/sqldb => ./sqldb
-
-// Use local actor module to pick up CompleteWith/AwaitFuture helpers added
-// as part of the discovery errChan -> Future[error] migration.
-replace github.com/lightningnetwork/lnd/actor => ./actor
 
 // This replace is for https://github.com/advisories/GHSA-25xm-hr59-7c27
 replace github.com/ulikunitz/xz => github.com/ulikunitz/xz v0.5.11

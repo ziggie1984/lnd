@@ -4029,7 +4029,18 @@ func (p *Brontide) initRbfChanCloser(
 	peerPub := *p.IdentityKey()
 
 	msgMapper := chancloser.NewRbfMsgMapper(
-		uint32(startingHeight), chanID, peerPub,
+		func() uint32 {
+			_, height, err := p.cfg.ChainIO.GetBestBlock()
+			if err != nil {
+				peerLog.Errorf("Unable to get best block "+
+					"height: %v", err)
+
+				return uint32(startingHeight)
+			}
+
+			return uint32(height)
+		},
+		chanID, peerPub,
 	)
 
 	initialState := chancloser.ChannelActive{}
@@ -5367,7 +5378,8 @@ func (p *Brontide) addActiveChannel(c *lnpeer.NewChannel) error {
 		func(ts htlcswitch.AuxTrafficShaper) {
 			val := p.createHtlcValidator(c.OpenChannel, ts)
 			chanOpts = append(
-				chanOpts, lnwallet.WithAuxHtlcValidator(val),
+				chanOpts,
+				lnwallet.WithAuxHtlcValidator(val),
 			)
 		},
 	)

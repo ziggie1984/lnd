@@ -86,6 +86,30 @@ var channelRestoreTestCases = []*lntest.TestCase{
 		},
 	},
 	{
+		// Restore a channel back up of a confirmed production
+		// taproot channel.
+		Name: "restore simple taproot final",
+		TestFunc: func(ht *lntest.HarnessTest) {
+			runChanRestoreScenarioCommitTypes(
+				ht,
+				lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL,
+				false,
+			)
+		},
+	},
+	{
+		// Restore a channel back up of an unconfirmed production
+		// taproot channel.
+		Name: "restore simple taproot final zero conf",
+		TestFunc: func(ht *lntest.HarnessTest) {
+			runChanRestoreScenarioCommitTypes(
+				ht,
+				lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL,
+				true,
+			)
+		},
+	},
+	{
 		Name:     "restore from rpc",
 		TestFunc: testChannelBackupRestoreFromRPC,
 	},

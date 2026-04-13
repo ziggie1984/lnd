@@ -922,8 +922,11 @@ func WithAuxResolver(resolver AuxContractResolver) ChannelOpt {
 }
 
 // WithCustomSigningRand is used to provide a custom random source for
-// generating deterministic JIT signing nonces in MuSig2 sessions. This should
-// only be used in tests that need reproducible MuSig2 signatures.
+// generating deterministic JIT signing nonces in MuSig2 sessions.
+//
+// WARNING: This MUST only be used for test vector generation. Setting this in
+// production will produce deterministic nonces, enabling private key extraction
+// via nonce reuse.
 func WithCustomSigningRand(rand io.Reader) ChannelOpt {
 	return func(o *channelOpts) {
 		o.customSigningRand = fn.Some[io.Reader](rand)

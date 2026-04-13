@@ -1224,6 +1224,53 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 			}
 		}
 
+		// Determine whether this database already has the chain_params
+		// schema before any migration work runs. If it does, we must
+		// validate the network immediately so that network-sensitive
+		// migrations cannot execute under the wrong chain context. If it
+		// does not, we will bootstrap the network only after migrations
+		// create the table.
+		versionedStore, ok := dbs.NativeSQLStore.(sqldb.VersionedDB)
+		if !ok {
+			cleanUp()
+
+			return nil, nil, fmt.Errorf("native SQL store %T does "+
+				"not expose schema version", dbs.NativeSQLStore)
+		}
+
+		schemaVersion, _, err := versionedStore.GetSchemaVersion()
+		if err != nil {
+			cleanUp()
+			err = fmt.Errorf("failed to read native SQL schema "+
+				"version: %w", err)
+			d.logger.Error(err)
+
+			return nil, nil, err
+		}
+
+		hadChainParams := schemaVersion >= sqldb.ChainParamsSchemaVersion
+
+		// The network check itself is done against the base SQL store and
+		// applies to all native SQL backends.
+		baseDB := versionedStore.GetBaseDB()
+		chainParamsStore := chainparams.NewStore(baseDB)
+
+		// If chain_params already exists, fail before running any
+		// migrations. This protects against reusing an existing SQL
+		// database across networks and then mutating it under the wrong
+		// runtime chain context.
+		if hadChainParams {
+			err = chainParamsStore.ValidateNetwork(
+				ctx, d.cfg.ActiveNetParams.Params,
+			)
+			if err != nil {
+				cleanUp()
+				d.logger.Error(err)
+
+				return nil, nil, err
+			}
+		}
+
 		// We need to apply all migrations to the native SQL store
 		// before we can use it.
 		err = dbs.NativeSQLStore.ApplyAllMigrations(ctx, migrations)
@@ -1239,20 +1286,11 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 		// With the DB ready and migrations applied, we can now create
 		// the base DB and transaction executor for the native SQL
 		// stores.
-		baseDB := dbs.NativeSQLStore.GetBaseDB()
 
-		// Validate that the database was initialised for the same
-		// network as the currently active network. This catches cases
-		// where a user accidentally reuses a database (e.g. via a
-		// postgres DSN or by copying a file) across different networks
-		// (e.g. mainnet → testnet), which would otherwise lead to
-		// silent data corruption. This check applies to all native SQL
-		// backends.
-		//
-		// If migrations are explicitly skipped, we also skip this check
-		// because the chain_params table may not exist yet. We check
-		// only the active backend's flag since only one backend is
-		// used at a time.
+		// If the database did not have chain_params before startup, it
+		// could not be validated yet. In that case we bootstrap the
+		// stored network immediately after migrations create the table, so
+		// future restarts can fail fast on any network mismatch.
 		var skipMigrations bool
 		switch d.cfg.DB.Backend {
 		case lncfg.SqliteBackend:
@@ -1261,8 +1299,7 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 			skipMigrations = d.cfg.DB.Postgres.SkipMigrations
 		}
 
-		if !skipMigrations {
-			chainParamsStore := chainparams.NewStore(baseDB)
+		if !hadChainParams && !skipMigrations {
 			err = chainParamsStore.ValidateNetwork(
 				ctx, d.cfg.ActiveNetParams.Params,
 			)
@@ -1272,11 +1309,12 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 
 				return nil, nil, err
 			}
-		} else {
+		} else if !hadChainParams && skipMigrations {
 			d.logger.Warnf("Database network validation skipped " +
-				"because SkipMigrations is enabled; " +
-				"cross-network database reuse would not be " +
-				"detected.")
+				"because SkipMigrations is enabled before " +
+				"chain_params exists; cross-network database " +
+				"reuse would not be detected until migrations " +
+				"are enabled and the table is created.")
 		}
 
 		// Create the invoice store.

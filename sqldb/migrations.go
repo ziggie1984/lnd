@@ -23,6 +23,10 @@ import (
 )
 
 var (
+	// ChainParamsSchemaVersion is the schema version at which the
+	// chain_params table is created.
+	ChainParamsSchemaVersion = 15
+
 	// migrationConfig defines a list of migrations to be applied to the
 	// database. Each migration is assigned a version number, determining
 	// its execution order.
@@ -134,7 +138,7 @@ var (
 		{
 			Name:          "000015_chain_params",
 			Version:       18,
-			SchemaVersion: 15,
+			SchemaVersion: ChainParamsSchemaVersion,
 		},
 	}, migrationAdditions...)
 

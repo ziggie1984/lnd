@@ -403,6 +403,16 @@ type DB interface {
 		customMigrations []MigrationConfig) error
 }
 
+// VersionedDB is a native SQL database that can report its current schema
+// version through the migration backend.
+type VersionedDB interface {
+	DB
+
+	// GetSchemaVersion returns the current schema version of the
+	// database as tracked by the SQL migration backend.
+	GetSchemaVersion() (int, bool, error)
+}
+
 // BaseDB is the base database struct that each implementation can embed to
 // gain some common functionality.
 type BaseDB struct {

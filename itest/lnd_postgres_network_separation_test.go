@@ -87,3 +87,33 @@ func testPostgresNetworkSeparation(ht *lntest.HarnessTest) {
 	// when the node exits before writing "Shutdown complete" to its log.
 	require.Error(ht, alice.WaitForProcessExit())
 }
+
+// testPostgresNetworkSeparationSkipMigrations verifies that enabling
+// --db.postgres.skipmigrations does not disable the network mismatch check once
+// the chain_params table already exists.
+func testPostgresNetworkSeparationSkipMigrations(ht *lntest.HarnessTest) {
+	// This test is only relevant for the postgres backend with native SQL.
+	if !ht.IsPostgresBackend() {
+		ht.Skip("node not running with postgres backend")
+	}
+
+	// First startup: create the native SQL schema including chain_params and
+	// persist regtest as the active network.
+	alice := ht.NewNodeWithCoins("Alice", []string{"--db.use-native-sql"})
+
+	require.NoError(ht, alice.Stop())
+
+	// Reuse the same postgres database on simnet while also enabling
+	// skipmigrations. Since chain_params already exists, startup must still
+	// fail immediately on the network mismatch.
+	alice.Cfg.NetParams = &chaincfg.SimNetParams
+	alice.SetExtraArgs([]string{
+		"--db.use-native-sql",
+		"--db.postgres.skipmigrations",
+		"--bitcoin.simnet",
+		"--bitcoin.node=neutrino",
+	})
+
+	require.NoError(ht, alice.StartLndCmd(ht.Context()))
+	require.Error(ht, alice.WaitForProcessExit())
+}

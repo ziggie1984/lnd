@@ -3420,17 +3420,35 @@ func (c *OpenChannel) AdvanceCommitChainTail(fwdPkg *FwdPkg,
 			return err
 		}
 
+		// Persist the local updates the peer hasn't yet signed so they
+		// can be restored after restart.
+		var b2 bytes.Buffer
+		err = serializeLogUpdates(&b2, updates)
+		if err != nil {
+			return err
+		}
+
+		err = chanBucket.Put(remoteUnsignedLocalUpdatesKey, b2.Bytes())
+		if err != nil {
+			return fmt.Errorf("unable to restore remote unsigned "+
+				"local updates: %v", err)
+		}
+
 		// Persist the unsigned acked updates that are not included
 		// in their new commitment.
 		updateBytes := chanBucket.Get(unsignedAckedUpdatesKey)
+		if updateBytes == nil {
+			// This shouldn't normally happen as we always store
+			// the number of updates, but could still be
+			// encountered by nodes that are upgrading.
+			newRemoteCommit = &newCommit.Commitment
+			return nil
+		}
 
-		var unsignedUpdates []LogUpdate
-		if updateBytes != nil {
-			r := bytes.NewReader(updateBytes)
-			unsignedUpdates, err = deserializeLogUpdates(r)
-			if err != nil {
-				return err
-			}
+		r := bytes.NewReader(updateBytes)
+		unsignedUpdates, err := deserializeLogUpdates(r)
+		if err != nil {
+			return err
 		}
 
 		var validUpdates []LogUpdate
@@ -3455,20 +3473,6 @@ func (c *OpenChannel) AdvanceCommitChainTail(fwdPkg *FwdPkg,
 		if err != nil {
 			return fmt.Errorf("unable to store under "+
 				"unsignedAckedUpdatesKey: %w", err)
-		}
-
-		// Persist the local updates the peer hasn't yet signed so they
-		// can be restored after restart.
-		var b2 bytes.Buffer
-		err = serializeLogUpdates(&b2, updates)
-		if err != nil {
-			return err
-		}
-
-		err = chanBucket.Put(remoteUnsignedLocalUpdatesKey, b2.Bytes())
-		if err != nil {
-			return fmt.Errorf("unable to restore remote unsigned "+
-				"local updates: %v", err)
 		}
 
 		newRemoteCommit = &newCommit.Commitment

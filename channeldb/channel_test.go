@@ -978,6 +978,108 @@ func TestChannelStateTransition(t *testing.T) {
 	require.Empty(t, fwdPkgs, "no forwarding packages should exist")
 }
 
+func TestAdvanceCommitChainTailRemoteUnsignedLocalUpdatesWithoutUnsignedAckedKey(
+	t *testing.T) {
+
+	t.Parallel()
+
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
+
+	cdb := fullDB.ChannelStateDB()
+	state := createTestChannel(t, cdb)
+
+	openChannels, err := cdb.FetchOpenChannels(state.IdentityPub)
+	require.NoError(t, err, "unable to fetch open channel")
+	require.Len(t, openChannels, 1, "unexpected number of channels")
+
+	channel := openChannels[0]
+
+	remoteCommit := channel.RemoteCommitment
+	remoteCommit.CommitHeight++
+	remoteCommit.LocalBalance -= 1
+	remoteCommit.RemoteBalance += 1
+
+	commitDiff := &CommitDiff{
+		Commitment: remoteCommit,
+		CommitSig: &lnwire.CommitSig{
+			ChanID:    lnwire.ChannelID(key),
+			CommitSig: wireSig,
+		},
+		LogUpdates:        []LogUpdate{},
+		OpenedCircuitKeys: []models.CircuitKey{},
+		ClosedCircuitKeys: []models.CircuitKey{},
+	}
+
+	err = channel.AppendRemoteCommitChain(commitDiff)
+	require.NoError(t, err, "unable to append remote commit diff")
+
+	err = kvdb.Update(cdb.backend, func(tx kvdb.RwTx) error {
+		chanBucket, err := fetchChanBucketRw(
+			tx, channel.IdentityPub, &channel.FundingOutpoint,
+			channel.ChainHash,
+		)
+		if err != nil {
+			return err
+		}
+
+		return chanBucket.Delete(unsignedAckedUpdatesKey)
+	}, func() {})
+	require.NoError(t, err, "unable to remove unsigned acked updates key")
+
+	remoteUnsignedLocalUpdates := []LogUpdate{
+		{
+			LogIndex: 1,
+			UpdateMsg: &lnwire.UpdateFee{
+				ChanID:   lnwire.ChannelID(key),
+				FeePerKw: 1234,
+			},
+		},
+	}
+
+	oldRemoteCommit := channel.RemoteCommitment
+	fwdPkg := NewFwdPkg(
+		channel.ShortChanID(), oldRemoteCommit.CommitHeight, nil, nil,
+	)
+
+	err = channel.AdvanceCommitChainTail(
+		fwdPkg, remoteUnsignedLocalUpdates, dummyLocalOutputIndex,
+		dummyRemoteOutIndex,
+	)
+	require.NoError(t, err, "unable to advance commit chain tail")
+
+	dbRemoteUnsignedLocalUpdates, err := channel.RemoteUnsignedLocalUpdates()
+	require.NoError(t, err, "unable to fetch remote unsigned local updates")
+	require.Len(t, dbRemoteUnsignedLocalUpdates, 1)
+	require.Equal(
+		t, remoteUnsignedLocalUpdates[0].LogIndex,
+		dbRemoteUnsignedLocalUpdates[0].LogIndex,
+	)
+
+	dbUpdateFee, ok := dbRemoteUnsignedLocalUpdates[0].UpdateMsg.(*lnwire.UpdateFee)
+	require.True(t, ok)
+
+	updateFee, ok := remoteUnsignedLocalUpdates[0].UpdateMsg.(*lnwire.UpdateFee)
+	require.True(t, ok)
+	require.Equal(t, updateFee.ChanID, dbUpdateFee.ChanID)
+	require.Equal(t, updateFee.FeePerKw, dbUpdateFee.FeePerKw)
+
+	err = kvdb.View(cdb.backend, func(tx kvdb.RTx) error {
+		chanBucket, err := fetchChanBucket(
+			tx, channel.IdentityPub, &channel.FundingOutpoint,
+			channel.ChainHash,
+		)
+		if err != nil {
+			return err
+		}
+
+		require.Nil(t, chanBucket.Get(unsignedAckedUpdatesKey))
+
+		return nil
+	}, func() {})
+	require.NoError(t, err)
+}
+
 // TestOpeningChannelTxConfirmation verifies that calling MarkConfirmationHeight
 // correctly updates the confirmed state. It also ensures that calling Refresh
 // on a different OpenChannel updates its in-memory state to reflect the prior

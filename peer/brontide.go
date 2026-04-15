@@ -328,6 +328,15 @@ type Config struct {
 	// disabled.
 	OnionLimiter onionmessage.IngressLimiter
 
+	// OnionRelayAll, when true, disables the channel-presence gate on
+	// incoming onion messages: messages from peers with no fully open
+	// channel are admitted to the rate-limiter pipeline instead of
+	// being dropped at ingress. The default (false) keeps the gate in
+	// place so that a no-cost Sybil identity cannot burn a full
+	// per-peer byte budget on each of many connections and saturate
+	// the global limiter through sheer identity count.
+	OnionRelayAll bool
+
 	// OnionActorOpts returns ActorOptions for the onion peer actor
 	// being spawned for the given peer. This allows per-peer
 	// customization of mailbox size, drop predicates, etc.
@@ -2366,6 +2375,7 @@ out:
 			result := allowOnionMessage(
 				p.cfg.OnionLimiter, p.PubKey(),
 				msg.WireSize(), p.hasActiveChannels(),
+				p.cfg.OnionRelayAll,
 			)
 			if err := result.Err(); err != nil {
 				logFirstOnionDrop(

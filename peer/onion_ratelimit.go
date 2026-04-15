@@ -26,15 +26,21 @@ var ErrNoChannel = errors.New("peer has no open channel")
 // onionmessage.ErrPeerRateLimit, or onionmessage.ErrGlobalRateLimit so
 // that callers can distinguish the drop reason via errors.Is.
 //
+// When relayAll is true, the channel gate is skipped entirely and the
+// message is admitted to the IngressLimiter regardless of hasChannel.
+// This is the opt-in policy for operators who want to accept onion
+// messages from peers with no channel, trading the Sybil-resistance
+// property of the gate for broader reachability.
+//
 // A nil IngressLimiter is treated as "disabled" and always accepts the
 // message once the channel gate passes. This preserves the behavior of
 // test and disabled-onion-messaging configurations without forcing
 // callers to construct a real limiter.
 func allowOnionMessage(limiter onionmessage.IngressLimiter,
 	peerKey [33]byte, msgBytes int,
-	hasChannel bool) fn.Result[fn.Unit] {
+	hasChannel, relayAll bool) fn.Result[fn.Unit] {
 
-	if !hasChannel {
+	if !relayAll && !hasChannel {
 		return fn.Err[fn.Unit](ErrNoChannel)
 	}
 	if limiter == nil {

@@ -97,6 +97,16 @@ type ProtocolOptions struct {
 	// with a zero rate, disables the global limiter.
 	OnionMsgGlobalBurstBytes uint64 `long:"onion-msg-global-burst-bytes" description:"token bucket burst for the global onion message limiter, in bytes; set both this and onion-msg-global-kbps to 0 to disable the global limiter"`
 
+	// OnionMsgRelayAll disables the channel-presence gate on the onion
+	// message ingress path. When false (the default), incoming onion
+	// messages from peers that do not have at least one fully open
+	// channel with us are dropped before the rate limiters are
+	// consulted: without a funded channel, a new peer identity is free
+	// and the global rate limiter alone is easy to saturate. Setting
+	// this to true admits onion messages from any peer into the
+	// limiter pipeline, at the cost of that Sybil-resistance property.
+	OnionMsgRelayAll bool `long:"onion-msg-relay-all" description:"accept incoming onion messages from peers with no fully open channel; by default only peers with at least one active channel are admitted to the onion message ingress path"`
+
 	// NoExperimentalAccountabilityOption disables experimental accountability.
 	NoExperimentalAccountabilityOption bool `long:"no-experimental-accountability" description:"do not forward experimental accountability signals"`
 

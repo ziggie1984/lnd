@@ -64,7 +64,7 @@ func TestAllowOnionMessageNilLimiter(t *testing.T) {
 	t.Parallel()
 
 	var peer [33]byte
-	result := allowOnionMessage(nil, peer, testMsgBytes, true)
+	result := allowOnionMessage(nil, peer, testMsgBytes, true, false)
 	require.NoError(t, result.Err())
 }
 
@@ -82,7 +82,7 @@ func TestAllowOnionMessageNoChannel(t *testing.T) {
 	var key [33]byte
 	key[0] = 0x07
 
-	result := allowOnionMessage(limiter, key, testMsgBytes, false)
+	result := allowOnionMessage(limiter, key, testMsgBytes, false, false)
 	require.Error(t, result.Err())
 	require.True(t, errors.Is(result.Err(), ErrNoChannel))
 	require.Equal(t, uint64(0), limiter.calls.Load(),
@@ -90,9 +90,48 @@ func TestAllowOnionMessageNoChannel(t *testing.T) {
 
 	// Once the channel gate flips, the same key is accepted and the
 	// limiter is now consulted exactly once.
-	result = allowOnionMessage(limiter, key, testMsgBytes, true)
+	result = allowOnionMessage(limiter, key, testMsgBytes, true, false)
 	require.NoError(t, result.Err())
 	require.Equal(t, uint64(1), limiter.calls.Load())
+}
+
+// TestAllowOnionMessageRelayAll verifies that enabling relayAll skips
+// the channel-presence gate: a peer with no fully open channel is
+// admitted into the IngressLimiter instead of being rejected at the
+// gate. Exercising the same (key, hasChannel=false) input with
+// relayAll flipped on and off proves the flag is the only thing that
+// decides the gate outcome.
+func TestAllowOnionMessageRelayAll(t *testing.T) {
+	t.Parallel()
+
+	limiter := acceptAll()
+
+	var key [33]byte
+	key[0] = 0x08
+
+	// Gate enforced: no-channel peer is rejected without consulting
+	// the IngressLimiter.
+	result := allowOnionMessage(limiter, key, testMsgBytes, false, false)
+	require.Error(t, result.Err())
+	require.True(t, errors.Is(result.Err(), ErrNoChannel))
+	require.Equal(t, uint64(0), limiter.calls.Load())
+
+	// Gate skipped: the same no-channel peer is now admitted and the
+	// IngressLimiter is consulted.
+	result = allowOnionMessage(limiter, key, testMsgBytes, false, true)
+	require.NoError(t, result.Err())
+	require.Equal(t, uint64(1), limiter.calls.Load())
+
+	// relayAll with a peer that also has a channel: the gate is
+	// trivially satisfied and the limiter is consulted again.
+	result = allowOnionMessage(limiter, key, testMsgBytes, true, true)
+	require.NoError(t, result.Err())
+	require.Equal(t, uint64(2), limiter.calls.Load())
+
+	// Nil limiter with relayAll is still accepted: disabled limiter +
+	// skipped gate = unconditional accept.
+	result = allowOnionMessage(nil, key, testMsgBytes, false, true)
+	require.NoError(t, result.Err())
 }
 
 // TestAllowOnionMessagePeerRejectsFirst verifies that a real
@@ -123,13 +162,13 @@ func TestAllowOnionMessagePeerRejectsFirst(t *testing.T) {
 
 	// First call drains the per-peer bucket; both limiters are
 	// consulted so global.calls bumps to 1.
-	result := allowOnionMessage(limiter, key, testMsgBytes, true)
+	result := allowOnionMessage(limiter, key, testMsgBytes, true, false)
 	require.NoError(t, result.Err())
 	require.Equal(t, uint64(1), globalCalls.Load())
 
 	// Second call trips the per-peer limiter and must NOT consult
 	// the global limiter — globalCalls stays at 1.
-	result = allowOnionMessage(limiter, key, testMsgBytes, true)
+	result = allowOnionMessage(limiter, key, testMsgBytes, true, false)
 	require.Error(t, result.Err())
 	require.True(t,
 		errors.Is(result.Err(), onionmessage.ErrPeerRateLimit),
@@ -174,7 +213,7 @@ func TestAllowOnionMessageGlobalRejects(t *testing.T) {
 	var key [33]byte
 	key[0] = 0x02
 
-	result := allowOnionMessage(limiter, key, testMsgBytes, true)
+	result := allowOnionMessage(limiter, key, testMsgBytes, true, false)
 	require.Error(t, result.Err())
 	require.True(t,
 		errors.Is(result.Err(), onionmessage.ErrGlobalRateLimit),
@@ -204,7 +243,7 @@ func TestAllowOnionMessageHappyPath(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		result := allowOnionMessage(
-			limiter, key, testMsgBytes, true,
+			limiter, key, testMsgBytes, true, false,
 		)
 		require.NoError(t, result.Err(), "iter %d", i)
 	}
@@ -233,17 +272,17 @@ func TestAllowOnionMessagePeerIsolation(t *testing.T) {
 	// Drain peer A.
 	for i := 0; i < 2; i++ {
 		result := allowOnionMessage(
-			limiter, keyA, testMsgBytes, true,
+			limiter, keyA, testMsgBytes, true, false,
 		)
 		require.NoError(t, result.Err())
 	}
-	result := allowOnionMessage(limiter, keyA, testMsgBytes, true)
+	result := allowOnionMessage(limiter, keyA, testMsgBytes, true, false)
 	require.Error(t, result.Err())
 
 	// Peer B must still have its full burst available.
 	for i := 0; i < 2; i++ {
 		result := allowOnionMessage(
-			limiter, keyB, testMsgBytes, true,
+			limiter, keyB, testMsgBytes, true, false,
 		)
 		require.NoError(t, result.Err(), "peer B slot %d", i)
 	}
@@ -282,7 +321,7 @@ func TestAllowOnionMessageConcurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
 				result := allowOnionMessage(
-					limiter, key, testMsgBytes, true,
+					limiter, key, testMsgBytes, true, false,
 				)
 				if result.Err() == nil {
 					accepted.Add(1)

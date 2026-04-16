@@ -445,9 +445,9 @@ func TestChannelLinkSigThenRev(t *testing.T) {
 	ctx.receiveRevAndAckAliceToBob()
 }
 
-// TestChannelLinkFailDuringRestart tests that the link fails (force-closing
-// the channel) if the commit dance is not completed after sharing the
-// update_fee and one of the peers restarts before completion.
+// TestChannelLinkFailDuringRestart tests that the link does not force-close
+// if the commit dance is interrupted after sharing an update_fee and one of
+// the peers restarts before completion.
 //
 // Specifically, this tests the following scenario:
 //
@@ -457,7 +457,7 @@ func TestChannelLinkSigThenRev(t *testing.T) {
 //	<--revoke_and_ack----
 //	==== restart node ====
 //	<-----commit_sig----
-//	==== force close ====
+//	----revoke_and_ack--->
 func TestChannelLinkFailDuringRestart(t *testing.T) {
 	const chanAmt = btcutil.SatoshiPerBitcoin * 5
 
@@ -519,6 +519,13 @@ func TestChannelLinkFailDuringRestart(t *testing.T) {
 	// Restart Alice so she sends and accepts ChannelReestablish.
 	alice.restart(true, true)
 
+	linkErrors := make(chan LinkFailureError, 1)
+	alice.coreLink.cfg.OnChannelFailure = func(_ lnwire.ChannelID,
+		_ lnwire.ShortChannelID, linkErr LinkFailureError) {
+
+		linkErrors <- linkErr
+	}
+
 	// Restart Bob by re-instantiating NewLightningChannel.
 	bobSigner := harness.bobChannel.Signer
 	signerMock := lnwallet.NewDefaultAuxSignerMock(t)
@@ -539,8 +546,8 @@ func TestChannelLinkFailDuringRestart(t *testing.T) {
 
 	// --channel_reestablish-->
 	// Bob processes Alice's reestablish and re-sends commit_sig.
-	// Alice then force-closes upon receiving the commit_sig, which should
-	// not happen, indicating a bug.
+	// Alice should accept it and respond with revoke_and_ack instead of
+	// force-closing the channel.
 	select {
 	case msg := <-alice.msgs:
 		reestMsg, ok := msg.(*lnwire.ChannelReestablish)
@@ -552,9 +559,19 @@ func TestChannelLinkFailDuringRestart(t *testing.T) {
 		require.NoError(t, err)
 
 		// <-----commit_sig----
-		// ==== force close ====
 		alice.coreLink.HandleChannelUpdate(msgsToReSend[0])
-		time.Sleep(5 * time.Second)
+
+		select {
+		case linkErr := <-linkErrors:
+			t.Fatalf("unexpected link failure: %v", linkErr)
+
+		case msg := <-alice.msgs:
+			_, ok := msg.(*lnwire.RevokeAndAck)
+			require.True(t, ok)
+
+		case <-time.After(5 * time.Second):
+			t.Fatalf("did not receive revoke_and_ack")
+		}
 
 	case <-time.After(5 * time.Second):
 		t.Fatalf("did not receive channel_reestablish message")
@@ -5021,10 +5038,8 @@ func (h *persistentLinkHarness) restartLink(
 		},
 		FetchLastChannelUpdate: mockGetChanUpdateMessage,
 		PreimageCache:          pCache,
-		OnChannelFailure: func(_ lnwire.ChannelID,
-			_ lnwire.ShortChannelID, linkErr LinkFailureError) {
-
-			require.NotEqual(t, linkErr.FailureAction, LinkFailureForceClose)
+		OnChannelFailure: func(lnwire.ChannelID,
+			lnwire.ShortChannelID, LinkFailureError) {
 		},
 		UpdateContractSignals: func(*contractcourt.ContractSignals) error {
 			return nil

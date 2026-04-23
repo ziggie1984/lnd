@@ -28,7 +28,7 @@ defaults:
 
 env:
   # Accepts either a major image tag like "30" or a patch tag like "29.1".
-  BITCOIN_VERSION: "30"
+  BITCOIN_VERSION: "31"
   
   # TRANCHES defines the number of tranches used in the itests.
   TRANCHES: 16

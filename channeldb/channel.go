@@ -1421,8 +1421,15 @@ func fetchChanBucket(tx kvdb.RTx, nodeKey *btcec.PublicKey,
 	if err := graphdb.WriteOutpoint(&chanPointBuf, outPoint); err != nil {
 		return nil, err
 	}
-	chanBucket := chainBucket.NestedReadBucket(chanPointBuf.Bytes())
+	chanKey := chanPointBuf.Bytes()
+	chanBucket := chainBucket.NestedReadBucket(chanKey)
 	if chanBucket == nil {
+		return nil, ErrChannelNotFound
+	}
+	if hasPendingChanCleanup(tx, chanKey) {
+		log.Debugf("Treating channel with chan_key=%x as not found: "+
+			"pending Phase 2 cleanup", chanKey)
+
 		return nil, ErrChannelNotFound
 	}
 
@@ -1468,8 +1475,15 @@ func fetchChanBucketRw(tx kvdb.RwTx, nodeKey *btcec.PublicKey,
 	if err := graphdb.WriteOutpoint(&chanPointBuf, outPoint); err != nil {
 		return nil, err
 	}
-	chanBucket := chainBucket.NestedReadWriteBucket(chanPointBuf.Bytes())
+	chanKey := chanPointBuf.Bytes()
+	chanBucket := chainBucket.NestedReadWriteBucket(chanKey)
 	if chanBucket == nil {
+		return nil, ErrChannelNotFound
+	}
+	if hasPendingChanCleanup(tx, chanKey) {
+		log.Debugf("Treating channel with chan_key=%x as not found: "+
+			"pending Phase 2 cleanup", chanKey)
+
 		return nil, ErrChannelNotFound
 	}
 
@@ -3969,155 +3983,22 @@ type ChannelCloseSummary struct {
 	LastChanSyncMsg *lnwire.ChannelReestablish
 }
 
-// CloseChannel closes a previously active Lightning channel. Closing a channel
-// entails deleting all saved state within the database concerning this
-// channel. This method also takes a struct that summarizes the state of the
-// channel at closing, this compact representation will be the only component
-// of a channel left over after a full closing. It takes an optional set of
-// channel statuses which will be written to the historical channel bucket.
-// These statuses are used to record close initiators.
+// CloseChannel closes a previously active Lightning channel. Closing a
+// channel entails atomically recording the close summary, archiving the
+// channel state, and updating the outpoint index — but intentionally defers
+// the deletion of bulk historical data (revocation log, forwarding packages)
+// on SQL-backed KV backends so startup can clean it later without extending
+// the synchronous close path. bbolt keeps the historical one-shot delete path.
+//
+// It takes an optional set of channel statuses which will be written to the
+// historical channel bucket to record close initiators.
 func (c *OpenChannel) CloseChannel(summary *ChannelCloseSummary,
 	statuses ...ChannelStatus) error {
 
 	c.Lock()
 	defer c.Unlock()
 
-	return kvdb.Update(c.Db.backend, func(tx kvdb.RwTx) error {
-		openChanBucket := tx.ReadWriteBucket(openChannelBucket)
-		if openChanBucket == nil {
-			return ErrNoChanDBExists
-		}
-
-		nodePub := c.IdentityPub.SerializeCompressed()
-		nodeChanBucket := openChanBucket.NestedReadWriteBucket(nodePub)
-		if nodeChanBucket == nil {
-			return ErrNoActiveChannels
-		}
-
-		chainBucket := nodeChanBucket.NestedReadWriteBucket(c.ChainHash[:])
-		if chainBucket == nil {
-			return ErrNoActiveChannels
-		}
-
-		var chanPointBuf bytes.Buffer
-		err := graphdb.WriteOutpoint(&chanPointBuf, &c.FundingOutpoint)
-		if err != nil {
-			return err
-		}
-		chanKey := chanPointBuf.Bytes()
-		chanBucket := chainBucket.NestedReadWriteBucket(
-			chanKey,
-		)
-		if chanBucket == nil {
-			return ErrNoActiveChannels
-		}
-
-		// Before we delete the channel state, we'll read out the full
-		// details, as we'll also store portions of this information
-		// for record keeping.
-		chanState, err := fetchOpenChannel(
-			chanBucket, &c.FundingOutpoint,
-		)
-		if err != nil {
-			return err
-		}
-
-		// Delete all the forwarding packages stored for this particular
-		// channel.
-		if err = chanState.Packager.Wipe(tx); err != nil {
-			return err
-		}
-
-		// Now that the index to this channel has been deleted, purge
-		// the remaining channel metadata from the database.
-		err = deleteOpenChannel(chanBucket)
-		if err != nil {
-			return err
-		}
-
-		// We'll also remove the channel from the frozen channel bucket
-		// if we need to.
-		if c.ChanType.IsFrozen() || c.ChanType.HasLeaseExpiration() {
-			err := deleteThawHeight(chanBucket)
-			if err != nil {
-				return err
-			}
-		}
-
-		// With the base channel data deleted, attempt to delete the
-		// information stored within the revocation log.
-		if err := deleteLogBucket(chanBucket); err != nil {
-			return err
-		}
-
-		err = chainBucket.DeleteNestedBucket(chanPointBuf.Bytes())
-		if err != nil {
-			return err
-		}
-
-		// Fetch the outpoint bucket to see if the outpoint exists or
-		// not.
-		opBucket := tx.ReadWriteBucket(outpointBucket)
-		if opBucket == nil {
-			return ErrNoChanDBExists
-		}
-
-		// Add the closed outpoint to our outpoint index. This should
-		// replace an open outpoint in the index.
-		if opBucket.Get(chanPointBuf.Bytes()) == nil {
-			return ErrMissingIndexEntry
-		}
-
-		status := uint8(outpointClosed)
-
-		// Write the IndexStatus of this outpoint as the first entry in a tlv
-		// stream.
-		statusRecord := tlv.MakePrimitiveRecord(indexStatusType, &status)
-		opStream, err := tlv.NewStream(statusRecord)
-		if err != nil {
-			return err
-		}
-
-		var b bytes.Buffer
-		if err := opStream.Encode(&b); err != nil {
-			return err
-		}
-
-		// Finally add the closed outpoint and tlv stream to the index.
-		if err := opBucket.Put(chanPointBuf.Bytes(), b.Bytes()); err != nil {
-			return err
-		}
-
-		// Add channel state to the historical channel bucket.
-		historicalBucket, err := tx.CreateTopLevelBucket(
-			historicalChannelBucket,
-		)
-		if err != nil {
-			return err
-		}
-
-		historicalChanBucket, err :=
-			historicalBucket.CreateBucketIfNotExists(chanKey)
-		if err != nil {
-			return err
-		}
-
-		// Apply any additional statuses to the channel state.
-		for _, status := range statuses {
-			chanState.chanStatus |= status
-		}
-
-		err = putOpenChannel(historicalChanBucket, chanState)
-		if err != nil {
-			return err
-		}
-
-		// Finally, create a summary of this channel in the closed
-		// channel bucket for this node.
-		return putChannelCloseSummary(
-			tx, chanPointBuf.Bytes(), summary, chanState,
-		)
-	}, func() {})
+	return c.Db.CloseChannel(c, summary, statuses...)
 }
 
 // ChannelSnapshot is a frozen snapshot of the current channel state. A

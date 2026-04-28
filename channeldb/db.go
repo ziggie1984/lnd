@@ -9,8 +9,10 @@ import (
 	"net"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/walletdb"
 	mig "github.com/lightningnetwork/lnd/channeldb/migration"
@@ -37,6 +39,7 @@ import (
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,6 +51,10 @@ var (
 	// ErrDryRunMigrationOK signals that a migration executed successful,
 	// but we intentionally did not commit the result.
 	ErrDryRunMigrationOK = errors.New("dry run migration successful")
+
+	// ErrChannelCloseSummaryNil signals that CloseChannel was called with
+	// a nil close summary.
+	ErrChannelCloseSummaryNil = errors.New("channel close summary is nil")
 
 	// ErrFinalHtlcsBucketNotFound signals that the top-level final htlcs
 	// bucket does not exist.
@@ -418,7 +425,8 @@ func CreateWithBackend(backend kvdb.Backend, modifiers ...OptionModifier) (*DB,
 			linkNodeDB: &LinkNodeDB{
 				backend: backend,
 			},
-			backend: backend,
+			backend:               backend,
+			deferBulkCloseCleanup: opts.deferBulkCloseCleanup,
 		},
 		clock:                     opts.clock,
 		dryRun:                    opts.dryRun,
@@ -452,6 +460,105 @@ func (d *DB) Path() string {
 	return d.dbPath
 }
 
+var (
+	// pendingChanCleanupBucket tracks channels whose bulk historical data
+	// (revocation log, forwarding packages) has not yet been deleted after
+	// close. Each key is a serialized wire.OutPoint; the value is a
+	// TLV-encoded pendingCleanupRecord carrying the navigation data the
+	// Phase 2 drain (run from ChannelStateDB.Start) needs to delete the
+	// per-channel data. The presence of a key means a Phase 2 purge is
+	// still outstanding for that channel.
+	pendingChanCleanupBucket = []byte("pending-chan-cleanup")
+)
+
+// pendingCleanupRecord carries the navigation data needed by Phase 2 cleanup
+// (run from ChannelStateDB.Start). It is written into pendingChanCleanupBucket
+// by Phase 1 (CloseChannel) using values pulled directly from the on-disk
+// channel state, so Phase 2 does not need to consult the close summary or
+// trust any caller-supplied input.
+type pendingCleanupRecord struct {
+	// NodePub is the compressed serialization of the remote node's
+	// identity pubkey, used to descend into openChannelBucket.
+	NodePub tlv.RecordT[tlv.TlvType0, [33]byte]
+
+	// ChainHash identifies the chain bucket nested under the node bucket.
+	ChainHash tlv.RecordT[tlv.TlvType1, [32]byte]
+
+	// ShortChanID is the uint64 short channel id captured from the
+	// on-disk channel state. Phase 2 derives the forwarding-package
+	// source key from it via makeLogKey.
+	ShortChanID tlv.RecordT[tlv.TlvType2, uint64]
+}
+
+// newPendingCleanupRecord builds a record from the raw navigation values
+// captured during Phase 1.
+func newPendingCleanupRecord(nodePub [33]byte, chainHash chainhash.Hash,
+	shortChanID uint64) pendingCleanupRecord {
+
+	return pendingCleanupRecord{
+		NodePub: tlv.NewPrimitiveRecord[tlv.TlvType0](nodePub),
+		ChainHash: tlv.NewPrimitiveRecord[tlv.TlvType1, [32]byte](
+			chainHash,
+		),
+		ShortChanID: tlv.NewPrimitiveRecord[tlv.TlvType2](shortChanID),
+	}
+}
+
+// encode serializes the record to a TLV stream.
+func (r *pendingCleanupRecord) encode() ([]byte, error) {
+	stream, err := tlv.NewStream(
+		r.NodePub.Record(),
+		r.ChainHash.Record(),
+		r.ShortChanID.Record(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodePendingCleanupRecord parses a TLV-encoded record from b.
+func decodePendingCleanupRecord(b []byte) (pendingCleanupRecord, error) {
+	var rec pendingCleanupRecord
+	stream, err := tlv.NewStream(
+		rec.NodePub.Record(),
+		rec.ChainHash.Record(),
+		rec.ShortChanID.Record(),
+	)
+	if err != nil {
+		return rec, err
+	}
+
+	if err := stream.Decode(bytes.NewReader(b)); err != nil {
+		return rec, err
+	}
+
+	return rec, nil
+}
+
+// hasPendingChanCleanup reports whether chanKey has a pending Phase 2 cleanup
+// record. Readers iterating openChannelBucket use this to distinguish a
+// half-cleaned-up Phase 1 state (skip silently) from a genuinely missing
+// chanInfoKey (propagate). The cleanup bucket is created lazily by the
+// deferred CloseChannel path on first use, so on backends that take the
+// synchronous one-shot close path (bbolt, etcd) the bucket never exists and
+// this short-circuits on the nil check — no Get is issued on the hot read
+// path.
+func hasPendingChanCleanup(tx kvdb.RTx, chanKey []byte) bool {
+	bkt := tx.ReadBucket(pendingChanCleanupBucket)
+	if bkt == nil {
+		return false
+	}
+
+	return bkt.Get(chanKey) != nil
+}
+
 var dbTopLevelBuckets = [][]byte{
 	openChannelBucket,
 	closedChannelBucket,
@@ -480,6 +587,15 @@ func (d *DB) Wipe() error {
 				return err
 			}
 		}
+
+		// pendingChanCleanupBucket is created lazily on deferred-
+		// cleanup backends, so it isn't in dbTopLevelBuckets. Drop
+		// it here too if it exists.
+		err := tx.DeleteTopLevelBucket(pendingChanCleanupBucket)
+		if err != nil && !errors.Is(err, kvdb.ErrBucketNotFound) {
+			return err
+		}
+
 		return nil
 	}, func() {})
 	if err != nil {
@@ -548,6 +664,12 @@ type ChannelStateDB struct {
 	// backend points to the actual backend holding the channel state
 	// database. This may be a real backend or a cache middleware.
 	backend kvdb.Backend
+
+	// deferBulkCloseCleanup is set by OptionDeferBulkCloseCleanup. When
+	// true, CloseChannel writes a Phase 1 record and a pending-cleanup
+	// marker rather than deleting the bulk historical data inline. The
+	// marker is consumed at startup by ChannelStateDB.Start.
+	deferBulkCloseCleanup bool
 }
 
 // GetParentDB returns the "main" channeldb.DB object that is the owner of this
@@ -621,7 +743,7 @@ func (c *ChannelStateDB) fetchOpenChannels(tx kvdb.RTx,
 
 		// Finally, we both of the necessary buckets retrieved, fetch
 		// all the active channels related to this node.
-		nodeChannels, err := c.fetchNodeChannels(chainBucket)
+		nodeChannels, err := c.fetchNodeChannels(tx, chainBucket)
 		if err != nil {
 			return fmt.Errorf("unable to read channel for "+
 				"chain_hash=%x, node_key=%x: %v",
@@ -637,9 +759,11 @@ func (c *ChannelStateDB) fetchOpenChannels(tx kvdb.RTx,
 
 // fetchNodeChannels retrieves all active channels from the target chainBucket
 // which is under a node's dedicated channel bucket. This function is typically
-// used to fetch all the active channels related to a particular node.
-func (c *ChannelStateDB) fetchNodeChannels(chainBucket kvdb.RBucket) (
-	[]*OpenChannel, error) {
+// used to fetch all the active channels related to a particular node. Channels
+// in Phase-1-complete state (close registered, bulk data not yet purged) are
+// skipped silently.
+func (c *ChannelStateDB) fetchNodeChannels(tx kvdb.RTx,
+	chainBucket kvdb.RBucket) ([]*OpenChannel, error) {
 
 	var channels []*OpenChannel
 
@@ -663,6 +787,11 @@ func (c *ChannelStateDB) fetchNodeChannels(chainBucket kvdb.RBucket) (
 			return err
 		}
 		oChannel, err := fetchOpenChannel(chanBucket, &outPoint)
+		if errors.Is(err, ErrNoChanInfoFound) &&
+			hasPendingChanCleanup(tx, chanPoint) {
+
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("unable to read channel data for "+
 				"chan_point=%v: %w", outPoint, err)
@@ -824,6 +953,11 @@ func (c *ChannelStateDB) FetchPermAndTempPeers(
 				openChan, err := fetchOpenChannel(
 					chanBucket, &op,
 				)
+				if errors.Is(err, ErrNoChanInfoFound) &&
+					hasPendingChanCleanup(tx, chanPoint) {
+
+					return nil
+				}
 				if err != nil {
 					return err
 				}
@@ -1034,6 +1168,13 @@ func (c *ChannelStateDB) channelScanner(tx kvdb.RTx,
 				channel, err := fetchOpenChannel(
 					chanBucket, chanPoint,
 				)
+				if errors.Is(err, ErrNoChanInfoFound) &&
+					hasPendingChanCleanup(
+						tx, targetChanBytes,
+					) {
+
+					return ErrChannelNotFound
+				}
 				if err != nil {
 					return err
 				}
@@ -1187,7 +1328,9 @@ func fetchChannels(c *ChannelStateDB, filters ...fetchChannelsFilter) (
 						"bucket for chain=%x", chainHash[:])
 				}
 
-				nodeChans, err := c.fetchNodeChannels(chainBucket)
+				nodeChans, err := c.fetchNodeChannels(
+					tx, chainBucket,
+				)
 				if err != nil {
 					return fmt.Errorf("unable to read "+
 						"channel for chain_hash=%x, "+
@@ -1447,6 +1590,526 @@ func (c *ChannelStateDB) MarkChanFullyClosed(chanPoint *wire.OutPoint) error {
 	}, func() {})
 }
 
+// usesDeferredCloseCleanup reports whether CloseChannel should defer bulk
+// historical data deletion to startup. The decision is set explicitly by the
+// caller via OptionDeferBulkCloseCleanup when the DB is constructed.
+func (c *ChannelStateDB) usesDeferredCloseCleanup() bool {
+	return c.deferBulkCloseCleanup
+}
+
+// Start brings the channel state DB to a steady state: it drains any deferred
+// closed-channel cleanup work persisted by a previous run and performs any
+// other backend-specific initialization. Returns when the store is ready to
+// accept normal operations. Safe to call once per ChannelStateDB lifetime.
+//
+// Backends that do not defer bulk close cleanup (bbolt, etcd) treat this as a
+// no-op; the synchronous CloseChannel path has already removed the bulk data
+// inline and there is nothing to drain.
+func (c *ChannelStateDB) Start(ctx context.Context) error {
+	if !c.usesDeferredCloseCleanup() {
+		return nil
+	}
+
+	return c.purgeAllPendingClosedChannels(ctx)
+}
+
+// Stop releases resources held by the channel state DB. It is a no-op today
+// and exists so consumers can wire the lifecycle uniformly across backends;
+// the native SQL implementation will use it to halt background workers.
+func (c *ChannelStateDB) Stop() error {
+	return nil
+}
+
+// locateOpenChannel performs an O(1) descent into openChannelBucket using
+// channel's authoritative identity pubkey and chain hash, and returns the
+// chain bucket, the channel bucket, and the serialized chan key.
+func locateOpenChannel(tx kvdb.RwTx, channel *OpenChannel) (kvdb.RwBucket,
+	kvdb.RwBucket, []byte, error) {
+
+	openChanBucket := tx.ReadWriteBucket(openChannelBucket)
+	if openChanBucket == nil {
+		return nil, nil, nil, ErrNoChanDBExists
+	}
+
+	nodePub := channel.IdentityPub.SerializeCompressed()
+	nodeChanBucket := openChanBucket.NestedReadWriteBucket(nodePub)
+	if nodeChanBucket == nil {
+		return nil, nil, nil, ErrNoActiveChannels
+	}
+
+	chainBucket := nodeChanBucket.NestedReadWriteBucket(
+		channel.ChainHash[:],
+	)
+	if chainBucket == nil {
+		return nil, nil, nil, ErrNoActiveChannels
+	}
+
+	var chanPointBuf bytes.Buffer
+	err := graphdb.WriteOutpoint(&chanPointBuf, &channel.FundingOutpoint)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	chanKey := chanPointBuf.Bytes()
+
+	chanBucket := chainBucket.NestedReadWriteBucket(chanKey)
+	if chanBucket == nil {
+		return nil, nil, nil, ErrChannelNotFound
+	}
+	if hasPendingChanCleanup(tx, chanKey) {
+		log.Debugf("Treating channel with chan_key=%x as not found: "+
+			"pending Phase 2 cleanup", chanKey)
+
+		return nil, nil, nil, ErrChannelNotFound
+	}
+
+	return chainBucket, chanBucket, chanKey, nil
+}
+
+// updateClosedOutpointIndex flips the outpoint index entry for chanKey from
+// open to closed by re-encoding its TLV record with outpointClosed. The entry
+// must already exist; the index is populated on channel open and is updated
+// here as part of the close path.
+func updateClosedOutpointIndex(tx kvdb.RwTx, chanKey []byte) error {
+	opBucket := tx.ReadWriteBucket(outpointBucket)
+	if opBucket == nil {
+		return ErrNoChanDBExists
+	}
+	if opBucket.Get(chanKey) == nil {
+		return ErrMissingIndexEntry
+	}
+
+	closeStatus := uint8(outpointClosed)
+	statusRecord := tlv.MakePrimitiveRecord(indexStatusType, &closeStatus)
+	opStream, err := tlv.NewStream(statusRecord)
+	if err != nil {
+		return err
+	}
+
+	var statusBuf bytes.Buffer
+	if err := opStream.Encode(&statusBuf); err != nil {
+		return err
+	}
+
+	return opBucket.Put(chanKey, statusBuf.Bytes())
+}
+
+// archiveClosedChannel persists the historical record of a now-closed channel:
+// it copies the full open-channel state into historicalChannelBucket, ORs the
+// caller-supplied close statuses into chanState, and writes the close summary
+// into closedChannelBucket. Both close paths (synchronous and deferred) use
+// this helper so historical reads see a consistent shape regardless of which
+// backend produced the record.
+func archiveClosedChannel(tx kvdb.RwTx, chanKey []byte,
+	chanState *OpenChannel, closeSummary *ChannelCloseSummary,
+	statuses ...ChannelStatus) error {
+
+	historicalBucket, err := tx.CreateTopLevelBucket(
+		historicalChannelBucket,
+	)
+	if err != nil {
+		return err
+	}
+	historicalChanBucket, err :=
+		historicalBucket.CreateBucketIfNotExists(chanKey)
+	if err != nil {
+		return err
+	}
+	for _, s := range statuses {
+		chanState.chanStatus |= s
+	}
+
+	err = putOpenChannel(historicalChanBucket, chanState)
+	if err != nil {
+		return err
+	}
+
+	return putChannelCloseSummary(tx, chanKey, closeSummary, chanState)
+}
+
+// closeChannelOneShot performs the historical synchronous close path: in a
+// single write transaction it wipes the forwarding-package state, deletes the
+// channel bucket and its nested revocation log entries, updates the outpoint
+// index, and archives the close summary. Used by backends where nested-bucket
+// deletion is cheap (bbolt, etcd); KV-over-SQL backends instead take the
+// deferred path on ChannelStateDB.CloseChannel.
+func (c *ChannelStateDB) closeChannelOneShot(channel *OpenChannel,
+	closeSummary *ChannelCloseSummary, statuses ...ChannelStatus) error {
+
+	return kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
+		chainBucket, chanBucket, chanKey, err := locateOpenChannel(
+			tx, channel,
+		)
+		if err != nil {
+			return err
+		}
+
+		chanState, err := fetchOpenChannel(
+			chanBucket, &channel.FundingOutpoint,
+		)
+		if err != nil {
+			return err
+		}
+
+		if err = chanState.Packager.Wipe(tx); err != nil {
+			return err
+		}
+
+		err = deleteOpenChannel(chanBucket)
+		if err != nil {
+			return err
+		}
+
+		if chanState.ChanType.IsFrozen() ||
+			chanState.ChanType.HasLeaseExpiration() {
+
+			err := deleteThawHeight(chanBucket)
+			if err != nil {
+				return err
+			}
+		}
+
+		if err := deleteLogBucket(chanBucket); err != nil {
+			return err
+		}
+
+		err = chainBucket.DeleteNestedBucket(chanKey)
+		if err != nil {
+			return err
+		}
+
+		err = updateClosedOutpointIndex(tx, chanKey)
+		if err != nil {
+			return err
+		}
+
+		return archiveClosedChannel(
+			tx, chanKey, chanState, closeSummary, statuses...,
+		)
+	}, func() {})
+}
+
+// CloseChannel atomically records the closure of the given channel. SQL-backed
+// KV backends keep the bulky historical data in place and register a startup
+// cleanup task so the synchronous close path stays short. bbolt keeps the
+// historical one-shot delete path. The channel's identity pubkey and chain
+// hash are used for direct O(1) navigation into openChannelBucket.
+//
+// Calling CloseChannel on a channel whose Phase 1 close has already been
+// committed (i.e. the cleanup record is still pending in
+// pendingChanCleanupBucket) returns ErrChannelNotFound: the channel is
+// considered already gone from the open-channel views, and a redundant
+// close is a no-op rather than an error to recover from.
+func (c *ChannelStateDB) CloseChannel(channel *OpenChannel,
+	summary *ChannelCloseSummary,
+	statuses ...ChannelStatus) error {
+
+	if summary == nil {
+		return ErrChannelCloseSummaryNil
+	}
+
+	if !c.usesDeferredCloseCleanup() {
+		return c.closeChannelOneShot(channel, summary, statuses...)
+	}
+
+	return kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
+		_, chanBucket, chanKey, err := locateOpenChannel(tx, channel)
+		if err != nil {
+			return err
+		}
+
+		// Read the full channel state before we start modifying
+		// anything — we need it for the historical archive and to
+		// determine whether the channel is frozen.
+		chanState, err := fetchOpenChannel(
+			chanBucket, &channel.FundingOutpoint,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Delete the small per-channel state keys. The revocation log
+		// nested buckets, forwarding packages, and the channel bucket
+		// itself are left intact intentionally; they are removed by
+		// Phase 2 (run from ChannelStateDB.Start). Until Phase 2 runs,
+		// historical reads may still observe the forwarding packages
+		// in storage, but the synchronous close path stays bounded.
+		if err := deleteOpenChannel(chanBucket); err != nil {
+			return err
+		}
+		if chanState.ChanType.IsFrozen() ||
+			chanState.ChanType.HasLeaseExpiration() {
+
+			if err := deleteThawHeight(chanBucket); err != nil {
+				return err
+			}
+		}
+
+		if err := updateClosedOutpointIndex(tx, chanKey); err != nil {
+			return err
+		}
+
+		if err := archiveClosedChannel(
+			tx, chanKey, chanState, summary, statuses...,
+		); err != nil {
+			return err
+		}
+
+		// Register a startup cleanup task carrying the navigation data
+		// Phase 2 needs. The record is derived directly from the
+		// on-disk channel state so Phase 2 does not have to consult
+		// the close summary or trust caller-supplied fields.
+		cleanupBucket, err := tx.CreateTopLevelBucket(
+			pendingChanCleanupBucket,
+		)
+		if err != nil {
+			return err
+		}
+
+		var nodePub [33]byte
+		copy(
+			nodePub[:],
+			chanState.IdentityPub.SerializeCompressed(),
+		)
+		rec := newPendingCleanupRecord(
+			nodePub, chanState.ChainHash,
+			chanState.ShortChannelID.ToUint64(),
+		)
+		recBytes, err := rec.encode()
+		if err != nil {
+			return err
+		}
+
+		return cleanupBucket.Put(chanKey, recBytes)
+	}, func() {})
+}
+
+// purgeClosedChannelData removes the remaining bulk historical data for a
+// single closed channel. Deferred-cleanup backends use this during startup
+// after the channel has already been removed from open views by CloseChannel.
+// The supplied record carries the navigation data Phase 1 captured from the
+// on-disk channel state, so this function does not need to consult the close
+// summary or any caller-supplied input. Callers should normally drive this
+// via ChannelStateDB.Start (which iterates the pending queue) rather than
+// invoking it directly.
+func (c *ChannelStateDB) purgeClosedChannelData(ctx context.Context,
+	chanPoint wire.OutPoint, rec pendingCleanupRecord) error {
+
+	var chanPointBuf bytes.Buffer
+	if err := graphdb.WriteOutpoint(&chanPointBuf, &chanPoint); err != nil {
+		return err
+	}
+	chanKey := chanPointBuf.Bytes()
+
+	nodePubArr := rec.NodePub.Val
+	chainHashArr := rec.ChainHash.Val
+	sourceKey := makeLogKey(rec.ShortChanID.Val)
+	nodePub := nodePubArr[:]
+	chainHash := chainHashArr[:]
+
+	// navigateRW returns the chain bucket and channel bucket for a write
+	// transaction. Either may be nil if the bucket no longer exists.
+	navigateRW := func(tx kvdb.RwTx) (kvdb.RwBucket, kvdb.RwBucket) {
+		openBkt := tx.ReadWriteBucket(openChannelBucket)
+		if openBkt == nil {
+			return nil, nil
+		}
+		nodeBkt := openBkt.NestedReadWriteBucket(nodePub)
+		if nodeBkt == nil {
+			return nil, nil
+		}
+		chainBkt := nodeBkt.NestedReadWriteBucket(chainHash)
+		if chainBkt == nil {
+			return nil, nil
+		}
+
+		return chainBkt, chainBkt.NestedReadWriteBucket(chanKey)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	err := kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
+		chainBkt, _ := navigateRW(tx)
+		if chainBkt != nil {
+			err := chainBkt.DeleteNestedBucket(chanKey)
+			if err != nil && !errors.Is(
+				err, walletdb.ErrBucketNotFound,
+			) {
+
+				return err
+			}
+		}
+
+		fwdPkgBkt := tx.ReadWriteBucket(fwdPackagesKey)
+		if fwdPkgBkt != nil {
+			err := fwdPkgBkt.DeleteNestedBucket(sourceKey[:])
+			if err != nil && !errors.Is(
+				err, walletdb.ErrBucketNotFound,
+			) {
+
+				return err
+			}
+		}
+
+		// Deregister the cleanup task.
+		cleanupBkt := tx.ReadWriteBucket(pendingChanCleanupBucket)
+		if cleanupBkt == nil {
+			return nil
+		}
+
+		return cleanupBkt.Delete(chanKey)
+	}, func() {})
+	if err != nil {
+		return fmt.Errorf("startup closed-channel cleanup: %w", err)
+	}
+
+	return nil
+}
+
+// PendingCleanup pairs a closed channel's outpoint with the navigation data
+// Phase 2 needs to delete its bulk historical data.
+type PendingCleanup struct {
+	// ChanPoint is the outpoint of the closed channel.
+	ChanPoint wire.OutPoint
+
+	// Record carries the navigation data captured during Phase 1.
+	Record pendingCleanupRecord
+}
+
+// fetchChannelsPendingCleanup returns the entries for all channels that have
+// completed Phase 1 (CloseChannel) but whose bulk historical data has not yet
+// been deleted. Returned entries are consumed by the Phase 2 drain (run from
+// ChannelStateDB.Start) to resume the cleanup, typically at startup after a
+// crash or restart interrupted an in-progress purge. Malformed cleanup
+// records are skipped and logged so one bad entry cannot block startup
+// cleanup for the rest of the queue.
+func (c *ChannelStateDB) fetchChannelsPendingCleanup(
+	ctx context.Context) ([]PendingCleanup, error) {
+
+	var entries []PendingCleanup
+
+	err := kvdb.View(c.backend, func(tx kvdb.RTx) error {
+		cleanupBkt := tx.ReadBucket(pendingChanCleanupBucket)
+		if cleanupBkt == nil {
+			return nil
+		}
+
+		return cleanupBkt.ForEach(func(k, v []byte) error {
+			var op wire.OutPoint
+			if err := graphdb.ReadOutpoint(
+				bytes.NewReader(k), &op,
+			); err != nil {
+				log.Warnf("Skipping pending closed-channel "+
+					"cleanup with malformed "+
+					"chan_key=%x: %v", k, err)
+
+				return nil
+			}
+
+			rec, err := decodePendingCleanupRecord(v)
+			if err != nil {
+				log.Warnf("Skipping pending closed-channel "+
+					"cleanup for %v: unable to decode "+
+					"record: %v", op, err)
+
+				return nil
+			}
+
+			entries = append(entries, PendingCleanup{
+				ChanPoint: op,
+				Record:    rec,
+			})
+
+			return nil
+		})
+	}, func() {
+		entries = nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return entries, nil
+}
+
+// purgeAllPendingClosedChannels resumes Phase 2 cleanup for every channel
+// currently registered in pendingChanCleanupBucket. It is the implementation
+// behind ChannelStateDB.Start and drains the deferred-cleanup queue once per
+// startup. Per-channel purge failures are logged and accumulated into the
+// returned error via errors.Join, but processing continues so one bad
+// record does not stall cleanup for the rest of the queue. Progress is
+// logged so an operator can observe how far the queue has drained.
+//
+// Cancellation granularity: ctx is checked between channels, not within a
+// single channel's purge transaction. Once the underlying kvdb.Update has
+// started, it runs to completion. Callers that need to bound total runtime
+// should rely on the between-channel check rather than expecting mid-purge
+// interruption.
+//
+// Operator note on duration: each per-channel purge transaction is bounded
+// by that channel's revocation-log size. On Postgres a channel that has
+// accumulated millions of revocation entries can hold the database write
+// lock for several seconds while it is being purged, and the queue runs
+// serially — so a node that just closed many large channels may observe a
+// multi-second startup pause while the queue drains.
+func (c *ChannelStateDB) purgeAllPendingClosedChannels(
+	ctx context.Context) error {
+
+	entries, err := c.fetchChannelsPendingCleanup(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	total := len(entries)
+	log.Infof("Resuming deferred cleanup for %d closed channel(s)",
+		total)
+
+	var purgeErrs error
+	startedAt := time.Now()
+	for i, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		log.Infof("Purging closed channel %v (%d/%d)",
+			entry.ChanPoint, i+1, total)
+
+		purgeStart := time.Now()
+		err := c.purgeClosedChannelData(
+			ctx, entry.ChanPoint, entry.Record,
+		)
+		if err != nil {
+			// Log and accumulate the per-channel failure but
+			// keep draining: one bad record must not block
+			// cleanup for the rest of the queue. The joined
+			// error is returned at the end so the caller still
+			// surfaces the failure(s).
+			log.Errorf("Failed to purge closed channel %v "+
+				"(%d/%d): %v", entry.ChanPoint, i+1, total,
+				err)
+			purgeErrs = errors.Join(purgeErrs, fmt.Errorf(
+				"purging closed channel %v: %w",
+				entry.ChanPoint, err,
+			))
+
+			continue
+		}
+
+		log.Debugf("Purged closed channel %v in %v", entry.ChanPoint,
+			time.Since(purgeStart))
+	}
+
+	log.Infof("Finished deferred cleanup of %d closed channel(s) in %v",
+		total, time.Since(startedAt))
+
+	return purgeErrs
+}
+
 // pruneLinkNode determines whether we should garbage collect a link node from
 // the database due to no longer having any open channels with it.
 //
@@ -1503,6 +2166,7 @@ func (c *ChannelStateDB) PruneLinkNodes() error {
 			openChannels, err = c.fetchOpenChannels(
 				tx, linkNode.IdentityPub,
 			)
+
 			return err
 		}, func() {
 			openChannels = nil
@@ -2168,6 +2832,15 @@ func MakeTestDB(t *testing.T, modifiers ...OptionModifier) (*DB, error) {
 		backendCleanup()
 		return nil, err
 	}
+
+	// Mirror the production behavior: KV-over-SQL test backends should
+	// defer bulk closed-channel cleanup to startup. The caller can still
+	// override via an explicit modifier supplied after this default.
+	deferBulkClose := kvdb.SqliteBackend || kvdb.PostgresBackend
+	defaults := []OptionModifier{
+		OptionDeferBulkCloseCleanup(deferBulkClose),
+	}
+	modifiers = append(defaults, modifiers...)
 
 	cdb, err := CreateWithBackend(backend, modifiers...)
 	if err != nil {

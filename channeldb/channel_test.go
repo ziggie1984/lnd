@@ -964,8 +964,19 @@ func TestChannelStateTransition(t *testing.T) {
 			len(channels))
 	}
 
-	// Attempting to find previous states on the channel should fail as the
-	// revocation log has been deleted.
+	// Run the deferred cleanup to delete the bulk historical data
+	// (revocation log and forwarding packages). CloseChannel intentionally
+	// leaves them in place on deferred-cleanup backends (sqlite, postgres)
+	// so the synchronous close transaction stays short. On bbolt the close
+	// path already wipes this data inline via closeChannelOneShot, so the
+	// pendingChanCleanupBucket is empty and this call is a no-op — we
+	// invoke it unconditionally to keep the assertions below
+	// backend-agnostic.
+	err = cdb.Start(t.Context())
+	require.NoError(t, err, "deferred cleanup failed")
+
+	// Attempting to find previous states on the channel should fail now
+	// that the revocation log has been deleted.
 	_, _, err = updatedChannel[0].FindPreviousState(
 		oldRemoteCommit.CommitHeight,
 	)

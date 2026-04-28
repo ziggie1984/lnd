@@ -71,6 +71,14 @@ type Options struct {
 	// storeFinalHtlcResolutions determines whether to persistently store
 	// the final resolution of incoming htlcs.
 	storeFinalHtlcResolutions bool
+
+	// deferBulkCloseCleanup, when true, instructs CloseChannel to record
+	// the channel as closed and register a startup cleanup task instead
+	// of synchronously deleting the bulk historical data. Set this for
+	// KV-over-SQL backends (sqlite, postgres) where nested-bucket deletes
+	// are slow inside a write transaction; leave false for bbolt and
+	// etcd, where the synchronous delete is cheap.
+	deferBulkCloseCleanup bool
 }
 
 // DefaultOptions returns an Options populated with default values.
@@ -149,5 +157,15 @@ func OptionWithDecayedLogDB(decayedLog kvdb.Backend) OptionModifier {
 func OptionGcDecayedLog(noGc bool) OptionModifier {
 	return func(o *Options) {
 		o.OptionalMiragtionConfig.MigrationFlags[1] = !noGc
+	}
+}
+
+// OptionDeferBulkCloseCleanup configures whether CloseChannel should defer
+// the bulk historical data deletion of closed channels to startup. Set this
+// to true for KV-over-SQL backends (sqlite, postgres); leave it false for
+// bbolt and etcd.
+func OptionDeferBulkCloseCleanup(enabled bool) OptionModifier {
+	return func(o *Options) {
+		o.deferBulkCloseCleanup = enabled
 	}
 }

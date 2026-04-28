@@ -17,7 +17,7 @@
     - [Database](#database)
     - [Code Health](#code-health)
     - [Tooling and Documentation](#tooling-and-documentation)
-- [Contributors (Alphabetical Order)](#contributors)
+- [Contributors (Alphabetical Order)](#contributors-alphabetical-order)
 
 # Bug Fixes
 

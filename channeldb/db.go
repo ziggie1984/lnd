@@ -419,15 +419,18 @@ func CreateWithBackend(backend kvdb.Backend, modifiers ...OptionModifier) (*DB,
 		}
 	}
 
-	chanDB := &DB{
-		Backend: backend,
-		channelStateDB: &ChannelStateDB{
-			linkNodeDB: &LinkNodeDB{
-				backend: backend,
-			},
-			backend:               backend,
-			deferBulkCloseCleanup: opts.deferBulkCloseCleanup,
+	csDB := &ChannelStateDB{
+		linkNodeDB: &LinkNodeDB{
+			backend: backend,
 		},
+		backend:               backend,
+		deferBulkCloseCleanup: opts.deferBulkCloseCleanup,
+	}
+	csDB.cleanupWorker = newCleanupWorker(csDB)
+
+	chanDB := &DB{
+		Backend:                   backend,
+		channelStateDB:            csDB,
 		clock:                     opts.clock,
 		dryRun:                    opts.dryRun,
 		storeFinalHtlcResolutions: opts.storeFinalHtlcResolutions,
@@ -668,8 +671,16 @@ type ChannelStateDB struct {
 	// deferBulkCloseCleanup is set by OptionDeferBulkCloseCleanup. When
 	// true, CloseChannel writes a Phase 1 record and a pending-cleanup
 	// marker rather than deleting the bulk historical data inline. The
-	// marker is consumed at startup by ChannelStateDB.Start.
+	// marker is consumed asynchronously by the cleanup worker started in
+	// ChannelStateDB.Start.
 	deferBulkCloseCleanup bool
+
+	// cleanupWorker drains pendingChanCleanupBucket asynchronously on
+	// deferred-cleanup backends. The worker is constructed eagerly so
+	// the field is always non-nil; its run loop is only started by
+	// Start on backends that defer bulk cleanup, and a poke on a
+	// not-yet-started or already-stopped worker is harmless.
+	cleanupWorker *cleanupWorker
 }
 
 // GetParentDB returns the "main" channeldb.DB object that is the owner of this
@@ -1597,26 +1608,38 @@ func (c *ChannelStateDB) usesDeferredCloseCleanup() bool {
 	return c.deferBulkCloseCleanup
 }
 
-// Start brings the channel state DB to a steady state: it drains any deferred
-// closed-channel cleanup work persisted by a previous run and performs any
-// other backend-specific initialization. Returns when the store is ready to
-// accept normal operations. Safe to call once per ChannelStateDB lifetime.
+// Start brings the channel state DB to a steady state. On deferred-cleanup
+// backends it launches the cleanup worker, which performs an initial drain
+// of any pending closed-channel cleanup persisted by a previous run in the
+// background and then idles waiting for pokes. Start returns as soon as the
+// worker goroutine is launched; the drain itself does not block startup.
+// Safe to call once per ChannelStateDB lifetime.
 //
-// Backends that do not defer bulk close cleanup (bbolt, etcd) treat this as a
-// no-op; the synchronous CloseChannel path has already removed the bulk data
-// inline and there is nothing to drain.
+// Backends that do not defer bulk close cleanup (bbolt, etcd) treat this as
+// a no-op; the synchronous CloseChannel path has already removed the bulk
+// data inline and there is nothing to drain.
 func (c *ChannelStateDB) Start(ctx context.Context) error {
 	if !c.usesDeferredCloseCleanup() {
 		return nil
 	}
 
-	return c.purgeAllPendingClosedChannels(ctx)
+	c.cleanupWorker.start(ctx)
+
+	return nil
 }
 
-// Stop releases resources held by the channel state DB. It is a no-op today
-// and exists so consumers can wire the lifecycle uniformly across backends;
-// the native SQL implementation will use it to halt background workers.
+// Stop releases resources held by the channel state DB. On deferred-cleanup
+// backends it cancels the cleanup worker and waits for its current batch
+// transaction (if any) to commit or roll back before returning. Remaining
+// queue entries persist in pendingChanCleanupBucket and resume on the next
+// Start.
 func (c *ChannelStateDB) Stop() error {
+	if !c.usesDeferredCloseCleanup() {
+		return nil
+	}
+
+	c.cleanupWorker.stop()
+
 	return nil
 }
 

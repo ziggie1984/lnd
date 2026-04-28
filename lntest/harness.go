@@ -1444,6 +1444,16 @@ func (h *HarnessTest) IsPostgresBackend() bool {
 	return h.manager.dbBackend == node.BackendPostgres
 }
 
+// UsesDeferredCloseCleanup reports whether the test harness's database backend
+// defers bulk closed-channel cleanup to the next startup. This is true for the
+// KV-over-SQL backends (sqlite, postgres) and false for bbolt and etcd; tests
+// that observe forwarding-package cleanup or revocation-log cleanup immediately
+// after a channel close should consult this predicate.
+func (h *HarnessTest) UsesDeferredCloseCleanup() bool {
+	return h.manager.dbBackend == node.BackendSqlite ||
+		h.manager.dbBackend == node.BackendPostgres
+}
+
 // fundCoins attempts to send amt satoshis from the internal mining node to the
 // targeted lightning node. The confirmed boolean indicates whether the
 // transaction that pays to the target should confirm. For neutrino backend,

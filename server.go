@@ -2190,6 +2190,17 @@ func (s *server) Start(ctx context.Context) error {
 	cleanup := cleaner{}
 
 	s.start.Do(func() {
+		// Drain any deferred closed-channel cleanup persisted by a
+		// previous run before starting subsystems that load channel
+		// state. On backends that do not defer bulk close cleanup
+		// (bbolt) this is a no-op.
+		cleanup = cleanup.add(s.chanStateDB.Stop)
+		if err := s.chanStateDB.Start(ctx); err != nil {
+			startErr = fmt.Errorf("starting channel state db: %w",
+				err)
+			return
+		}
+
 		// Before starting any subsystems, repair any link nodes that
 		// may have been incorrectly pruned due to the race condition
 		// that was fixed in the link node pruning logic. This must
@@ -2852,6 +2863,10 @@ func (s *server) Stop() error {
 		s.sigPool.Stop()
 		s.writePool.Stop()
 		s.readPool.Stop()
+
+		if err := s.chanStateDB.Stop(); err != nil {
+			srvrLog.Warnf("failed to stop chanStateDB: %v", err)
+		}
 	})
 
 	return nil

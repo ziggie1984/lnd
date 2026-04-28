@@ -85,13 +85,24 @@ func testWipeForwardingPackages(ht *lntest.HarnessTest) {
 	// close channel should now become pending force closed channel.
 	pendingAB = ht.AssertChannelPendingForceClose(bob, chanPointAB).Channel
 
-	// Check the forwarding pacakges are deleted.
-	require.Zero(ht, pendingAB.NumForwardingPackages)
+	// Check the forwarding packages are deleted. On backends that defer
+	// bulk close cleanup to startup (sqlite, postgres), the per-channel
+	// fwd-pkg subtree is still on disk until the next ChainArbitrator
+	// startup runs Phase 2; channeldb has its own unit-test coverage
+	// for that path, so we skip this assertion on those backends.
+	if !ht.UsesDeferredCloseCleanup() {
+		require.Zero(ht, pendingAB.NumForwardingPackages)
 
-	// For Alice, the forwarding packages should have been wiped too.
-	pending := ht.AssertChannelPendingForceClose(alice, chanPointAB)
-	pendingAB = pending.Channel
-	require.Zero(ht, pendingAB.NumForwardingPackages)
+		// For Alice, the forwarding packages should have been wiped
+		// too.
+		pending := ht.AssertChannelPendingForceClose(alice, chanPointAB)
+		pendingAB = pending.Channel
+		require.Zero(ht, pendingAB.NumForwardingPackages)
+	} else {
+		// Still exercise the Alice-side pending force close lookup
+		// so the rest of the test remains backend-symmetric.
+		ht.AssertChannelPendingForceClose(alice, chanPointAB)
+	}
 
 	// Alice should one pending sweep.
 	ht.AssertNumPendingSweeps(alice, 1)

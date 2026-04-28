@@ -1072,6 +1072,13 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 		)
 	}
 
+	// KV-over-SQL backends (sqlite, postgres) should defer bulk historical
+	// cleanup to startup because nested-bucket deletes inside a write
+	// transaction are slow on those backends. bbolt and etcd keep the
+	// synchronous close path.
+	deferBulkClose := cfg.DB.Backend == lncfg.SqliteBackend ||
+		cfg.DB.Backend == lncfg.PostgresBackend
+
 	dbOptions := []channeldb.OptionModifier{
 		channeldb.OptionDryRunMigration(cfg.DryRunMigration),
 		channeldb.OptionStoreFinalHtlcResolutions(
@@ -1081,6 +1088,7 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 		channeldb.OptionNoRevLogAmtData(cfg.DB.NoRevLogAmtData),
 		channeldb.OptionGcDecayedLog(cfg.DB.NoGcDecayedLog),
 		channeldb.OptionWithDecayedLogDB(dbs.DecayedLogDB),
+		channeldb.OptionDeferBulkCloseCleanup(deferBulkClose),
 	}
 
 	// Otherwise, we'll open two instances, one for the state we only need

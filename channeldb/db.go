@@ -1834,7 +1834,7 @@ func (c *ChannelStateDB) CloseChannel(channel *OpenChannel,
 		return c.closeChannelOneShot(channel, summary, statuses...)
 	}
 
-	return kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
+	err := kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
 		_, chanBucket, chanKey, err := locateOpenChannel(tx, channel)
 		if err != nil {
 			return err
@@ -1904,6 +1904,20 @@ func (c *ChannelStateDB) CloseChannel(channel *OpenChannel,
 
 		return cleanupBucket.Put(chanKey, recBytes)
 	}, func() {})
+	if err != nil {
+		return err
+	}
+
+	// Wake the cleanup worker so it can drain the entry we just
+	// registered. The send is non-blocking; if a poke is already queued,
+	// dropping this one is fine because the worker rereads the bucket
+	// fresh on every drain pass. Pokes that arrive before Start has
+	// launched the run loop, or after Stop has cancelled it, are
+	// harmless — the worker's initial drain on the next Start will pick
+	// up any unprocessed entries from pendingChanCleanupBucket.
+	c.cleanupWorker.poke()
+
+	return nil
 }
 
 // purgeClosedChannelData removes the remaining bulk historical data for a

@@ -409,24 +409,22 @@
     `native-sql` setting enabled.
 
 
-* [Bulk historical cleanup on channel close is now deferred to startup
-  on the KV-over-SQL
+* [Bulk historical cleanup on channel close runs asynchronously on
+  the KV-over-SQL
   backends](https://github.com/lightningnetwork/lnd/pull/10732). On
   SQLite and Postgres, the close transaction atomically removes the
-  channel from all open-channel views in a small O(1) transaction but
-  leaves the revocation-log entries and forwarding packages in place,
-  with a persisted cleanup record so the bulk delete resumes
-  automatically at the next startup. This keeps the synchronous close
-  transaction short without exposing runtime callers to long
-  cascade-delete write-lock stalls. Note that the queued purges are
-  drained serially during chain-arbitrator startup, and a single
-  long-lived channel with millions of revocation entries can still
-  hold the database write lock for several seconds while it is being
-  purged — so a restart following a batch of closes on a SQLite or
-  Postgres node may observe a multi-second startup pause and a
-  matching `Resuming deferred cleanup for N closed channel(s)` log
-  line while the queue drains. bbolt retains its original one-shot
-  close path, where nested-bucket deletion is already cheap.
+  channel from all open-channel views in a small O(1) transaction
+  but leaves the revocation-log entries and forwarding packages in
+  place, with a persisted cleanup record. A single-goroutine cleanup
+  worker drains those records during normal operation in batched
+  short transactions, so neither the synchronous close path nor any
+  individual purge holds the database write lock for long.
+  Concurrent closes are serialised through the worker, bounding
+  database pressure even during close storms. On startup the worker
+  resumes any leftover records from a prior run in the background,
+  so a restart after a batch of closes does not block accepting
+  traffic on the queue draining. bbolt and etcd retain their original
+  one-shot close path, where nested-bucket deletion is already cheap.
 
 ## Code Health
 

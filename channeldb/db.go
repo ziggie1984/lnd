@@ -1891,6 +1891,14 @@ func (c *ChannelStateDB) CloseChannel(channel *OpenChannel,
 // summary or any caller-supplied input. Callers should normally drive this
 // via ChannelStateDB.Start (which iterates the pending queue) rather than
 // invoking it directly.
+//
+// The bulk data lives in two large structures: the channel's revocation log
+// (potentially millions of entries on long-lived channels) and its
+// forwarding-package bucket. Each is drained in batched short transactions
+// so that no single write transaction holds the backend's write lock long
+// enough to block other writers. After both are empty, a final small
+// transaction removes the now-tiny channel bucket, the empty fwd-package
+// bucket, and deregisters the cleanup record.
 func (c *ChannelStateDB) purgeClosedChannelData(ctx context.Context,
 	chanPoint wire.OutPoint, rec pendingCleanupRecord) error {
 
@@ -1929,7 +1937,48 @@ func (c *ChannelStateDB) purgeClosedChannelData(ctx context.Context,
 		return err
 	}
 
-	err := kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
+	// Drain the channel's revocation-log bucket(s) in batches. Both the
+	// current and the deprecated bucket names are handled, since
+	// migration30 may have left a partially-converted channel on disk.
+	for _, logBkt := range [][]byte{
+		revocationLogBucket,
+		revocationLogBucketDeprecated,
+	} {
+		err := c.drainBucket(ctx, func(tx kvdb.RwTx) kvdb.RwBucket {
+			_, chanBkt := navigateRW(tx)
+			if chanBkt == nil {
+				return nil
+			}
+
+			return chanBkt.NestedReadWriteBucket(logBkt)
+		})
+		if err != nil {
+			return fmt.Errorf("draining revocation log %q: %w",
+				logBkt, err)
+		}
+	}
+
+	// Drain the per-channel forwarding-package bucket in batches. Each
+	// entry is a per-height sub-bucket; deleting one per-height bucket
+	// recursively is bounded by that height's data, much smaller than
+	// the whole revocation log.
+	err := c.drainBucket(ctx, func(tx kvdb.RwTx) kvdb.RwBucket {
+		fwdPkgRoot := tx.ReadWriteBucket(fwdPackagesKey)
+		if fwdPkgRoot == nil {
+			return nil
+		}
+
+		return fwdPkgRoot.NestedReadWriteBucket(sourceKey[:])
+	})
+	if err != nil {
+		return fmt.Errorf("draining forwarding packages: %w", err)
+	}
+
+	// Final small transaction: remove the now-tiny channel bucket
+	// (containing only the small per-channel keys after the revocation
+	// log was drained), remove the now-empty forwarding-package
+	// per-channel bucket, and deregister the cleanup record.
+	err = kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
 		chainBkt, _ := navigateRW(tx)
 		if chainBkt != nil {
 			err := chainBkt.DeleteNestedBucket(chanKey)

@@ -51,6 +51,12 @@
 
 ## Database
 
+* Native SQL migration of the channel state and switch data:
+  * Introduce the [`chanstate.Store`
+    interface](https://github.com/lightningnetwork/lnd/pull/10777) as the
+    persistence contract for the channel-state subsystem, decoupling
+    consumers from `*channeldb.ChannelStateDB` ahead of the SQL migration.
+
 ## Code Health
 
 ## Tooling and Documentation

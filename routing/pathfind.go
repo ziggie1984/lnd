@@ -506,15 +506,30 @@ type PathFindingConfig struct {
 	MinProbability float64
 }
 
+// outgoingBalanceStats records diagnostic counters collected while scanning
+// the source node's outgoing channels for usable local balance.
+type outgoingBalanceStats struct {
+	evaluatedChannels  int
+	skippedNoOutPolicy int
+	missingHints       int
+	zeroBandwidth      int
+	usableChannels     int
+}
+
 // getOutgoingBalance returns the maximum available balance in any of the
-// channels of the given node. The second return parameters is the total
+// channels of the given node. The second return parameter is the total
 // available balance.
 func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 	bandwidthHints bandwidthHints,
-	g Graph) (lnwire.MilliSatoshi, lnwire.MilliSatoshi, error) {
+	g Graph) (lnwire.MilliSatoshi, lnwire.MilliSatoshi,
+	outgoingBalanceStats, error) {
 
 	var max, total lnwire.MilliSatoshi
+	var stats outgoingBalanceStats
+
 	cb := func(channel *graphdb.DirectedChannel) error {
+		stats.evaluatedChannels++
+
 		shortID := lnwire.NewShortChanIDFromInt(channel.ChannelID)
 
 		// This log line is needed to debug issues in case we do not
@@ -524,6 +539,8 @@ func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 		log.Tracef("Evaluating channel %v for local balance", shortID)
 
 		if !channel.OutPolicySet {
+			stats.skippedNoOutPolicy++
+
 			log.Debugf("ShortChannelID=%v: has no out policy set, "+
 				"skipping", shortID)
 
@@ -547,6 +564,8 @@ func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 		// This can happen when a channel is added to the graph after
 		// we've already queried the bandwidth hints.
 		if !ok {
+			stats.missingHints++
+
 			bandwidth = lnwire.NewMSatFromSatoshis(channel.Capacity)
 
 			log.Warnf("ShortChannelID=%v: not found in the local "+
@@ -554,6 +573,16 @@ func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 				"using channel capacity=%v as bandwidth for "+
 				"this channel", shortID, bandwidth)
 		}
+
+		if bandwidth == 0 {
+			stats.zeroBandwidth++
+		} else {
+			stats.usableChannels++
+		}
+
+		log.Tracef("ShortChannelID=%v: local balance candidate, "+
+			"bandwidth=%v, capacity=%v", shortID, bandwidth,
+			channel.Capacity)
 
 		if bandwidth > max {
 			max = bandwidth
@@ -584,9 +613,10 @@ func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 		},
 	)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, stats, err
 	}
-	return max, total, err
+
+	return max, total, stats, err
 }
 
 // findPath attempts to find a path from the source node within the ChannelGraph
@@ -667,7 +697,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 	// If we are routing from ourselves, check that we have enough local
 	// balance available.
 	if source == self {
-		max, total, err := getOutgoingBalance(
+		max, total, stats, err := getOutgoingBalance(
 			self, outgoingChanMap, g.bandwidthHints, g.graph,
 		)
 		if err != nil {
@@ -679,7 +709,13 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		if total < amt {
 			log.Warnf("Not enough outbound balance to send "+
 				"htlc of amount: %v, only have local "+
-				"balance: %v", amt, total)
+				"balance: %v, evaluated_channels=%v, "+
+				"usable_channels=%v, zero_bandwidth_channels=%v, "+
+				"skipped_no_out_policy=%v, "+
+				"missing_bandwidth_hints=%v, max_channel_balance=%v",
+				amt, total, stats.evaluatedChannels,
+				stats.usableChannels, stats.zeroBandwidth,
+				stats.skippedNoOutPolicy, stats.missingHints, max)
 
 			return nil, 0, errInsufficientBalance
 		}

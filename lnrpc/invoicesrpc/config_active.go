@@ -5,7 +5,7 @@ package invoicesrpc
 
 import (
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
@@ -57,7 +57,7 @@ type Config struct {
 
 	// ChanStateDB is a possibly replicated db instance which contains the
 	// channel state
-	ChanStateDB *channeldb.ChannelStateDB
+	ChanStateDB chanstate.Store
 
 	// GenInvoiceFeatures returns a feature containing feature bits that
 	// should be advertised on freshly generated invoices.

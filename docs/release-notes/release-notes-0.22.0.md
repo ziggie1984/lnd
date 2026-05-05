@@ -56,6 +56,12 @@
     interface](https://github.com/lightningnetwork/lnd/pull/10777) as the
     persistence contract for the channel-state subsystem, decoupling
     consumers from `*channeldb.ChannelStateDB` ahead of the SQL migration.
+  * Switch channel-state consumers (`server`, `lnrpc`, `funding`, `peer`,
+    `contractcourt`, `channelnotifier`, and the channel restore path)
+    over to the [`chanstate.Store`
+    interface](https://github.com/lightningnetwork/lnd/pull/10790),
+    replacing direct `*channeldb.ChannelStateDB` dependencies so the
+    upcoming KV/SQL store implementations can be swapped in transparently.
 
 ## Code Health
 

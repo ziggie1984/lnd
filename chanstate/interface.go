@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -17,10 +18,15 @@ import (
 // state implementation moves into this package and the old concrete type is no
 // longer part of consumer-facing code, this name can be revisited.
 type Store interface {
+	// ChannelStore is the persistence contract for core channel-state
+	// operations.
 	ChannelStore
+
+	// InitialForwardingPolicyStore persists the per-channel forwarding
+	// policy chosen at channel-open time, used to bootstrap the link's
+	// policy once the channel becomes active.
+	InitialForwardingPolicyStore
 }
-
-
 
 // ChannelStore is the persistence contract for core channel-state operations.
 //
@@ -162,6 +168,28 @@ type ChannelStore interface {
 	// that a link node exists for each remote peer. This should be
 	// called on startup to ensure that our database is consistent.
 	RepairLinkNodes(network wire.BitcoinNet) error
+}
+
+// InitialForwardingPolicyStore persists the initial forwarding policy chosen
+// during channel opening. The policy is keyed by the permanent channel ID and
+// is temporary state used until the channel is fully announced and its link is
+// initialized.
+type InitialForwardingPolicyStore interface {
+	// SaveInitialForwardingPolicy saves the serialized forwarding policy
+	// for the provided permanent channel id.
+	SaveInitialForwardingPolicy(chanID lnwire.ChannelID,
+		forwardingPolicy *models.ForwardingPolicy) error
+
+	// GetInitialForwardingPolicy fetches the serialized forwarding policy
+	// for the provided channel id from the database, or returns
+	// ErrChannelNotFound if a forwarding policy for this channel id is not
+	// found.
+	GetInitialForwardingPolicy(chanID lnwire.ChannelID) (
+		*models.ForwardingPolicy, error)
+
+	// DeleteInitialForwardingPolicy removes the forwarding policy for a
+	// given channel from the database.
+	DeleteInitialForwardingPolicy(chanID lnwire.ChannelID) error
 }
 
 // Compile-time assertion that channeldb.ChannelStateDB satisfies the Store

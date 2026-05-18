@@ -2,6 +2,7 @@ package chanstate
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -44,22 +45,22 @@ var (
 	finalHtlcsBucket = []byte("final-htlcs")
 )
 
-// FinalHtlcByte defines a byte type that encodes information about the final
+// finalHtlcByte defines a byte type that encodes information about the final
 // htlc resolution.
-type FinalHtlcByte byte
+type finalHtlcByte byte
 
 const (
-	// FinalHtlcSettledBit is the bit that encodes whether the htlc was
+	// finalHtlcSettledBit is the bit that encodes whether the htlc was
 	// settled or failed.
-	FinalHtlcSettledBit FinalHtlcByte = 1 << 0
+	finalHtlcSettledBit finalHtlcByte = 1 << 0
 
-	// FinalHtlcOffchainBit is the bit that encodes whether the htlc was
+	// finalHtlcOffchainBit is the bit that encodes whether the htlc was
 	// resolved offchain or onchain.
-	FinalHtlcOffchainBit FinalHtlcByte = 1 << 1
+	finalHtlcOffchainBit finalHtlcByte = 1 << 1
 )
 
-// FetchFinalHtlcsBucket returns the read-only final htlc bucket for a channel.
-func FetchFinalHtlcsBucket(tx kvdb.RTx,
+// fetchFinalHtlcsBucket returns the read-only final htlc bucket for a channel.
+func fetchFinalHtlcsBucket(tx kvdb.RTx,
 	chanID lnwire.ShortChannelID) (kvdb.RBucket, error) {
 
 	finalHtlcsBucket := tx.ReadBucket(finalHtlcsBucket)
@@ -78,8 +79,8 @@ func FetchFinalHtlcsBucket(tx kvdb.RTx,
 	return chanBucket, nil
 }
 
-// FetchFinalHtlcsBucketRw returns the writable final htlc bucket for a channel.
-func FetchFinalHtlcsBucketRw(tx kvdb.RwTx,
+// fetchFinalHtlcsBucketRw returns the writable final htlc bucket for a channel.
+func fetchFinalHtlcsBucketRw(tx kvdb.RwTx,
 	chanID lnwire.ShortChannelID) (kvdb.RwBucket, error) {
 
 	finalHtlcsBucket, err := tx.CreateTopLevelBucket(finalHtlcsBucket)
@@ -99,27 +100,27 @@ func FetchFinalHtlcsBucketRw(tx kvdb.RwTx,
 	return chanBucket, nil
 }
 
-// PutFinalHtlc writes the final htlc outcome to the database. Additionally it
+// putFinalHtlc writes the final htlc outcome to the database. Additionally it
 // records whether the htlc was resolved off-chain or on-chain.
-func PutFinalHtlc(finalHtlcsBucket kvdb.RwBucket, id uint64,
+func putFinalHtlc(finalHtlcsBucket kvdb.RwBucket, id uint64,
 	info FinalHtlcInfo) error {
 
 	var key [8]byte
 	byteOrder.PutUint64(key[:], id)
 
-	var finalHtlcByte FinalHtlcByte
+	var finalHtlcByte finalHtlcByte
 	if info.Settled {
-		finalHtlcByte |= FinalHtlcSettledBit
+		finalHtlcByte |= finalHtlcSettledBit
 	}
 	if info.Offchain {
-		finalHtlcByte |= FinalHtlcOffchainBit
+		finalHtlcByte |= finalHtlcOffchainBit
 	}
 
 	return finalHtlcsBucket.Put(key[:], []byte{byte(finalHtlcByte)})
 }
 
-// FetchFinalHtlc reads a final htlc outcome from the final htlc channel bucket.
-func FetchFinalHtlc(finalHtlcsBucket kvdb.RBucket,
+// fetchFinalHtlc reads a final htlc outcome from the final htlc channel bucket.
+func fetchFinalHtlc(finalHtlcsBucket kvdb.RBucket,
 	htlcIndex uint64) (*FinalHtlcInfo, error) {
 
 	var idBytes [8]byte
@@ -135,16 +136,76 @@ func FetchFinalHtlc(finalHtlcsBucket kvdb.RBucket,
 	}
 
 	info := FinalHtlcInfo{
-		Settled:  value[0]&byte(FinalHtlcSettledBit) != 0,
-		Offchain: value[0]&byte(FinalHtlcOffchainBit) != 0,
+		Settled:  value[0]&byte(finalHtlcSettledBit) != 0,
+		Offchain: value[0]&byte(finalHtlcOffchainBit) != 0,
 	}
 
 	return &info, nil
 }
 
-// ProcessFinalHtlc stores a final htlc outcome in the database if signaled via
+// LookupFinalHtlc retrieves a final htlc resolution from the database. If the
+// htlc has no final resolution yet, ErrHtlcUnknown is returned.
+func (s *KVStore) LookupFinalHtlc(chanID lnwire.ShortChannelID,
+	htlcIndex uint64) (*FinalHtlcInfo, error) {
+
+	var info *FinalHtlcInfo
+
+	err := kvdb.View(s.backend, func(tx kvdb.RTx) error {
+		finalHtlcsBucket, err := fetchFinalHtlcsBucket(tx, chanID)
+		switch {
+		case errors.Is(err, ErrFinalHtlcsBucketNotFound):
+			fallthrough
+
+		case errors.Is(err, ErrFinalChannelBucketNotFound):
+			return ErrHtlcUnknown
+
+		case err != nil:
+			return fmt.Errorf("cannot fetch final htlcs bucket: %w",
+				err)
+		}
+
+		info, err = fetchFinalHtlc(finalHtlcsBucket, htlcIndex)
+
+		return err
+	}, func() {
+		info = nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return info, nil
+}
+
+// PutOnchainFinalHtlcOutcome stores the final on-chain outcome of an htlc in
+// the database.
+func (s *KVStore) PutOnchainFinalHtlcOutcome(chanID lnwire.ShortChannelID,
+	htlcID uint64, settled bool) error {
+
+	// Skip if the user did not opt in to storing final resolutions.
+	if !s.storeFinalHtlcResolutions {
+		return nil
+	}
+
+	return kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
+		finalHtlcsBucket, err := fetchFinalHtlcsBucketRw(tx, chanID)
+		if err != nil {
+			return err
+		}
+
+		return putFinalHtlc(
+			finalHtlcsBucket, htlcID,
+			FinalHtlcInfo{
+				Settled:  settled,
+				Offchain: false,
+			},
+		)
+	}, func() {})
+}
+
+// processFinalHtlc stores a final htlc outcome in the database if signaled via
 // the supplied log update. An in-memory htlcs map is updated too.
-func ProcessFinalHtlc(finalHtlcsBucket kvdb.RwBucket, upd LogUpdate,
+func processFinalHtlc(finalHtlcsBucket kvdb.RwBucket, upd LogUpdate,
 	finalHtlcs map[uint64]bool) error {
 
 	var (
@@ -171,7 +232,7 @@ func ProcessFinalHtlc(finalHtlcsBucket kvdb.RwBucket, upd LogUpdate,
 
 	// Store the final resolution in the database if a bucket is provided.
 	if finalHtlcsBucket != nil {
-		err := PutFinalHtlc(
+		err := putFinalHtlc(
 			finalHtlcsBucket, id,
 			FinalHtlcInfo{
 				Settled:  settled,

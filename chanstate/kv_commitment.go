@@ -729,7 +729,7 @@ func UpdateChannelCommitment(backend kvdb.Backend, channel *OpenChannel,
 		// opted in to storing this information.
 		var finalHtlcsBucket kvdb.RwBucket
 		if storeFinalHtlcResolutions {
-			bucket, err := FetchFinalHtlcsBucketRw(
+			bucket, err := fetchFinalHtlcsBucketRw(
 				tx, channel.ShortChannelID,
 			)
 			if err != nil {
@@ -750,7 +750,7 @@ func UpdateChannelCommitment(backend kvdb.Backend, channel *OpenChannel,
 
 			// The update was locked in. If the update was a
 			// resolution, then store it in the database.
-			err := ProcessFinalHtlc(
+			err := processFinalHtlc(
 				finalHtlcsBucket, upd, finalHtlcs,
 			)
 			if err != nil {

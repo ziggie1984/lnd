@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	cstate "github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/shachain"
@@ -244,12 +243,6 @@ func (c *ChannelStateDB) RefreshChannel(channel *OpenChannel) error {
 	return c.kvStore.RefreshChannel(channel)
 }
 
-func fetchFinalHtlcsBucketRw(tx kvdb.RwTx,
-	chanID lnwire.ShortChannelID) (kvdb.RwBucket, error) {
-
-	return cstate.FetchFinalHtlcsBucketRw(tx, chanID)
-}
-
 // MarkChannelConfirmationHeight updates the channel's confirmation height once
 // the channel opening transaction receives one confirmation.
 func (c *ChannelStateDB) MarkChannelConfirmationHeight(channel *OpenChannel,
@@ -391,48 +384,9 @@ func (c *ChannelStateDB) ClearChannelStatus(channel *OpenChannel,
 func (c *ChannelStateDB) SyncPendingChannel(channel *OpenChannel,
 	addr net.Addr, pendingHeight uint32) error {
 
-	return kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
-		return syncNewChannel(
-			tx, channel, []net.Addr{addr}, c.backend,
-			pendingHeight,
-		)
-	}, func() {})
-}
-
-// syncNewChannel will write the passed channel to disk, and also create a
-// LinkNode (if needed) for the channel peer.
-func syncNewChannel(tx kvdb.RwTx, c *OpenChannel, addrs []net.Addr,
-	backend kvdb.Backend, pendingHeight uint32) error {
-
-	// First, sync all the persistent channel state to disk.
-	err := cstate.SyncPendingOpenChannel(tx, c, pendingHeight)
-	if err != nil {
-		return err
-	}
-
-	nodeInfoBucket, err := tx.CreateTopLevelBucket(nodeInfoBucket)
-	if err != nil {
-		return err
-	}
-
-	// If a LinkNode for this identity public key already exists,
-	// then we can exit early.
-	nodePub := c.IdentityPub.SerializeCompressed()
-	if nodeInfoBucket.Get(nodePub) != nil {
-		return nil
-	}
-
-	// Next, we need to establish a (possibly) new LinkNode relationship
-	// for this channel. The LinkNode metadata contains reachability,
-	// up-time, and service bits related information.
-	linkNode := NewLinkNode(
-		&LinkNodeDB{backend: backend}, wire.MainNet, c.IdentityPub,
-		addrs...,
+	return c.channelLifecycle.SyncPendingChannel(
+		channel, addr, pendingHeight,
 	)
-
-	// TODO(roasbeef): do away with link node all together?
-
-	return putLinkNode(nodeInfoBucket, linkNode)
 }
 
 // UpdateChannelCommitment updates the local commitment state.
@@ -538,14 +492,6 @@ func (c *ChannelStateDB) AdvanceCommitChainTail(channel *OpenChannel,
 
 // FinalHtlcInfo contains information about the final outcome of an htlc.
 type FinalHtlcInfo = cstate.FinalHtlcInfo
-
-// putFinalHtlc writes the final htlc outcome to the database. Additionally it
-// records whether the htlc was resolved off-chain or on-chain.
-func putFinalHtlc(finalHtlcsBucket kvdb.RwBucket, id uint64,
-	info FinalHtlcInfo) error {
-
-	return cstate.PutFinalHtlc(finalHtlcsBucket, id, info)
-}
 
 // LoadFwdPkgs scans the forwarding log for any packages that haven't been
 // processed, and returns their deserialized log updates in map indexed by the
@@ -732,14 +678,6 @@ func makeLogKey(updateNum uint64) [8]byte {
 	var key [8]byte
 	byteOrder.PutUint64(key[:], updateNum)
 	return key
-}
-
-func fetchThawHeight(chanBucket kvdb.RBucket) (uint32, error) {
-	return cstate.FetchThawHeight(chanBucket)
-}
-
-func storeThawHeight(chanBucket kvdb.RwBucket, height uint32) error {
-	return cstate.StoreThawHeight(chanBucket, height)
 }
 
 // EKeyLocator is an encoder for keychain.KeyLocator.

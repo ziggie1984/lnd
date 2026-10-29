@@ -1310,16 +1310,37 @@ func (c *ChannelArbitrator) stateStep(
 
 			// We fail the upstream HTLCs for all remote pending
 			// outgoing HTLCs as soon as the commitment is
-			// confirmed. The upstream HTLCs for outgoing dust
-			// HTLCs have already been resolved before we reach
-			// this point.
+			// confirmed.
+			//
+			// We also fail the upstream HTLCs for all outgoing
+			// dust HTLCs here. Most of them have already been
+			// resolved before we reached this point, but an HTLC
+			// which is only dust on the commitment that ended up
+			// confirming could not be classified as dust before,
+			// so this is the first point at which we know that it
+			// has no output to resolve on chain. Sending a
+			// duplicate resolution message is safe, as the switch
+			// processes them idempotently.
 			getIdx := func(htlc channeldb.HTLC) uint64 {
 				return htlc.HtlcIndex
 			}
 			remoteDangling := fn.NewSet(fn.Map(
 				htlcActions[HtlcFailDanglingAction], getIdx,
 			)...)
-			err := c.abandonForwards(remoteDangling)
+			confirmedDust := fn.NewSet(fn.Map(
+				htlcActions[HtlcFailDustAction], getIdx,
+			)...)
+
+			err := c.abandonForwards(
+				remoteDangling.Union(confirmedDust),
+			)
+			if err != nil {
+				return StateError, closeTx, err
+			}
+
+			err = c.settleForwards(
+				htlcActions[HtlcSettleDanglingAction],
+			)
 			if err != nil {
 				return StateError, closeTx, err
 			}
@@ -1503,7 +1524,9 @@ func (c *ChannelArbitrator) findCommitmentDeadlineAndValue(heightHint uint32,
 
 		// Since it's an HTLC sent to us, check if we have preimage for
 		// this HTLC.
-		preimageAvailable, err := c.isPreimageAvailable(htlc.RHash)
+		preimageAvailable, err := c.incomingPreimageAvailable(
+			htlc.RHash,
+		)
 		if err != nil {
 			return fn.None[int32](), 0, err
 		}
@@ -1738,9 +1761,15 @@ const (
 	// HtlcFailDanglingAction indicates that we should fail the upstream
 	// HTLC for an outgoing HTLC immediately after the commitment
 	// transaction has confirmed because it has no corresponding output on
-	// the commitment transaction. This category does NOT include any dust
-	// HTLCs which are mapped in the "HtlcFailDustAction" category.
+	// the commitment transaction. This category also includes HTLCs which
+	// are dust on our local commitment but have an output on a live
+	// remote commitment, and therefore cannot be failed safely before a
+	// commitment confirms.
 	HtlcFailDanglingAction = 7
+
+	// HtlcSettleDanglingAction identifies a commitment-difference HTLC
+	// whose terminal result is derived from an available preimage.
+	HtlcSettleDanglingAction = 8
 )
 
 // String returns a human readable string describing a chain action.
@@ -1769,6 +1798,9 @@ func (c ChainAction) String() string {
 
 	case HtlcFailDanglingAction:
 		return "HtlcFailDanglingAction"
+
+	case HtlcSettleDanglingAction:
+		return "HtlcSettleDanglingAction"
 
 	default:
 		return "<unknown action>"
@@ -1895,7 +1927,9 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 		// know the pre-image and it's close to timing out. We need to
 		// ensure that we claim the funds that are rightfully ours
 		// on-chain.
-		preimageAvailable, err := c.isPreimageAvailable(htlc.RHash)
+		preimageAvailable, err := c.incomingPreimageAvailable(
+			htlc.RHash,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -2019,10 +2053,13 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 	return actionMap, nil
 }
 
-// isPreimageAvailable returns whether the hash preimage is available in either
-// the preimage cache or the invoice database.
-func (c *ChannelArbitrator) isPreimageAvailable(hash lntypes.Hash) (bool,
-	error) {
+// incomingPreimageAvailable returns whether the preimage of an incoming HTLC
+// is available in either the preimage cache or the invoice database. The
+// invoice database holds the preimages of invoices we issued, which only an
+// HTLC offered to us can claim, so this must not be used for outgoing HTLCs.
+// Their preimages are resolved by outgoingPreimage.
+func (c *ChannelArbitrator) incomingPreimageAvailable(hash lntypes.Hash) (
+	bool, error) {
 
 	// Start by checking the preimage cache for preimages of
 	// forwarded HTLCs.
@@ -2055,6 +2092,22 @@ func (c *ChannelArbitrator) isPreimageAvailable(hash lntypes.Hash) (bool,
 	return preimageAvailable, nil
 }
 
+// outgoingPreimage returns the preimage of an outgoing HTLC from the witness
+// beacon, which holds the preimages revealed to us by the downstream peer or
+// on chain. The invoice database is not consulted, as it only answers for
+// HTLCs offered to us. Their preimages are resolved by
+// incomingPreimageAvailable.
+func (c *ChannelArbitrator) outgoingPreimage(
+	hash lntypes.Hash) fn.Option[lntypes.Preimage] {
+
+	preimage, ok := c.cfg.PreimageDB.LookupPreimage(hash)
+	if !ok {
+		return fn.None[lntypes.Preimage]()
+	}
+
+	return fn.Some(preimage)
+}
+
 // checkLocalChainActions is similar to checkCommitChainActions, but it also
 // examines the set of HTLCs on the remote party's commitment. This allows us
 // to ensure we're able to satisfy the HTLC timeout constraints for incoming vs
@@ -2073,17 +2126,76 @@ func (c *ChannelArbitrator) checkLocalChainActions(
 		return nil, err
 	}
 
+	// Collect the indexes of all outgoing HTLCs which have an output on
+	// any of the remote commitments. Both dust classifiers below must use
+	// the same view of the remote commitments.
+	liveOnRemote := fn.NewSet[uint64]()
+	for htlcSetKey, htlcs := range activeHTLCs {
+		if !htlcSetKey.IsRemote {
+			continue
+		}
+
+		for _, htlc := range htlcs.outgoingHTLCs {
+			if htlc.OutputIndex >= 0 {
+				liveOnRemote.Add(htlc.HtlcIndex)
+			}
+		}
+	}
+
 	// Next, we'll examine the remote commitment (and maybe a dangling one)
 	// to see if the set difference of our HTLCs is non-empty. If so, then
 	// we may need to cancel back some HTLCs if we decide go to chain.
 	remoteDanglingActions := c.checkRemoteDanglingActions(
-		height, activeHTLCs, commitsConfirmed,
+		height, activeHTLCs, liveOnRemote, commitsConfirmed,
 	)
 
 	// Finally, we'll merge the two set of chain actions.
 	localCommitActions.Merge(remoteDanglingActions)
 
+	// The condition is a defensive guard, it keeps the commitment which
+	// confirmed authoritative for the HTLCs on it.
+	if !commitsConfirmed {
+		c.deferDustHTLCsLiveOnRemote(localCommitActions, liveOnRemote)
+	}
+
 	return localCommitActions, nil
+}
+
+// deferDustHTLCsLiveOnRemote moves all outgoing HTLCs which are dust on our
+// local commitment, but still have an output on one of the remote commitments,
+// from the dust to the dangling chain action.
+//
+// NOTE: This must only be called as long as no commitment confirmed. Once one
+// did, its dust classification is the only one that matters.
+func (c *ChannelArbitrator) deferDustHTLCsLiveOnRemote(actions ChainActionMap,
+	liveOnRemote fn.Set[uint64]) {
+
+	var dustHTLCs []channeldb.HTLC
+	for _, htlc := range actions[HtlcFailDustAction] {
+		if !liveOnRemote.Contains(htlc.HtlcIndex) {
+			dustHTLCs = append(dustHTLCs, htlc)
+
+			continue
+		}
+
+		log.Infof("ChannelArbitrator(%v): defer dust htlc=%x, it has "+
+			"an output on a remote commitment", c.cfg.ChanPoint,
+			htlc.RHash[:])
+
+		actions[HtlcFailDanglingAction] = append(
+			actions[HtlcFailDanglingAction], htlc,
+		)
+	}
+
+	// Only keep the action around if there are dust HTLCs left, as an
+	// empty action would make us believe that we have to act on it.
+	if dustHTLCs == nil {
+		delete(actions, HtlcFailDustAction)
+
+		return
+	}
+
+	actions[HtlcFailDustAction] = dustHTLCs
 }
 
 // checkRemoteDanglingActions examines the set of remote commitments for any
@@ -2092,7 +2204,7 @@ func (c *ChannelArbitrator) checkLocalChainActions(
 // cancel immediately.
 func (c *ChannelArbitrator) checkRemoteDanglingActions(
 	height uint32, activeHTLCs map[HtlcSetKey]htlcSet,
-	commitsConfirmed bool) ChainActionMap {
+	liveOnRemote fn.Set[uint64], commitsConfirmed bool) ChainActionMap {
 
 	var (
 		pendingRemoteHTLCs []channeldb.HTLC
@@ -2144,17 +2256,14 @@ func (c *ChannelArbitrator) checkRemoteDanglingActions(
 			continue
 		}
 
-		preimageAvailable, err := c.isPreimageAvailable(htlc.RHash)
-		if err != nil {
-			log.Errorf("ChannelArbitrator(%v): failed to query "+
-				"preimage for dangling htlc=%x from remote "+
-				"commitments diff", c.cfg.ChanPoint,
-				htlc.RHash[:])
+		if c.outgoingPreimage(htlc.RHash).IsSome() {
+			if commitsConfirmed {
+				settles := actionMap[HtlcSettleDanglingAction]
+				actionMap[HtlcSettleDanglingAction] = append(
+					settles, htlc,
+				)
+			}
 
-			continue
-		}
-
-		if preimageAvailable {
 			continue
 		}
 
@@ -2164,7 +2273,7 @@ func (c *ChannelArbitrator) checkRemoteDanglingActions(
 		// gain or lose those dust amounts but there is no other way
 		// than cancelling the incoming back because we will never learn
 		// the preimage.
-		if htlc.OutputIndex < 0 {
+		if !liveOnRemote.Contains(htlc.HtlcIndex) {
 			log.Infof("ChannelArbitrator(%v): fail dangling dust "+
 				"htlc=%x from local/remote commitments diff",
 				c.cfg.ChanPoint, htlc.RHash[:])
@@ -2256,17 +2365,11 @@ func (c *ChannelArbitrator) checkRemoteDiffActions(
 			continue
 		}
 
-		preimageAvailable, err := c.isPreimageAvailable(htlc.RHash)
-		if err != nil {
-			log.Errorf("ChannelArbitrator(%v): failed to query "+
-				"preimage for dangling htlc=%x from remote "+
-				"commitments diff", c.cfg.ChanPoint,
-				htlc.RHash[:])
+		if c.outgoingPreimage(htlc.RHash).IsSome() {
+			actionMap[HtlcSettleDanglingAction] = append(
+				actionMap[HtlcSettleDanglingAction], htlc,
+			)
 
-			continue
-		}
-
-		if preimageAvailable {
 			continue
 		}
 
@@ -3348,6 +3451,39 @@ func (c *ChannelArbitrator) failIncomingDust(
 	}
 
 	return nil
+}
+
+// settleForwards publishes resolution messages for commitment-difference HTLCs
+// with an available preimage.
+func (c *ChannelArbitrator) settleForwards(htlcs []channeldb.HTLC) error {
+	msgsToSend := make([]ResolutionMsg, 0, len(htlcs))
+
+	for _, htlc := range htlcs {
+		preimage, err := c.outgoingPreimage(htlc.RHash).UnwrapOrErr(
+			fmt.Errorf("preimage for dangling htlc %d not found",
+				htlc.HtlcIndex),
+		)
+		if err != nil {
+			return err
+		}
+		if !preimage.Matches(htlc.RHash) {
+			return fmt.Errorf("preimage for dangling htlc %d "+
+				"does not match payment hash", htlc.HtlcIndex)
+		}
+
+		preimageCopy := [32]byte(preimage)
+		msgsToSend = append(msgsToSend, ResolutionMsg{
+			SourceChan: c.cfg.ShortChanID,
+			HtlcIndex:  htlc.HtlcIndex,
+			PreImage:   &preimageCopy,
+		})
+	}
+
+	if len(msgsToSend) == 0 {
+		return nil
+	}
+
+	return c.cfg.DeliverResolutionMsg(msgsToSend...)
 }
 
 // abandonForwards cancels back the incoming HTLCs for their corresponding

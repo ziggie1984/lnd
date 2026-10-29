@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightningnetwork/lnd/actor"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
@@ -124,11 +125,73 @@ type ChanClose struct {
 	// execution of the close channel request.
 	Updates chan interface{}
 
-	// Err is used by request creator to receive request execution error.
-	Err chan error
+	// Err is completed by whichever path ends this close, so that the
+	// request creator can learn how it ended. The promise is completed at
+	// most once, and a second writer is told it did not win: two paths
+	// racing to resolve one close cannot report two different outcomes to
+	// the same caller. Nothing blocks on completion, so a path that
+	// resolves the close cannot be held up by a creator that has stopped
+	// reading. A successful close is reported through Updates instead, so
+	// this is completed with a nil error only to end the request without
+	// an error.
+	Err actor.Promise[error]
 
 	// Ctx is a context linked to the lifetime of the caller.
 	Ctx context.Context //nolint:containedctx
+}
+
+// CompleteErr resolves this close request with err. Only the first completion
+// takes effect, so a close that several paths race to resolve reports exactly
+// one outcome, and completion never blocks. A request without a promise, or a
+// nil request, is a no-op.
+func (c *ChanClose) CompleteErr(err error) {
+	if c == nil || c.Err == nil {
+		return
+	}
+
+	actor.CompleteWith(c.Err, err)
+}
+
+// Done returns a channel that is closed when the caller's lifetime ends, or
+// nil when the request has no caller context. A request built without one is
+// not tied to any caller, so it never ends that way; a nil channel is exactly
+// that in a select, where the case simply never fires.
+func (c *ChanClose) Done() <-chan struct{} {
+	if c == nil || c.Ctx == nil {
+		return nil
+	}
+
+	return c.Ctx.Done()
+}
+
+// ErrChan returns a channel that carries the error this close request ended
+// with, and stays silent when it ends without one.
+//
+// It exists so that a caller which waits on channels sees no change: the
+// promise behind it is awaited on the caller's behalf, and only a non-nil
+// result is forwarded. A close that succeeds signals through Updates, so
+// nothing is sent here for it, and the channel is deliberately left open
+// rather than closed, because a closed channel would read as an immediate nil
+// error and cut a wait short before the close had finished.
+func (c *ChanClose) ErrChan(ctx context.Context) chan error {
+	errChan := make(chan error, 1)
+	if c == nil || c.Err == nil {
+		return errChan
+	}
+
+	go func() {
+		err, ctxErr := actor.AwaitFuture[error](ctx, c.Err.Future())
+
+		switch {
+		case ctxErr != nil:
+			errChan <- ctxErr
+
+		case err != nil:
+			errChan <- err
+		}
+	}()
+
+	return errChan
 }
 
 // Config defines the configuration for the service. ALL elements within the
@@ -167,6 +230,20 @@ type Config struct {
 	// forwarding packages, and ack settles and fails contained within them.
 	SwitchPackager channeldb.FwdOperator
 
+	// CheckFwdResponse reports whether a persisted off-chain response
+	// exists for the given outgoing circuit key.
+	CheckFwdResponse func(outKey *CircuitKey) error
+
+	// FetchFwdResponses returns all persisted off-chain responses.
+	FetchFwdResponses func() ([]*channeldb.FwdResponse, error)
+
+	// DeleteFwdResponse removes a persisted response from the store.
+	// Startup replay is its only caller; it reaps records whose circuit is
+	// already gone. Delivery itself does not delete the record. A delivered
+	// record is collected on the next startup, after its circuit has been
+	// torn down.
+	DeleteFwdResponse func(outKey *CircuitKey) error
+
 	// ExtractErrorEncrypter is an interface allowing switch to reextract
 	// error encrypters stored in the circuit map on restarts, since they
 	// are not stored directly within the database.
@@ -187,6 +264,13 @@ type Config struct {
 	// HtlcNotifier is an instance of a htlcNotifier which we will pipe htlc
 	// events through.
 	HtlcNotifier htlcNotifier
+
+	// ReputationManager is an optional, read-only local reputation
+	// subsystem. When non-nil, the switch feeds it forward/settle/fail
+	// events for forwarded HTLCs so it can track reputation. It is a black
+	// box that never affects forwarding (log-only); when nil the hooks are
+	// skipped.
+	ReputationManager ReputationManager
 
 	// FwdEventTicker is a signal that instructs the htlcswitch to flush any
 	// pending forwarding events.
@@ -359,6 +443,19 @@ type Switch struct {
 
 // New creates the new instance of htlc switch.
 func New(cfg Config, currentHeight uint32) (*Switch, error) {
+	// These are dereferenced unconditionally during startup, so a missing
+	// one must fail here rather than panic mid-recovery.
+	switch {
+	case cfg.CheckFwdResponse == nil:
+		return nil, errors.New("forwarding response checker is nil")
+
+	case cfg.FetchFwdResponses == nil:
+		return nil, errors.New("forwarding response fetcher is nil")
+
+	case cfg.DeleteFwdResponse == nil:
+		return nil, errors.New("forwarding response deleter is nil")
+	}
+
 	resStore := newResolutionStore(cfg.DB)
 
 	circuitMap, err := NewCircuitMap(&CircuitMapConfig{
@@ -367,6 +464,7 @@ func New(cfg Config, currentHeight uint32) (*Switch, error) {
 		FetchClosedChannels:   cfg.FetchClosedChannels,
 		ExtractErrorEncrypter: cfg.ExtractErrorEncrypter,
 		CheckResolutionMsg:    resStore.checkResolutionMsg,
+		CheckFwdResponse:      cfg.CheckFwdResponse,
 	})
 	if err != nil {
 		return nil, err
@@ -1251,6 +1349,7 @@ func (s *Switch) failAddPacket(packet *htlcPacket, failure *LinkError) error {
 		incomingChanID:  packet.incomingChanID,
 		incomingHTLCID:  packet.incomingHTLCID,
 		outgoingChanID:  packet.outgoingChanID,
+		outgoingHop:     packet.outgoingHop,
 		outgoingHTLCID:  packet.outgoingHTLCID,
 		incomingAmount:  packet.incomingAmount,
 		amount:          packet.amount,
@@ -1436,8 +1535,13 @@ func (s *Switch) CloseLink(ctx context.Context, chanPoint *wire.OutPoint,
 	deliveryScript lnwire.DeliveryAddress) (chan interface{}, chan error) {
 
 	// TODO(roasbeef) abstract out the close updates.
-	updateChan := make(chan interface{}, 2)
-	errChan := make(chan error, 1)
+	//
+	// The buffer holds the terminal update as well as a pending update from
+	// each side of the negotiation, so that a caller which has stopped
+	// reading cannot cause a close to block on delivering them.
+	updateChan := make(chan interface{}, 3)
+
+	errPromise := actor.NewPromise[error]()
 
 	command := &ChanClose{
 		CloseType:      closeType,
@@ -1445,19 +1549,19 @@ func (s *Switch) CloseLink(ctx context.Context, chanPoint *wire.OutPoint,
 		Updates:        updateChan,
 		TargetFeePerKw: targetFeePerKw,
 		DeliveryScript: deliveryScript,
-		Err:            errChan,
+		Err:            errPromise,
 		MaxFee:         maxFee,
 		Ctx:            ctx,
 	}
 
 	select {
 	case s.chanCloseRequests <- command:
-		return updateChan, errChan
+		return updateChan, command.ErrChan(ctx)
 
 	case <-s.quit:
-		errChan <- ErrSwitchExiting
+		actor.CompleteWith(errPromise, ErrSwitchExiting)
 		close(updateChan)
-		return updateChan, errChan
+		return updateChan, command.ErrChan(ctx)
 	}
 }
 
@@ -1567,8 +1671,8 @@ out:
 			if !ok {
 				s.indexMtx.RUnlock()
 
-				req.Err <- fmt.Errorf("no peer for channel with "+
-					"chan_id=%x", chanID[:])
+				req.CompleteErr(fmt.Errorf("no peer for "+
+					"channel with chan_id=%x", chanID[:]))
 				continue
 			}
 			s.indexMtx.RUnlock()
@@ -1787,6 +1891,17 @@ func (s *Switch) Start() error {
 		return err
 	}
 
+	// Process persisted off-chain responses before contract-court
+	// resolutions so the original wire message takes precedence when both
+	// stores contain an entry for the same circuit.
+	if err := s.reforwardFwdResponses(); err != nil {
+		// We are already stopping so we can ignore the error.
+		_ = s.Stop()
+		log.Errorf("unable to reforward persisted responses: %v", err)
+
+		return err
+	}
+
 	if err := s.reforwardResolutions(); err != nil {
 		// We are already stopping so we can ignore the error.
 		_ = s.Stop()
@@ -1795,6 +1910,57 @@ func (s *Switch) Start() error {
 	}
 
 	return nil
+}
+
+// fwdResponsePacket converts a persisted response into the packet shape
+// consumed by ForwardPackets. The packet has no destination reference because
+// package acknowledgement is handled by the persistence transition.
+func fwdResponsePacket(response *channeldb.FwdResponse) *htlcPacket {
+	return &htlcPacket{
+		outgoingChanID: response.OutKey.ChanID,
+		outgoingHTLCID: response.OutKey.HtlcID,
+		htlc:           response.Message,
+	}
+}
+
+// reforwardFwdResponses loads persisted off-chain responses during startup.
+// Entries without an open circuit are reaped in the same way as orphaned
+// resolution messages.
+func (s *Switch) reforwardFwdResponses() error {
+	responses, err := s.cfg.FetchFwdResponses()
+
+	// A decode or index error leaves recovery state uncertain. Abort
+	// startup rather than mistaking corruption for an empty response set.
+	if err != nil {
+		return fmt.Errorf("fetch persisted responses: %w", err)
+	}
+
+	switchPackets := make([]*htlcPacket, 0, len(responses))
+	for _, response := range responses {
+		outKey := response.OutKey
+
+		if s.circuits.LookupOpenCircuit(outKey) == nil {
+			log.Debugf("Reaping persisted response with no open "+
+				"circuit: %v", outKey)
+
+			err := s.cfg.DeleteFwdResponse(&outKey)
+			if err != nil {
+				return fmt.Errorf("reap response %v: %w",
+					outKey, err)
+			}
+
+			continue
+		}
+
+		switchPackets = append(
+			switchPackets, fwdResponsePacket(response),
+		)
+	}
+
+	log.Debugf("Reforwarding %d persisted responses",
+		len(switchPackets))
+
+	return s.ForwardPackets(nil, switchPackets...)
 }
 
 // reforwardResolutions fetches the set of resolution messages stored on-disk
@@ -2863,41 +3029,94 @@ func (s *Switch) handlePacketAdd(packet *htlcPacket,
 		return s.failAddPacket(packet, failure)
 	}
 
-	// Before we attempt to find a non-strict forwarding path for this
-	// htlc, check whether the htlc is being routed over the same incoming
-	// and outgoing channel. If our node does not allow forwards of this
-	// nature, we fail the htlc early. This check is in place to disallow
-	// inefficiently routed htlcs from locking up our balance. With
-	// channels where the option-scid-alias feature was negotiated, we also
-	// have to be sure that the IDs aren't the same since one or both could
-	// be an alias.
-	linkErr := s.checkCircularForward(
-		packet.incomingChanID, packet.outgoingChanID,
-		s.cfg.AllowCircularRoute, htlc.PaymentHash,
-	)
-	if linkErr != nil {
-		return s.failAddPacket(packet, linkErr)
-	}
+	// Collect the links that could carry this HTLC to the next hop.
+	// Non-strict forwarding then load-balances across our channels to that
+	// peer. A short channel ID maps to a link and its peer, while a blinded
+	// node-ID next hop resolves the peer directly. A node-ID hop has no
+	// sender-specified channel, so outgoingChanID stays hop.Exit until
+	// selection.
+	var interfaceLinks []ChannelLink
+	if packet.outgoingHop.IsLeft() {
+		// Before we attempt to find a non-strict forwarding path for
+		// this htlc, check whether the htlc is being routed over the
+		// same incoming and outgoing channel. If our node does not
+		// allow forwards of this nature, we fail the htlc early. This
+		// check is in place to disallow inefficiently routed htlcs from
+		// locking up our balance. With channels where the
+		// option-scid-alias feature was negotiated, we also have to be
+		// sure that the IDs aren't the same since one or both could be
+		// an alias.
+		linkErr := s.checkCircularForward(
+			packet.incomingChanID, packet.outgoingChanID,
+			s.cfg.AllowCircularRoute, htlc.PaymentHash,
+		)
+		if linkErr != nil {
+			return s.failAddPacket(packet, linkErr)
+		}
 
-	s.indexMtx.RLock()
-	targetLink, err := s.getLinkByMapping(packet)
-	if err != nil {
+		s.indexMtx.RLock()
+		targetLink, err := s.getLinkByMapping(packet)
+		if err != nil {
+			s.indexMtx.RUnlock()
+
+			log.Debugf("unable to find link with "+
+				"destination %v", packet.outgoingChanID)
+
+			// If packet was forwarded from another channel link
+			// then we should notify this link that some error
+			// occurred.
+			linkError := NewLinkError(
+				&lnwire.FailUnknownNextPeer{},
+			)
+
+			return s.failAddPacket(packet, linkError)
+		}
+
+		// NOTE: for the SCID path, we fetch all links to the target
+		// peer. If parallel channels exist to the incoming peer, the
+		// candidate set may include the incoming channel even when a
+		// different SCID was requested.
+		targetPeer := targetLink.PeerPubKey()
+		interfaceLinks, _ = s.getLinks(targetPeer)
+		s.indexMtx.RUnlock()
+	} else {
+		// A blinded node-ID next hop identifies the peer directly, so
+		// resolve its links and let non-strict forwarding load-balance
+		// across our channels to that peer.
+		peerKey := packet.outgoingHop.UnwrapRightOr([33]byte{})
+
+		s.indexMtx.RLock()
+		interfaceLinks, _ = s.getLinks(peerKey)
 		s.indexMtx.RUnlock()
 
-		log.Debugf("unable to find link with "+
-			"destination %v", packet.outgoingChanID)
+		// Drop links that would form a disallowed circular route, so
+		// selection can't later land on the incoming channel.
+		var nonCircularLinks []ChannelLink
+		for _, link := range interfaceLinks {
+			linkErr := s.checkCircularForward(
+				packet.incomingChanID, link.ShortChanID(),
+				s.cfg.AllowCircularRoute, htlc.PaymentHash,
+			)
+			if linkErr == nil {
+				nonCircularLinks = append(
+					nonCircularLinks, link,
+				)
+			}
+		}
+		interfaceLinks = nonCircularLinks
 
-		// If packet was forwarded from another channel link than we
-		// should notify this link that some error occurred.
-		linkError := NewLinkError(
-			&lnwire.FailUnknownNextPeer{},
-		)
+		// Without a usable link to the peer (none exist, or all would
+		// be circular) we cannot forward. Fail as unknown next peer
+		// rather than attributing it to a specific channel.
+		if len(interfaceLinks) == 0 {
+			log.Debugf("no usable link to peer %x for blinded "+
+				"next hop", peerKey)
 
-		return s.failAddPacket(packet, linkError)
+			return s.failAddPacket(packet, NewLinkError(
+				&lnwire.FailUnknownNextPeer{},
+			))
+		}
 	}
-	targetPeerKey := targetLink.PeerPubKey()
-	interfaceLinks, _ := s.getLinks(targetPeerKey)
-	s.indexMtx.RUnlock()
 
 	// We'll keep track of any HTLC failures during the link selection
 	// process. This way we can return the error for precise link that the
@@ -2944,6 +3163,18 @@ func (s *Switch) handlePacketAdd(packet *htlcPacket,
 	// current policy, then we'll send back an error, but ensure we send
 	// back the error sourced at the *target* link.
 	if len(destinations) == 0 {
+		// A node-ID next hop has no requested outgoing channel.
+		// Returning a per-candidate failure could leak a private
+		// channel via its channel_update (a probing vector), so fail
+		// generically. Later errors don't include private data. Defense
+		// in depth: route blinding error handling hides it too via
+		// error conversion.
+		if packet.outgoingHop.IsRight() {
+			return s.failAddPacket(packet, NewLinkError(
+				&lnwire.FailUnknownNextPeer{},
+			))
+		}
+
 		// At this point, some or all of the links rejected the HTLC so
 		// we couldn't forward it. So we'll try to look up the error
 		// that came from the source.
@@ -3022,7 +3253,60 @@ func (s *Switch) handlePacketAdd(packet *htlcPacket,
 	// channel.
 	packet.outgoingChanID = destination.ShortChanID()
 
+	// Feed the (read-only) reputation manager this forward. This only
+	// observes the event to update internal reputation state; it never
+	// affects the forwarding decision (log-only).
+	if s.cfg.ReputationManager != nil {
+		// Use the fee the node ADVERTISED for this forward, not the
+		// (possibly larger) fee offered by the incoming HTLC. Scoring
+		// reputation/revenue on the offered fee would let a sender
+		// inflate or destroy reputation by over/under-paying; the
+		// advertised fee is what the node actually charges.
+		//
+		// The advertised fee is the same total CheckHtlcForward
+		// requires (outbound plus inbound component), attributed to the
+		// outgoing link. An inbound discount can push the total
+		// negative, in which case it is clamped at zero: reputation and
+		// revenue track fees actually earned, never owed.
+		totalFee := TotalForwardingFee(
+			packet.amount, destination.AdvertisedFee(packet.amount),
+			packet.inboundFee,
+		)
+		if totalFee < 0 {
+			totalFee = 0
+		}
+		advertisedFee := lnwire.MilliSatoshi(totalFee)
+
+		// Report the accountable bit as the upstream peer sent it.
+		// Whether this node forwards the experimental signal is the
+		// outgoing link's concern only; scoring on the received value
+		// keeps the data independent of that flag.
+		//
+		// Channels are identified by channel_id rather than short
+		// channel id, so that a zero-conf channel confirming (or a
+		// future splice) does not split the channel's history.
+		s.cfg.ReputationManager.OnForward(
+			CircuitKey{
+				ChanID: packet.incomingChanID,
+				HtlcID: packet.incomingHTLCID,
+			},
+			incomingLink.ChanID(), destination.ChanID(),
+			packet.incomingAmount, packet.amount, advertisedFee,
+			packet.incomingTimeout, s.BestHeight(),
+			htlcAccountable(htlc),
+		)
+	}
+
 	return destination.handleSwitchPacket(packet)
+}
+
+// htlcAccountable extracts the experimental accountable signal from an
+// incoming update_add_htlc's custom records (TLV 106823).
+func htlcAccountable(htlc *lnwire.UpdateAddHTLC) bool {
+	key := uint64(lnwire.ExperimentalAccountableType)
+	rec, ok := htlc.CustomRecords[key]
+
+	return ok && len(rec) > 0 && rec[0] == lnwire.ExperimentalAccountable
 }
 
 // handlePacketSettle handles forwarding a settle packet.
@@ -3101,6 +3385,12 @@ func (s *Switch) handlePacketSettle(packet *htlcPacket) error {
 			},
 		)
 		s.fwdEventMtx.Unlock()
+
+		// Feed the read-only reputation manager this settle;
+		// log-only, never affects resolution.
+		if s.cfg.ReputationManager != nil {
+			s.cfg.ReputationManager.OnSettle(circuit.Incoming)
+		}
 	}
 
 	// Deliver this packet.
@@ -3114,6 +3404,15 @@ func (s *Switch) handlePacketFail(packet *htlcPacket,
 	// If the source of this packet has not been set, use the circuit map
 	// to lookup the origin.
 	circuit, err := s.closeCircuit(packet)
+
+	// A competing response already closed the circuit but has not finished
+	// tearing it down. Treat this duplicate as the same benign no-op as the
+	// settle path does.
+	if errors.Is(err, ErrCircuitClosing) {
+		log.Debugf("Circuit is closing for packet=%v", packet)
+		return nil
+	}
+
 	if err != nil {
 		return err
 	}
@@ -3133,6 +3432,15 @@ func (s *Switch) handlePacketFail(packet *htlcPacket,
 		// If this is a locally initiated HTLC, there's no need to
 		// forward it so we exit.
 		return nil
+	}
+
+	// Feed the read-only reputation manager this forwarded fail;
+	// log-only, never affects resolution. The HTLC is identified by its
+	// incoming circuit key alone: fail paths do not reliably know the
+	// outgoing channel (an add failed back through the outgoing link's
+	// mailbox never had a keystone set).
+	if s.cfg.ReputationManager != nil && circuit != nil {
+		s.cfg.ReputationManager.OnFail(circuit.Incoming)
 	}
 
 	// Exit early if this hasSource is true. This flag is only set via

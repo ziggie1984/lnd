@@ -14,6 +14,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/sqldb"
+	"github.com/lightningnetwork/lnd/sqldb/sqlc"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )
@@ -119,7 +120,7 @@ func randHTLCRapid(t *rapid.T, invoice *Invoice, amt lnwire.MilliSatoshi) (
 	// Add randomized custom records to the HTLC.
 	htlc.CustomRecords = make(record.CustomSet)
 	numRecords := rapid.IntRange(0, 5).Draw(t, "numRecords")
-	for i := 0; i < numRecords; i++ {
+	for range numRecords {
 		key := rapid.Uint64Range(
 			record.CustomTypeStart, 1000+record.CustomTypeStart,
 		).Draw(t, "customRecordKey")
@@ -162,7 +163,7 @@ func generateInvoiceHTLCsRapid(t *rapid.T, invoice *Invoice) {
 		amt := total / lnwire.MilliSatoshi(numHTLCs)
 		remainder := total - amt*lnwire.MilliSatoshi(numHTLCs)
 
-		for i := 0; i < numHTLCs; i++ {
+		for i := range numHTLCs {
 			if i == numHTLCs-1 {
 				// Add remainder to the last HTLC.
 				amt += remainder
@@ -183,7 +184,7 @@ func generateAMPHtlcsRapid(t *rapid.T, invoice *Invoice) {
 	numSetIDs := rapid.IntRange(1, 5).Draw(t, "numSetIDs")
 	settledIdx := uint64(1)
 
-	for i := 0; i < numSetIDs; i++ {
+	for range numSetIDs {
 		var setID SetID
 		_, err := crand.Read(setID[:])
 		require.NoError(t, err)
@@ -199,7 +200,7 @@ func generateAMPHtlcsRapid(t *rapid.T, invoice *Invoice) {
 		remainder := total - amt*lnwire.MilliSatoshi(numHTLCs)
 
 		var htlcState HtlcState
-		for j := 0; j < numHTLCs; j++ {
+		for j := range numHTLCs {
 			if j == numHTLCs-1 {
 				amt += remainder
 			}
@@ -252,14 +253,12 @@ func generateAMPHtlcsRapid(t *rapid.T, invoice *Invoice) {
 	}
 }
 
-// TestMigrateSingleInvoiceRapid tests the migration of single invoices with
-// random data variations using rapid. This test generates a random invoice
-// configuration and ensures successful migration.
-//
-// NOTE: This test may need to be changed if the Invoice or any of the related
-// types are modified.
-func TestMigrateSingleInvoiceRapid(t *testing.T) {
-	// Create a shared Postgres instance for efficient testing.
+// TestMigrateLegacyAMPInvoice tests migration of an AMP invoice created before
+// reusable AMP invoices were introduced. These invoices store AMP HTLCs inline
+// and don't contain the AMPState metadata used by the SQL schema.
+func TestMigrateLegacyAMPInvoice(t *testing.T) {
+	// Create a shared Postgres instance so we don't spawn a new container
+	// for each test case.
 	pgFixture := sqldb.NewTestPgFixture(
 		t, sqldb.DefaultPostgresFixtureLifetime,
 	)
@@ -267,36 +266,347 @@ func TestMigrateSingleInvoiceRapid(t *testing.T) {
 		pgFixture.TearDown(t)
 	})
 
-	makeSQLDB := func(t *testing.T, sqlite bool) *SQLStore {
-		var db *sqldb.BaseDB
-		if sqlite {
-			db = sqldb.NewTestSqliteDB(t).BaseDB
-		} else {
-			db = sqldb.NewTestPostgresDB(t, pgFixture).BaseDB
-		}
-
-		executor := sqldb.NewTransactionExecutor(
-			db, func(tx *sql.Tx) SQLInvoiceQueries {
-				return db.WithTx(tx)
-			},
-		)
-
-		testClock := clock.NewTestClock(time.Unix(1, 0))
-
-		return NewSQLStore(executor, testClock)
+	tests := []struct {
+		name   string
+		sqlite bool
+	}{
+		{
+			name:   "SQLite",
+			sqlite: true,
+		},
+		{
+			name: "Postgres",
+		},
 	}
 
-	// Define property-based test using rapid.
-	rapid.Check(t, func(rt *rapid.T) {
-		// Randomized feature flags for MPP and AMP.
-		mpp := rapid.Bool().Draw(rt, "mpp")
-		amp := rapid.Bool().Draw(rt, "amp")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var db *sqldb.BaseDB
+			if test.sqlite {
+				db = sqldb.NewTestSqliteDB(t).BaseDB
+			} else {
+				db = sqldb.NewTestPostgresDB(
+					t, pgFixture,
+				).BaseDB
+			}
 
-		for _, sqlite := range []bool{true, false} {
-			store := makeSQLDB(t, sqlite)
-			testMigrateSingleInvoiceRapid(rt, store, mpp, amp)
+			testMigrateLegacyAMPInvoice(t, db)
+		})
+	}
+}
+
+// testMigrateLegacyAMPInvoice verifies that a legacy AMP invoice and its
+// inline HTLCs are migrated correctly to the given SQL backend.
+func testMigrateLegacyAMPInvoice(t *testing.T, db *sqldb.BaseDB) {
+	invoiceExecutor := sqldb.NewTransactionExecutor(
+		db, func(tx *sql.Tx) SQLInvoiceQueries {
+			return db.WithTx(tx)
+		},
+	)
+	genericExecutor := sqldb.NewTransactionExecutor(
+		db, func(tx *sql.Tx) *sqlc.Queries {
+			return db.WithTx(tx)
+		},
+	)
+	store := NewSQLStore(
+		invoiceExecutor, clock.NewTestClock(time.Unix(1, 0)),
+	)
+
+	features := lnwire.EmptyFeatureVector()
+	features.Set(lnwire.AMPRequired)
+
+	var (
+		invoicePreimage  = lntypes.Preimage{1}
+		settledPreimage  = lntypes.Preimage{2}
+		canceledPreimage = lntypes.Preimage{3}
+		settledHash      = settledPreimage.Hash()
+		canceledHash     = canceledPreimage.Hash()
+		settledSetID     = SetID{4}
+		canceledSetID    = SetID{5}
+		createdAt        = time.Unix(1_630_000_000, 0)
+		settledAt        = createdAt.Add(time.Minute)
+		settledKey       = models.CircuitKey{
+			ChanID: lnwire.NewShortChanIDFromInt(1),
+			HtlcID: 1,
 		}
-	})
+		canceledKey = models.CircuitKey{
+			ChanID: lnwire.NewShortChanIDFromInt(2),
+			HtlcID: 2,
+		}
+	)
+
+	legacyInvoice := Invoice{
+		Memo:           []byte("legacy AMP invoice"),
+		PaymentRequest: []byte("legacy AMP payment request"),
+		CreationDate:   createdAt,
+		SettleDate:     settledAt,
+		Terms: ContractTerm{
+			FinalCltvDelta:  40,
+			Expiry:          time.Hour,
+			PaymentPreimage: &invoicePreimage,
+			Value:           600,
+			PaymentAddr:     [32]byte{6},
+			Features:        features,
+		},
+		AddIndex:    23,
+		SettleIndex: 209,
+		State:       ContractSettled,
+		AmtPaid:     600,
+		Htlcs: map[models.CircuitKey]*InvoiceHTLC{
+			settledKey: {
+				Amt:          600,
+				MppTotalAmt:  600,
+				AcceptHeight: 100,
+				AcceptTime:   createdAt.Add(30 * time.Second),
+				ResolveTime:  settledAt,
+				Expiry:       200,
+				State:        HtlcStateSettled,
+				CustomRecords: record.CustomSet{
+					65536: []byte("legacy custom record"),
+				},
+				AMP: &InvoiceHtlcAMPData{
+					Record: *record.NewAMP(
+						[32]byte{7}, settledSetID,
+						4_138_590_185,
+					),
+					Hash:     settledHash,
+					Preimage: &settledPreimage,
+				},
+			},
+			canceledKey: {
+				Amt:           400,
+				MppTotalAmt:   1_000,
+				AcceptHeight:  101,
+				AcceptTime:    createdAt.Add(40 * time.Second),
+				ResolveTime:   settledAt,
+				Expiry:        201,
+				State:         HtlcStateCanceled,
+				CustomRecords: make(record.CustomSet),
+				AMP: &InvoiceHtlcAMPData{
+					Record: *record.NewAMP(
+						[32]byte{8}, canceledSetID, 1,
+					),
+					Hash: canceledHash,
+				},
+			},
+		},
+		AMPState: make(AMPInvoiceState),
+	}
+
+	ctx := t.Context()
+	err := genericExecutor.ExecTx(
+		ctx, sqldb.WriteTxOpt(), func(tx *sqlc.Queries) error {
+			invoices := []Invoice{legacyInvoice}
+
+			return migrateInvoices(ctx, tx, invoices)
+		}, sqldb.NoOpReset,
+	)
+	require.NoError(t, err)
+
+	migratedInvoice, err := store.LookupInvoice(
+		ctx, InvoiceRefByHash(invoicePreimage.Hash()),
+	)
+	require.NoError(t, err)
+
+	expectedInvoice := legacyInvoice
+	require.NoError(t, reconstructLegacyAMPState(&expectedInvoice))
+	migratedInvoice.AddIndex = expectedInvoice.AddIndex
+	OverrideInvoiceTimeZone(&expectedInvoice)
+	OverrideInvoiceTimeZone(&migratedInvoice)
+	require.Equal(t, expectedInvoice, migratedInvoice)
+
+	// The parent-level settlement event identifies the migrated invoice as
+	// legacy. The reconstructed settled sub-invoice describes which AMP set
+	// succeeded, but intentionally has no second settlement event.
+	require.Equal(t, ContractSettled, migratedInvoice.State)
+	require.Equal(
+		t, expectedInvoice.SettleIndex, migratedInvoice.SettleIndex,
+	)
+	require.Equal(
+		t, expectedInvoice.SettleDate, migratedInvoice.SettleDate,
+	)
+	require.Len(t, migratedInvoice.AMPState, 2)
+	require.Zero(
+		t, migratedInvoice.AMPState[settledSetID].SettleIndex,
+	)
+	require.True(
+		t, migratedInvoice.AMPState[settledSetID].SettleDate.IsZero(),
+	)
+	require.Zero(
+		t, migratedInvoice.AMPState[canceledSetID].SettleIndex,
+	)
+	require.True(
+		t, migratedInvoice.AMPState[canceledSetID].SettleDate.IsZero(),
+	)
+
+	settledInvoices, err := store.InvoicesSettledSince(
+		ctx, expectedInvoice.SettleIndex-1,
+	)
+	require.NoError(t, err)
+	require.Len(t, settledInvoices, 1)
+	require.Equal(
+		t, expectedInvoice.SettleIndex,
+		settledInvoices[0].SettleIndex,
+	)
+}
+
+// TestReconstructLegacyAMPStateMixedHTLCStates verifies that a legacy AMP
+// set's reconstructed state reflects whether it can still settle, regardless
+// of the individual HTLC states retained in the legacy record.
+func TestReconstructLegacyAMPStateMixedHTLCStates(t *testing.T) {
+	tests := []struct {
+		name          string
+		invoiceState  ContractState
+		htlcStates    []HtlcState
+		expectedState HtlcState
+		expectedAmt   lnwire.MilliSatoshi
+	}{
+		{
+			name:         "accepted and canceled",
+			invoiceState: ContractOpen,
+			htlcStates: []HtlcState{
+				HtlcStateAccepted, HtlcStateCanceled,
+			},
+			expectedState: HtlcStateAccepted,
+			expectedAmt:   1,
+		},
+		{
+			name:         "settled and canceled",
+			invoiceState: ContractSettled,
+			htlcStates: []HtlcState{
+				HtlcStateSettled, HtlcStateCanceled,
+			},
+			expectedState: HtlcStateSettled,
+			expectedAmt:   1,
+		},
+		{
+			name:         "all canceled",
+			invoiceState: ContractOpen,
+			htlcStates: []HtlcState{
+				HtlcStateCanceled, HtlcStateCanceled,
+			},
+			expectedState: HtlcStateCanceled,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			features := lnwire.EmptyFeatureVector()
+			features.Set(lnwire.AMPRequired)
+
+			setID := SetID{1}
+			invoice := Invoice{
+				State: test.invoiceState,
+				Terms: ContractTerm{
+					Features: features,
+				},
+				Htlcs: make(
+					map[models.CircuitKey]*InvoiceHTLC,
+				),
+				AMPState: make(AMPInvoiceState),
+			}
+
+			for i, state := range test.htlcStates {
+				key := models.CircuitKey{HtlcID: uint64(i)}
+				invoice.Htlcs[key] = &InvoiceHTLC{
+					Amt:   1,
+					State: state,
+					AMP: &InvoiceHtlcAMPData{
+						Record: *record.NewAMP(
+							[32]byte{2}, setID,
+							uint32(i),
+						),
+					},
+				}
+			}
+
+			require.NoError(t, reconstructLegacyAMPState(&invoice))
+			require.Len(t, invoice.AMPState, 1)
+			state := invoice.AMPState[setID]
+			require.Equal(
+				t, test.expectedState, state.State,
+			)
+			require.Equal(
+				t, test.expectedAmt, state.AmtPaid,
+			)
+			require.Len(
+				t, state.InvoiceKeys, len(test.htlcStates),
+			)
+		})
+	}
+}
+
+// TestMigrateSingleInvoiceRapid tests the migration of single invoices with
+// random data variations using rapid. This test generates a random invoice
+// configuration and ensures successful migration.
+//
+// NOTE: This test may need to be changed if the Invoice or any of the related
+// types are modified.
+func TestMigrateSingleInvoiceRapid(t *testing.T) {
+	tests := []struct {
+		name   string
+		sqlite bool
+	}{
+		{
+			name:   "SQLite",
+			sqlite: true,
+		},
+		{
+			name: "Postgres",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var pgFixture *sqldb.TestPgFixture
+			if !test.sqlite {
+				pgFixture = sqldb.NewTestPgFixture(
+					t, sqldb.DefaultPostgresFixtureLifetime,
+				)
+				t.Cleanup(func() {
+					pgFixture.TearDown(t)
+				})
+			}
+
+			// Each property check uses a clean database. This keeps
+			// failures reproducible and isolated during shrinking.
+			rapid.Check(t, func(rt *rapid.T) {
+				var db *sqldb.BaseDB
+				if test.sqlite {
+					db = sqldb.NewTestSqliteDB(t).BaseDB
+				} else {
+					db = sqldb.NewTestPostgresDB(
+						t, pgFixture,
+					).BaseDB
+				}
+
+				// Helpers also clean up at the outer level.
+				// Close this handle after each check to avoid
+				// retaining database resources.
+				rt.Cleanup(func() {
+					require.NoError(rt, db.Close())
+				})
+
+				executor := sqldb.NewTransactionExecutor(
+					db, func(tx *sql.Tx) SQLInvoiceQueries {
+						return db.WithTx(tx)
+					},
+				)
+				store := NewSQLStore(
+					executor,
+					clock.NewTestClock(time.Unix(1, 0)),
+				)
+
+				// Randomized feature flags for MPP and AMP.
+				mpp := rapid.Bool().Draw(rt, "mpp")
+				amp := rapid.Bool().Draw(rt, "amp")
+
+				testMigrateSingleInvoiceRapid(
+					rt, store, mpp, amp,
+				)
+			})
+		})
+	}
 }
 
 // testMigrateSingleInvoiceRapid is the primary function for the migration of a
@@ -304,43 +614,55 @@ func TestMigrateSingleInvoiceRapid(t *testing.T) {
 func testMigrateSingleInvoiceRapid(t *rapid.T, store *SQLStore, mpp bool,
 	amp bool) {
 
-	ctxb := t.Context()
-	invoices := make(map[lntypes.Hash]*Invoice)
+	const invoicesPerCheck = 10
 
-	for i := 0; i < 100; i++ {
+	type testInvoice struct {
+		hash    lntypes.Hash
+		invoice *Invoice
+	}
+
+	ctxb := t.Context()
+	invoices := make([]testInvoice, 0, invoicesPerCheck)
+	for range invoicesPerCheck {
 		invoice := generateTestInvoiceRapid(t, mpp, amp)
 		var hash lntypes.Hash
 		_, err := crand.Read(hash[:])
 		require.NoError(t, err)
 
-		invoices[hash] = invoice
+		invoices = append(invoices, testInvoice{
+			hash:    hash,
+			invoice: invoice,
+		})
 	}
 
 	ops := sqldb.WriteTxOpt()
 	err := store.db.ExecTx(ctxb, ops, func(tx SQLInvoiceQueries) error {
-		for hash, invoice := range invoices {
-			err := MigrateSingleInvoice(ctxb, tx, invoice, hash)
-			require.NoError(t, err)
+		for _, test := range invoices {
+			err := MigrateSingleInvoice(
+				ctxb, tx, test.invoice, test.hash,
+			)
+			if err != nil {
+				return err
+			}
 		}
 
 		return nil
 	}, sqldb.NoOpReset)
 	require.NoError(t, err)
 
-	// Fetch and compare each migrated invoice from the store with the
-	// original.
-	for hash, invoice := range invoices {
+	// Fetch and compare each migrated invoice with the original.
+	for _, test := range invoices {
 		sqlInvoice, err := store.LookupInvoice(
-			ctxb, InvoiceRefByHash(hash),
+			ctxb, InvoiceRefByHash(test.hash),
 		)
 		require.NoError(t, err)
 
-		invoice.AddIndex = sqlInvoice.AddIndex
+		test.invoice.AddIndex = sqlInvoice.AddIndex
 
-		OverrideInvoiceTimeZone(invoice)
+		OverrideInvoiceTimeZone(test.invoice)
 		OverrideInvoiceTimeZone(&sqlInvoice)
 
-		require.Equal(t, *invoice, sqlInvoice)
+		require.Equal(t, *test.invoice, sqlInvoice)
 	}
 }
 

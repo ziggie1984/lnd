@@ -84,7 +84,7 @@ func (h *htlcIncomingContestResolver) processFinalHtlcFail() error {
 func (h *htlcIncomingContestResolver) invalidFinalHtlc(
 	payload *hop.Payload, height uint32) bool {
 
-	if payload.FwdInfo.NextHop != hop.Exit {
+	if !payload.FwdInfo.IsExit() {
 		return false
 	}
 
@@ -312,7 +312,7 @@ func (h *htlcIncomingContestResolver) Resolve() (ContractResolver, error) {
 		hodlChan       <-chan interface{}
 		witnessUpdates <-chan lntypes.Preimage
 	)
-	if payload.FwdInfo.NextHop == hop.Exit {
+	if payload.FwdInfo.IsExit() {
 		// Create a buffered hodl chan to prevent deadlock.
 		hodlQueue := queue.NewConcurrentQueue(10)
 		hodlQueue.Start()
@@ -352,10 +352,20 @@ func (h *htlcIncomingContestResolver) Resolve() (ContractResolver, error) {
 		// neither accepted nor failed, so we cannot take action yet.
 		switch res := resolution.(type) {
 		case *invoices.HtlcFailResolution:
-			// In the case where the htlc failed, but the invoice
-			// was known to the registry, we can directly resolve
-			// the htlc.
-			if res.Outcome != invoices.ResultInvoiceNotFound {
+			switch res.Outcome {
+			// Processing failures are not terminal invoice
+			// decisions. Return an error to leave the resolver
+			// unresolved.
+			case invoices.ResultInvoiceInterceptorError:
+
+				return nil, fmt.Errorf("invoice processing "+
+					"failed: %v", res.Outcome)
+
+			case invoices.ResultInvoiceNotFound:
+				// Keep unknown invoices unresolved.
+
+			default:
+				// Resolve known failed invoices directly.
 				return processHtlcResolution(resolution)
 			}
 
@@ -701,7 +711,7 @@ func (h *htlcIncomingContestResolver) findAndapplyPreimage() (bool, error) {
 
 	// Exit early if this is not the exit hop, which means we are not the
 	// payment receiver and don't have the preimage.
-	if payload.FwdInfo.NextHop != hop.Exit {
+	if !payload.FwdInfo.IsExit() {
 		return false, nil
 	}
 

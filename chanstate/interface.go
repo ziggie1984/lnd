@@ -266,7 +266,7 @@ type OpenChannelCommitmentMutationStore interface {
 	// InsertNextRevocation inserts the next commitment point into the
 	// persisted channel state.
 	InsertNextRevocation(channel *OpenChannel,
-		revKey *btcec.PublicKey) error
+		revKey btcec.PublicKey) error
 
 	// AdvanceCommitChainTail records the new state transition within the
 	// revocation log and promotes the pending remote commitment to the
@@ -302,6 +302,10 @@ type OpenChannelCommitmentQueryStore interface {
 type OpenChannelFwdPkgStore interface {
 	// LoadFwdPkgs loads forwarding packages that have not been processed.
 	LoadFwdPkgs(channel *OpenChannel) ([]*FwdPkg, error)
+
+	// CountFwdPkgs returns the number of forwarding packages without
+	// loading their contents.
+	CountFwdPkgs(channel *OpenChannel) (int, error)
 
 	// AckAddHtlcs marks add HTLCs in forwarding packages as resolved.
 	AckAddHtlcs(channel *OpenChannel, addRefs ...AddRef) error

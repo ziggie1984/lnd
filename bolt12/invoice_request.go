@@ -150,10 +150,10 @@ func (ir *InvoiceRequest) allRecordProducers() []tlv.RecordProducer {
 	return p
 }
 
-// Encode validates the invoice request per writer requirements and serialises
+// encode validates the invoice request per writer requirements and serialises
 // it via the PureTLVMessage shape.
-func (ir *InvoiceRequest) Encode() ([]byte, error) {
-	if err := ValidateInvoiceRequestWrite(ir); err != nil {
+func (ir *InvoiceRequest) encode() ([]byte, error) {
+	if err := validateInvoiceRequestWrite(ir); err != nil {
 		return nil, fmt.Errorf("validate invoice request: %w", err)
 	}
 
@@ -163,6 +163,33 @@ func (ir *InvoiceRequest) Encode() ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// EncodeSigned serialises an invoice request that is ready to leave the node.
+// It requires the signature the writer requirements make mandatory and
+// verifies it against invreq_payer_id.
+//
+// encode stays permissive about the signature because signing does not need
+// it: SignInvoiceRequest derives the Merkle root from the records, so a caller
+// never has to encode first. EncodeSigned is the entry point for bytes that
+// reach a peer, so it is where the writer-side MUST is enforced. An invoice
+// request travels as raw TLV inside an onion message, so that boundary is not
+// the bech32 string form.
+func (ir *InvoiceRequest) EncodeSigned() ([]byte, error) {
+	if !ir.Signature.IsSome() {
+		return nil, ErrMissingSignature
+	}
+
+	tlvBytes, err := ir.encode()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := verifyInvoiceRequest(ir); err != nil {
+		return nil, err
+	}
+
+	return tlvBytes, nil
 }
 
 // DecodeInvoiceRequest deserializes an invoice request from a TLV byte stream.
@@ -198,10 +225,11 @@ func DecodeInvoiceRequest(data []byte) (*InvoiceRequest, error) {
 	tm, err := decodeStream(
 		data, invreqMetadata.Record(), chains.Record(),
 		metadata.Record(), currency.Record(), amount.Record(),
-		desc.Record(), features.Record(), expiry.Record(),
+		desc.Record(), strictFeaturesRecord(&features), expiry.Record(),
 		paths.Record(), issuer.Record(), qtyMax.Record(),
 		issuerID.Record(), invreqChain.Record(), invreqAmount.Record(),
-		invreqFeatures.Record(), invreqQty.Record(), payerID.Record(),
+		strictFeaturesRecord(&invreqFeatures), invreqQty.Record(),
+		payerID.Record(),
 		payerNote.Record(), invreqPaths.Record(), bip353.Record(),
 		sig.Record(),
 	)
@@ -236,6 +264,48 @@ func DecodeInvoiceRequest(data []byte) (*InvoiceRequest, error) {
 	return &ir, nil
 }
 
+// DecodeInvoiceRequestString decodes a BOLT 12 invoice request from its bech32
+// string representation (lnr1...). The spec reader gates (chain, features,
+// signature) are folded in via ValidateInvoiceRequestRead, with activeChain
+// gating the invreq_chain rule.
+func DecodeInvoiceRequestString(s string,
+	activeChain [32]byte) (*InvoiceRequest, error) {
+
+	hrp, tlvBytes, err := decodeBech32(s)
+	if err != nil {
+		return nil, fmt.Errorf("bech32: %w", err)
+	}
+
+	if hrp != HRPInvoiceRequest {
+		return nil, fmt.Errorf("expected HRP %q, got %q",
+			HRPInvoiceRequest, hrp)
+	}
+
+	ir, err := DecodeInvoiceRequest(tlvBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ValidateInvoiceRequestRead(
+		ir, activeChain, Bolt12Features,
+	); err != nil {
+		return nil, fmt.Errorf("validate: %w", err)
+	}
+
+	return ir, nil
+}
+
+// EncodeInvoiceRequestString encodes a signed invoice request to its bech32
+// string representation (lnr1...).
+func EncodeInvoiceRequestString(ir *InvoiceRequest) (string, error) {
+	tlvBytes, err := ir.EncodeSigned()
+	if err != nil {
+		return "", err
+	}
+
+	return encodeBech32(HRPInvoiceRequest, tlvBytes)
+}
+
 // NewInvoiceRequestFromOffer constructs a new InvoiceRequest by copying
 // (mirroring) all fields from the provided Offer. It assigns the payer ID and
 // payer metadata; the caller should subsequently sign the request.
@@ -243,7 +313,7 @@ func DecodeInvoiceRequest(data []byte) (*InvoiceRequest, error) {
 // Per "MUST copy all fields from the offer (including unknown fields)", the
 // offer's unknown TLVs are carried via the decodedTLVs sidecar so they are
 // signed and mirrored into the invoice. Note that because unknown even TLV
-// types in the offer would have already been rejected by ValidateOfferRead, any
+// types in the offer would have already been rejected by validateOfferRead, any
 // unknown TLVs mirrored here are guaranteed to be unknown odd TLVs ("it's ok to
 // be odd") which are safe to ignore and carry forward.
 //

@@ -1,6 +1,7 @@
 package lnwallet
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -220,6 +221,39 @@ type TransactionSubscription interface {
 	Cancel()
 }
 
+// LeaseOutputOptions controls optional output lease behavior.
+type LeaseOutputOptions struct {
+	// ReleaseAfterSpendConfs keeps the persisted lease until the
+	// transaction spending the output reaches this confirmation count.
+	// Reorganizations reset maturity progress when they disconnect the
+	// spending block.
+	ReleaseAfterSpendConfs uint32
+}
+
+// OutputLeaserWithOptions is an optional wallet capability for callers that
+// require output lease behavior beyond the default WalletController contract.
+// Implementations must apply every non-zero option exactly or return an error.
+type OutputLeaserWithOptions interface {
+	// LeaseOutputWithOptions leases an output with the requested optional
+	// behavior. It returns the same sentinel errors as LeaseOutput and
+	// requires the global coin selection lock to be held. With a non-zero
+	// ReleaseAfterSpendConfs, the returned expiration is retained for
+	// compatibility but is not enforced.
+	LeaseOutputWithOptions(id wtxmgr.LockID, op wire.OutPoint,
+		duration time.Duration, opts LeaseOutputOptions) (
+		time.Time, error)
+}
+
+// WalletControllerWrapper exposes the controller wrapped by an adapter. The
+// nested controller is used to resolve optional capabilities that are not part
+// of the base WalletController interface.
+type WalletControllerWrapper interface {
+	// UnwrapWalletController returns the next controller in the adapter
+	// chain. Implementations must return a non-nil controller other than
+	// themselves.
+	UnwrapWalletController() WalletController
+}
+
 // WalletController defines an abstract interface for controlling a local Pure
 // Go wallet, a local or remote wallet via an RPC mechanism, or possibly even
 // a daemon assisted hardware wallet. This interface serves the purpose of
@@ -305,6 +339,26 @@ type WalletController interface {
 	// account name filter can be provided to filter through all of the
 	// wallet accounts and return the addresses of only those matching.
 	ListAddresses(string, bool) (AccountAddressMap, error)
+
+	// CreateAccount creates a new account within the given key scope,
+	// deriving the account's keys from the wallet's master key.
+	//
+	// In contrast to ImportAccount, which registers a watch-only account
+	// from an externally supplied extended public key, the account created
+	// here is fully owned by the wallet: it derives its own addresses and
+	// can sign for its own outputs. That makes it usable as an isolated
+	// pocket of funds inside a single wallet, because coin selection,
+	// change, balance and address derivation can all be scoped to it by
+	// name.
+	//
+	// A custom account only ever exists within a single key scope, so the
+	// scope chosen here permanently fixes both the account's address type
+	// and the address type used for its change outputs.
+	//
+	// NOTE: The wallet must be unlocked, as deriving the account key
+	// requires access to the master private key.
+	CreateAccount(keyScope waddrmgr.KeyScope,
+		name string) (*waddrmgr.AccountProperties, error)
 
 	// ImportAccount imports an account backed by an account extended public
 	// key. The master key fingerprint denotes the fingerprint of the root
@@ -553,6 +607,10 @@ type WalletController interface {
 	// Start initializes the wallet, making any necessary connections,
 	// starting up required goroutines etc.
 	Start() error
+
+	// RequireSignal returns a channel which is sent over with no error,
+	// once the wallet is ready to be used.
+	ReadySignal(ctx context.Context) chan error
 
 	// Stop signals the wallet for shutdown. Shutdown may entail closing
 	// any active sockets, database handles, stopping goroutines, etc.

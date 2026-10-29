@@ -154,8 +154,9 @@ type OpenChannel struct {
 	// RemoteNextRevocation is the revocation key to be used for the *next*
 	// commitment transaction we create for the local node. Within the
 	// specification, this value is referred to as the
-	// per-commitment-point.
-	RemoteNextRevocation *btcec.PublicKey
+	// per-commitment-point. It's only known once the remote party has sent
+	// channel_ready, so it's None until then.
+	RemoteNextRevocation fn.Option[btcec.PublicKey]
 
 	// RevocationProducer is used to generate the revocation in such a way
 	// that remote side might store it efficiently and have the ability to
@@ -947,7 +948,7 @@ func (c *OpenChannel) RemoteUnsignedLocalUpdates() ([]LogUpdate, error) {
 //
 // NOTE: If this method isn't called, then the target channel won't be able to
 // propose new states for the commitment state of the remote party.
-func (c *OpenChannel) InsertNextRevocation(revKey *btcec.PublicKey) error {
+func (c *OpenChannel) InsertNextRevocation(revKey btcec.PublicKey) error {
 	c.Lock()
 	defer c.Unlock()
 
@@ -1013,6 +1014,15 @@ func (c *OpenChannel) LoadFwdPkgs() ([]*FwdPkg, error) {
 	defer c.RUnlock()
 
 	return c.Db.LoadFwdPkgs(c)
+}
+
+// CountFwdPkgs returns the number of forwarding packages without loading their
+// contents.
+func (c *OpenChannel) CountFwdPkgs() (int, error) {
+	c.RLock()
+	defer c.RUnlock()
+
+	return c.Db.CountFwdPkgs(c)
 }
 
 // AckAddHtlcs updates the AckAddFilter containing any of the provided AddRefs

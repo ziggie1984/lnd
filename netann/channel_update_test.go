@@ -1,16 +1,21 @@
 package netann_test
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/tlv"
+	"github.com/stretchr/testify/require"
 )
 
 type mockSigner struct {
@@ -187,6 +192,141 @@ func TestUpdateDisableFlag(t *testing.T) {
 				t.Fatalf("channel update failed to "+
 					"validate: %v", err)
 			}
+		})
+	}
+}
+
+// TestChannelUpdateSignaturePreservesExtraData verifies that signing and wire
+// encoding use the same non-mutating canonical TLV representation.
+func TestChannelUpdateSignaturePreservesExtraData(t *testing.T) {
+	// Arrange a typed inbound fee and a separate unknown TLV for signing.
+	// Signing this pre-encoding shape proves DataToSign includes the same
+	// canonical records that Encode will later put on the wire.
+	unknownValue := []byte{3, 2, 1}
+	unknownRecord := tlv.MakePrimitiveRecord(
+		tlv.Type(9), &unknownValue,
+	)
+	extraData, err := lnwire.EncodeRecords([]tlv.Record{unknownRecord})
+	require.NoError(t, err)
+
+	inboundFee := lnwire.Fee{
+		BaseFee: 33,
+		FeeRate: 44,
+	}
+	update := &lnwire.ChannelUpdate1{
+		InboundFee: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType55555](inboundFee),
+		),
+		ExtraOpaqueData: extraData,
+	}
+	require.NoError(t, netann.SignChannelUpdate(
+		netann.NewNodeSigner(privKeySigner), testKeyLoc, update,
+	))
+
+	var encoded bytes.Buffer
+	require.NoError(t, update.Encode(&encoded, 0))
+
+	var decoded lnwire.ChannelUpdate1
+	require.NoError(t, decoded.Decode(bytes.NewReader(encoded.Bytes()), 0))
+	require.True(t, decoded.InboundFee.IsSome())
+	require.NotEmpty(t, decoded.ExtraOpaqueData)
+
+	// Act by verifying the decoded wire representation. Decode retains the
+	// complete opaque stream, so verification must reconcile it with the
+	// typed fee exactly as signing did before encoding.
+	err = netann.VerifyChannelUpdateSignature(&decoded, pubKey)
+
+	// Assert that the signature remains valid across the full sign, encode,
+	// decode, and verify lifecycle while the unknown TLV is preserved.
+	require.NoError(t, err)
+}
+
+// TestValidateChannelUpdate2MaxHTLC tests the handling of htlc_maximum_msat on
+// a gossip v2 channel update. The TLV is optional, and the spec defaults an
+// absent one to half the channel capacity, so a conformant update that omits
+// it must still validate.
+func TestValidateChannelUpdate2MaxHTLC(t *testing.T) {
+	t.Parallel()
+
+	const capacity = btcutil.Amount(1_000_000)
+
+	newUpdate := func(maxHTLC fn.Option[lnwire.MilliSatoshi],
+	) *lnwire.ChannelUpdate2 {
+
+		upd := &lnwire.ChannelUpdate2{}
+		upd.ShortChannelID.Val = lnwire.SciddirIntro{
+			SCID: [8]byte{0, 0, 0, 0, 0, 0, 0, 1},
+		}
+		upd.BlockHeight.Val = 100
+
+		maxHTLC.WhenSome(func(m lnwire.MilliSatoshi) {
+			upd.HTLCMaximumMsat = tlv.SomeRecordT(
+				tlv.NewRecordT[
+					tlv.TlvType14, lnwire.MilliSatoshi,
+				](m),
+			)
+		})
+
+		return upd
+	}
+
+	halfCapacity := lnwire.NewMSatFromSatoshis(capacity) / 2
+
+	tests := []struct {
+		name     string
+		capacity btcutil.Amount
+		maxHTLC  fn.Option[lnwire.MilliSatoshi]
+		wantErr  string
+	}{
+		{
+			name:     "absent takes the half-capacity default",
+			capacity: capacity,
+		},
+		{
+			name:     "absent with unknown capacity",
+			capacity: 0,
+		},
+		{
+			name:     "present within capacity",
+			capacity: capacity,
+			maxHTLC:  fn.Some(halfCapacity),
+		},
+		{
+			// An unknown capacity cannot bound max_htlc, so the
+			// check is skipped as it is for a v1 update.
+			name:     "present with unknown capacity",
+			capacity: 0,
+			maxHTLC:  fn.Some(halfCapacity),
+		},
+		{
+			name:     "present above capacity",
+			capacity: capacity,
+			maxHTLC: fn.Some(
+				lnwire.NewMSatFromSatoshis(capacity) + 1,
+			),
+			wantErr: "greater than capacity",
+		},
+		{
+			name:     "present zero",
+			capacity: capacity,
+			maxHTLC:  fn.Some(lnwire.MilliSatoshi(0)),
+			wantErr:  "invalid max htlc",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := netann.ValidateChannelUpdateFields(
+				test.capacity, newUpdate(test.maxHTLC),
+			)
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+
+				return
+			}
+			require.NoError(t, err)
 		})
 	}
 }

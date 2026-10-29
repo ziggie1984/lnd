@@ -1,6 +1,7 @@
 package lnwallet
 
 import (
+	"context"
 	"encoding/hex"
 	"sync/atomic"
 	"time"
@@ -129,6 +130,13 @@ func (w *mockWalletController) RequiredReserve(uint32) btcutil.Amount {
 // ListAddresses currently returns a dummy value.
 func (w *mockWalletController) ListAddresses(string,
 	bool) (AccountAddressMap, error) {
+
+	return nil, nil
+}
+
+// CreateAccount currently returns a dummy value.
+func (w *mockWalletController) CreateAccount(waddrmgr.KeyScope,
+	string) (*waddrmgr.AccountProperties, error) {
 
 	return nil, nil
 }
@@ -309,6 +317,14 @@ func (w *mockWalletController) Start() error {
 // Stop currently does nothing.
 func (w *mockWalletController) Stop() error {
 	return nil
+}
+
+// ReadySignal currently signals that the wallet is ready instantly.
+func (w *mockWalletController) ReadySignal(_ context.Context) chan error {
+	readyChan := make(chan error, 1)
+	readyChan <- nil
+
+	return readyChan
 }
 
 func (w *mockWalletController) FetchTx(chainhash.Hash) (*wire.MsgTx, error) {
@@ -495,12 +511,26 @@ func (a *MockAuxSigner) SubmitSecondLevelSigBatch(chanState AuxChanState,
 	return args.Error(0)
 }
 
+// PackSigsFunc packs aux signatures into a blob. A test can register one of
+// these with the mock instead of a fixed value, so that the packed blob can
+// depend on the signatures handed in. That matters because a real aux signer
+// emits exactly one slot per HTLC.
+type PackSigsFunc func([]fn.Option[tlv.Blob]) fn.Result[fn.Option[tlv.Blob]]
+
+// UnpackSigsFunc is the counterpart of PackSigsFunc, recovering the per-HTLC
+// slots from a packed blob.
+type UnpackSigsFunc func(fn.Option[tlv.Blob]) fn.Result[[]fn.Option[tlv.Blob]]
+
 // PackSigs takes a series of aux signatures and packs them into a
 // single blob that can be sent alongside the CommitSig messages.
 func (a *MockAuxSigner) PackSigs(
 	sigs []fn.Option[tlv.Blob]) fn.Result[fn.Option[tlv.Blob]] {
 
 	args := a.Called(sigs)
+
+	if f, ok := args.Get(0).(PackSigsFunc); ok {
+		return f(sigs)
+	}
 
 	return args.Get(0).(fn.Result[fn.Option[tlv.Blob]])
 }
@@ -511,6 +541,10 @@ func (a *MockAuxSigner) UnpackSigs(
 	sigs fn.Option[tlv.Blob]) fn.Result[[]fn.Option[tlv.Blob]] {
 
 	args := a.Called(sigs)
+
+	if f, ok := args.Get(0).(UnpackSigsFunc); ok {
+		return f(sigs)
+	}
 
 	return args.Get(0).(fn.Result[[]fn.Option[tlv.Blob]])
 }

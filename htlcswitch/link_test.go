@@ -40,6 +40,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/ticker"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -776,8 +777,9 @@ func testChannelLinkInboundFee(t *testing.T, //nolint:thelper
 	hops := []*hop.Payload{
 		{
 			FwdInfo: hop.ForwardingInfo{
-				NextHop: n.carolChannelLink.
-					ShortChanID(),
+				NextHop: hop.NewChannelNextHop(
+					n.carolChannelLink.ShortChanID(),
+				),
 				AmountToForward: 1_000_000,
 				OutgoingCLTV:    106,
 			},
@@ -4409,6 +4411,13 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 		{"bob", "alice", &lnwire.RevokeAndAck{}, false},
 		{"bob", "alice", &lnwire.CommitSig{}, false},
 		{"alice", "bob", &lnwire.RevokeAndAck{}, false},
+
+		// Fourth fee update.
+		{"alice", "bob", &lnwire.UpdateFee{}, false},
+		{"alice", "bob", &lnwire.CommitSig{}, false},
+		{"bob", "alice", &lnwire.RevokeAndAck{}, false},
+		{"bob", "alice", &lnwire.CommitSig{}, false},
+		{"alice", "bob", &lnwire.RevokeAndAck{}, false},
 	}
 	n.aliceServer.intersect(createInterceptorFunc("[alice] <-- [bob]",
 		"alice", messages, chanID, false))
@@ -4510,6 +4519,15 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 	// rate corresponding to the minimum relay fee.
 	newFeeRate = minRelayFee / 2
 	triggerFeeUpdate(newFeeRate, minRelayFee, minRelayFee, true)
+
+	// Triggering the link to update the fee of the channel with a fee
+	// estimate and a min relay fee below the fee floor, as the bitcoind
+	// and btcd estimators can report, should result in a fee rate at the
+	// floor rather than one the channel refuses to sign.
+	oneSatPerVByte := chainfee.SatPerVByte(1).FeePerKWeight()
+	triggerFeeUpdate(
+		oneSatPerVByte, oneSatPerVByte, chainfee.FeePerKwFloor, true,
+	)
 }
 
 // TestChannelLinkAcceptDuplicatePayment tests that if a link receives an
@@ -5815,6 +5833,10 @@ func TestChannelLinkFail(t *testing.T) {
 		// consider the failure permanent in response to the actions
 		// performed during the linkTest.
 		permanentFailure bool
+
+		// assertFailure performs case-specific checks on a
+		// received link failure.
+		assertFailure func(*testing.T, LinkFailureError)
 	}{
 		{
 			"don't fail the channel if we receive a warning " +
@@ -5832,6 +5854,7 @@ func TestChannelLinkFail(t *testing.T) {
 			false,
 			false,
 			false,
+			nil,
 		},
 		{
 			"don't force close if syncing states fails at startup",
@@ -5850,6 +5873,7 @@ func TestChannelLinkFail(t *testing.T) {
 			true,
 			false,
 			false,
+			nil,
 		},
 		{
 			"we don't force closes the channel if resolving " +
@@ -5870,6 +5894,7 @@ func TestChannelLinkFail(t *testing.T) {
 			true,
 			false,
 			false,
+			nil,
 		},
 		{
 			"don't force close the channel if we receive an " +
@@ -5890,14 +5915,17 @@ func TestChannelLinkFail(t *testing.T) {
 			true,
 			false,
 			false,
+			nil,
 		},
 		{
 			"force close the channel if we receive an invalid " +
 				"CommitSig, not containing enough HTLC sigs",
 			func(c *channelLink) {
 			},
-			func(_ *testing.T, s *Switch, c *channelLink,
+			func(t *testing.T, s *Switch, c *channelLink,
 				remoteChannel *lnwallet.LightningChannel) {
+
+				t.Helper()
 
 				// Generate an HTLC and send to the link.
 				htlc1 := generateHtlc(t, c, 0)
@@ -5936,6 +5964,7 @@ func TestChannelLinkFail(t *testing.T) {
 			true,
 			true,
 			false,
+			nil,
 		},
 		{
 			"force close the channel if we receive an invalid " +
@@ -5992,6 +6021,55 @@ func TestChannelLinkFail(t *testing.T) {
 			true,
 			true,
 			false,
+			nil,
+		},
+		{
+			"fail the channel if a revocation is invalid for the " +
+				"current state",
+			func(c *channelLink) {
+				// Configure the channel so the
+				// revocation is invalid for its current state.
+				c.channel.State().RemoteNextRevocation =
+					fn.None[btcec.PublicKey]()
+			},
+			func(t *testing.T, _ *Switch, c *channelLink,
+				remoteChannel *lnwallet.LightningChannel) {
+
+				// Construct a well-formed revocation
+				// message that the current channel state must
+				// reject.
+				producer := remoteChannel.State().
+					RevocationProducer
+				secret, err := producer.AtIndex(0)
+				require.NoError(t, err)
+				nextSecret, err := producer.AtIndex(2)
+				require.NoError(t, err)
+
+				revoke := &lnwire.RevokeAndAck{
+					ChanID: c.ChanID(),
+					NextRevocationKey: input.
+						ComputeCommitmentPoint(
+							nextSecret[:],
+						),
+				}
+				copy(revoke.Revocation[:], secret[:])
+
+				c.HandleChannelUpdate(revoke)
+			},
+			true,
+			false,
+			false,
+			func(t *testing.T, linkErr LinkFailureError) {
+				t.Helper()
+
+				require.Equal(
+					t, LinkFailureDisconnect,
+					linkErr.FailureAction,
+				)
+				require.Equal(
+					t, ErrInvalidRevocation, linkErr.code,
+				)
+			},
 		},
 		{
 			"consider the failure permanent if we receive a link " +
@@ -6009,6 +6087,7 @@ func TestChannelLinkFail(t *testing.T) {
 			// TODO(halseth) For compatibility with CL we currently
 			// don't treat Errors as permanent errors.
 			false,
+			nil,
 		},
 	}
 
@@ -6016,66 +6095,78 @@ func TestChannelLinkFail(t *testing.T) {
 
 	// Execute each test case.
 	for _, test := range testCases {
-		harness, err :=
-			newSingleLinkTestHarness(t, chanAmt, 0)
-		require.NoError(t, err, test.name)
+		t.Run(test.name, func(t *testing.T) {
+			harness, err :=
+				newSingleLinkTestHarness(t, chanAmt, 0)
+			require.NoError(t, err, test.name)
 
-		//nolint:forcetypeassert
-		coreLink := harness.aliceLink.(*channelLink)
+			//nolint:forcetypeassert
+			coreLink := harness.aliceLink.(*channelLink)
 
-		// Set up a channel used to check whether the link error
-		// force closed the channel.
-		linkErrors := make(chan LinkFailureError, 1)
-		coreLink.cfg.OnChannelFailure = func(_ lnwire.ChannelID,
-			_ lnwire.ShortChannelID, linkErr LinkFailureError) {
+			// Set up a channel used to check whether the link
+			// error force closed the channel.
+			linkErrors := make(chan LinkFailureError, 1)
+			coreLink.cfg.OnChannelFailure = func(_ lnwire.ChannelID,
+				_ lnwire.ShortChannelID,
+				linkErr LinkFailureError) {
 
-			linkErrors <- linkErr
-		}
+				linkErrors <- linkErr
+			}
 
-		// Set up the link before starting it.
-		test.options(coreLink)
-		err = harness.start()
-		require.NoError(t, err, test.name)
+			// Set up the link before starting it.
+			test.options(coreLink)
+			err = harness.start()
+			require.NoError(t, err, test.name)
 
-		// Execute the test case.
-		test.linkTest(
-			t, harness.aliceSwitch, coreLink, harness.bobChannel,
-		)
+			// Execute the test case.
+			test.linkTest(
+				t, harness.aliceSwitch, coreLink,
+				harness.bobChannel,
+			)
 
-		// Currently we expect all test cases to lead to link error.
-		var linkErr LinkFailureError
-		errReceived := false
-		select {
-		case linkErr = <-linkErrors:
-			errReceived = true
+			// Wait to see whether the test case led to a link
+			// error.
+			var linkErr LinkFailureError
+			errReceived := false
+			select {
+			case linkErr = <-linkErrors:
+				errReceived = true
 
-		case <-time.After(10 * time.Second):
-			// If we do not receive a link error in 10s we assume
-			// that we won't receive any.
-		}
+			case <-time.After(10 * time.Second):
+				// If we do not receive a link error in 10s we
+				// assume that we won't receive any.
+			}
 
-		require.Equal(t, test.shouldFail, errReceived, test.name)
+			require.Equal(
+				t, test.shouldFail, errReceived, test.name,
+			)
 
-		// Check that the link is up and return.
-		if !test.shouldFail {
-			require.False(t, coreLink.failed)
-			return
-		}
+			// Check that the link is up and return.
+			if !test.shouldFail {
+				require.False(t, coreLink.failed)
+				return
+			}
 
-		require.True(t, coreLink.failed)
+			require.True(t, coreLink.failed)
 
-		// If we expect the link to force close the channel in this
-		// case, check that it happens. If not, make sure it does not
-		// happen.
-		isForceCloseErr := (linkErr.FailureAction ==
-			LinkFailureForceClose)
-		require.True(
-			t, test.shouldForceClose == isForceCloseErr, test.name,
-		)
-		require.Equal(
-			t, test.permanentFailure, linkErr.PermanentFailure,
-			test.name,
-		)
+			// If we expect the link to force close the channel in
+			// this case, check that it happens. If not, make sure
+			// it does not happen.
+			isForceCloseErr := (linkErr.FailureAction ==
+				LinkFailureForceClose)
+			require.True(
+				t, test.shouldForceClose == isForceCloseErr,
+				test.name,
+			)
+			require.Equal(
+				t, test.permanentFailure,
+				linkErr.PermanentFailure, test.name,
+			)
+
+			if test.assertFailure != nil {
+				test.assertFailure(t, linkErr)
+			}
+		})
 	}
 }
 
@@ -6371,6 +6462,157 @@ func TestCheckHtlcForward(t *testing.T) {
 			t.Fatalf("expected FailFeeInsufficient failure code")
 		}
 	})
+}
+
+// recordingAuxShaper is a minimal AuxTrafficShaper that records the channel id
+// it is asked about and declines to handle the traffic, so the normal
+// forwarding path proceeds. Only the methods reached by CheckHtlcForward are
+// implemented; the rest are inherited from the embedded (nil) interface and
+// must never be called.
+type recordingAuxShaper struct {
+	AuxTrafficShaper
+
+	gotCID lnwire.ShortChannelID
+}
+
+// ShouldHandleTraffic records the short channel ID passed to the shaper.
+func (a *recordingAuxShaper) ShouldHandleTraffic(cid lnwire.ShortChannelID,
+	_, _ fn.Option[tlv.Blob]) (bool, error) {
+
+	a.gotCID = cid
+
+	return false, nil
+}
+
+// IsCustomHTLC returns false as recordingAuxShaper handles standard HTLCs.
+func (a *recordingAuxShaper) IsCustomHTLC(_ lnwire.CustomRecords) bool {
+	return false
+}
+
+// TestCheckHtlcForwardAuxShaperChannel asserts that during non-strict
+// forwarding the aux traffic shaper is keyed on the channel actually being
+// evaluated (the link's own SCID), not the sender-requested SCID, which fixes
+// both the node-ID/blinded path (where no SCID is requested) and pre-existing
+// parallel-channel forwarding. It also asserts the real SCID handed to the
+// shaper never leaks into the sender-facing channel_update, which continues to
+// reference the requested (alias) SCID.
+func TestCheckHtlcForwardAuxShaperChannel(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chanScid      = 42
+		requestedScid = 99
+	)
+
+	fetchLastChannelUpdate := func(lnwire.ShortChannelID) (
+		*lnwire.ChannelUpdate1, error) {
+
+		return &lnwire.ChannelUpdate1{}, nil
+	}
+
+	// Record the SCID used to build the returned channel_update on failure.
+	var updateScid lnwire.ShortChannelID
+	failAliasUpdate := func(sid lnwire.ShortChannelID,
+		incoming bool) *lnwire.ChannelUpdate1 {
+
+		updateScid = sid
+
+		return &lnwire.ChannelUpdate1{
+			ShortChannelID: sid,
+		}
+	}
+
+	testChannel, _, err := createTestChannel(
+		t, alicePrivKey, bobPrivKey, 100000, 100000, 1000, 1000,
+		lnwire.NewShortChanIDFromInt(chanScid),
+	)
+	require.NoError(t, err)
+
+	shaper := &recordingAuxShaper{}
+	link := channelLink{
+		cfg: ChannelLinkConfig{
+			FwrdingPolicy: models.ForwardingPolicy{
+				TimeLockDelta: 20,
+				MinHTLCOut:    500,
+				MaxHTLC:       1000,
+				BaseFee:       10,
+			},
+			FetchLastChannelUpdate: fetchLastChannelUpdate,
+			MaxOutgoingCltvExpiry:  DefaultMaxOutgoingCltvExpiry,
+			HtlcNotifier:           &mockHTLCNotifier{},
+		},
+		log:     log,
+		channel: testChannel.channel,
+	}
+	link.cfg.AuxTrafficShaper = fn.Some[AuxTrafficShaper](shaper)
+	link.attachFailAliasUpdate(failAliasUpdate)
+
+	require.Equal(
+		t, lnwire.NewShortChanIDFromInt(chanScid), link.ShortChanID(),
+	)
+
+	var hash [32]byte
+	requested := lnwire.NewShortChanIDFromInt(requestedScid)
+
+	// A satisfiable forward: the shaper must be queried about the channel
+	// being evaluated (the link's own SCID), not the requested SCID.
+	result := link.CheckHtlcForward(
+		hash, 1500, 1000, 200, 150, models.InboundFee{}, 0, requested,
+		nil,
+	)
+	require.Nil(t, result, "expected policy to be satisfied")
+	require.Equal(
+		t, link.ShortChanID(), shaper.gotCID,
+		"aux shaper must be keyed on the evaluated channel",
+	)
+	require.NotEqual(
+		t, requested, shaper.gotCID,
+		"aux shaper must not be keyed on the requested SCID",
+	)
+
+	// A failing forward: the returned channel_update must reference the
+	// requested (alias) SCID, never the real channel SCID handed to the
+	// shaper.
+	result = link.CheckHtlcForward(
+		hash, 100, 50, 200, 150, models.InboundFee{}, 0, requested, nil,
+	)
+	require.NotNil(t, result)
+	require.Equal(
+		t, requested, updateScid,
+		"channel_update must reference the requested SCID, not the "+
+			"real channel SCID",
+	)
+
+	wireErr := result.WireMessage()
+	failAmt, ok := wireErr.(*lnwire.FailAmountBelowMinimum)
+	require.True(t, ok, "expected FailAmountBelowMinimum failure")
+	require.Equal(
+		t, requested, failAmt.Update.ShortChannelID,
+		"failure update must carry the requested SCID",
+	)
+}
+
+// TestInvoiceProcessingFailResolution tests that invoice processing failures
+// use the generic final-hop wire failure while retaining their internal failure
+// details.
+func TestInvoiceProcessingFailResolution(t *testing.T) {
+	t.Parallel()
+
+	const amount = lnwire.MilliSatoshi(1000)
+	outcome := invpkg.ResultInvoiceInterceptorError
+	resolution := invpkg.NewFailResolution(
+		models.CircuitKey{}, testStartingHeight, outcome,
+	)
+	failure := getResolutionFailure(resolution, amount)
+
+	wireFailure := failure.WireMessage()
+	incorrectDetails, ok := wireFailure.(*lnwire.FailIncorrectDetails)
+	require.True(t, ok)
+	require.Equal(t, amount, incorrectDetails.Amount())
+	require.Equal(
+		t, uint32(testStartingHeight), incorrectDetails.Height(),
+	)
+	require.Equal(t, outcome, failure.FailureDetail)
 }
 
 // TestChannelLinkCanceledInvoice in this test checks the interaction
@@ -7763,4 +8005,44 @@ func TestLinkQuiescenceExitHopProcessingDeferred(t *testing.T) {
 	network.bobServer.protocolTraceMtx.Unlock()
 
 	// TODO(proofofkeags): make sure these actions are run on resume.
+}
+
+// TestTotalForwardingFee checks that the total forwarding fee is the outbound
+// fee plus the inbound fee charged on the outgoing amount plus the outbound
+// fee, and that an inbound discount yields a signed, possibly negative, total.
+func TestTotalForwardingFee(t *testing.T) {
+	t.Parallel()
+
+	const (
+		amt    = lnwire.MilliSatoshi(100_000)
+		outFee = lnwire.MilliSatoshi(1_000)
+	)
+
+	tests := []struct {
+		name       string
+		inboundFee models.InboundFee
+		want       int64
+	}{{
+		name: "no inbound fee",
+		want: 1_000,
+	}, {
+		// 500 base + 1% of (100_000 + 1_000) = 500 + 1_010.
+		name:       "inbound fee on amount plus outbound fee",
+		inboundFee: models.InboundFee{Base: 500, Rate: 10_000},
+		want:       2_510,
+	}, {
+		// A discount larger than the outbound fee goes negative.
+		name:       "inbound discount",
+		inboundFee: models.InboundFee{Base: -1_500},
+		want:       -500,
+	}}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := TotalForwardingFee(amt, outFee, test.inboundFee)
+			require.Equal(t, test.want, got)
+		})
+	}
 }

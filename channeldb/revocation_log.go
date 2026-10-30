@@ -14,18 +14,6 @@ const (
 )
 
 type (
-	// BigSizeAmount is a type alias for a TLV record of a btcutil.Amount.
-	BigSizeAmount = cstate.BigSizeAmount
-
-	// BigSizeMilliSatoshi is a type alias for a TLV record of a
-	// lnwire.MilliSatoshi.
-	BigSizeMilliSatoshi = cstate.BigSizeMilliSatoshi
-
-	// SparsePayHash is a type alias for a 32 byte array, which when
-	// serialized is able to save some space by not including an empty
-	// payment hash on disk.
-	SparsePayHash = cstate.SparsePayHash
-
 	// HTLCEntry specifies the minimal info needed to be stored on disk for
 	// ALL the historical HTLCs, which is useful for constructing
 	// RevocationLog when a breach is detected.
@@ -46,12 +34,6 @@ var (
 	// NewRevocationLog creates a new RevocationLog from the given
 	// parameters.
 	NewRevocationLog = cstate.NewRevocationLog
-
-	// revocationLogBucket is a sub-bucket under openChannelBucket. This
-	// sub-bucket is dedicated for storing the minimal info required to
-	// re-construct a past state in order to punish a counterparty
-	// attempting a non-cooperative channel closure.
-	revocationLogBucket = cstate.RevocationLogBucketKey()
 
 	// ErrLogEntryNotFound is returned when we cannot find a log entry at
 	// the height requested in the revocation log.

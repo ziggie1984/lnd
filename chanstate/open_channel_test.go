@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -33,6 +34,41 @@ const (
 )
 
 type testChannelOption func(channel *OpenChannel)
+
+// fundingPointOption sets the funding outpoint of the test channel.
+func fundingPointOption(chanPoint wire.OutPoint) testChannelOption {
+	return func(channel *OpenChannel) {
+		channel.FundingOutpoint = chanPoint
+	}
+}
+
+// channelIDOption sets the short channel ID of the test channel.
+func channelIDOption(chanID lnwire.ShortChannelID) testChannelOption {
+	return func(channel *OpenChannel) {
+		channel.ShortChannelID = chanID
+	}
+}
+
+// pubKeyOption sets the remote node public key of the test channel.
+func pubKeyOption(pubKey *btcec.PublicKey) testChannelOption {
+	return func(channel *OpenChannel) {
+		channel.IdentityPub = pubKey
+	}
+}
+
+// localHtlcsOption sets the local commitment HTLCs of the test channel.
+func localHtlcsOption(htlcs []HTLC) testChannelOption {
+	return func(channel *OpenChannel) {
+		channel.LocalCommitment.Htlcs = htlcs
+	}
+}
+
+// remoteHtlcsOption sets the remote commitment HTLCs of the test channel.
+func remoteHtlcsOption(htlcs []HTLC) testChannelOption {
+	return func(channel *OpenChannel) {
+		channel.RemoteCommitment.Htlcs = htlcs
+	}
+}
 
 // localShutdownOption is an option which sets the local upfront shutdown
 // script for the channel.
@@ -81,10 +117,12 @@ func createTestChannel(t *testing.T, store *KVStore,
 	return channel
 }
 
-func createTestOpenChannel(t *testing.T, store *KVStore) *OpenChannel {
+func createTestOpenChannel(t *testing.T, store *KVStore,
+	opts ...testChannelOption) *OpenChannel {
+
 	t.Helper()
 
-	channel := createTestChannel(t, store)
+	channel := createTestChannel(t, store, opts...)
 
 	err := channel.MarkAsOpen(channel.ShortChannelID)
 	require.NoError(t, err, "unable to mark channel open")

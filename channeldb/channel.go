@@ -77,27 +77,6 @@ var (
 	ErrOnionBlobLength = cstate.ErrOnionBlobLength
 )
 
-type (
-	// ChannelCommitment is a snapshot of the commitment state at a
-	// particular point in the commitment chain.
-	ChannelCommitment = cstate.ChannelCommitment
-
-	// HTLC is the on-disk representation of a hash time-locked contract.
-	HTLC = cstate.HTLC
-
-	// LogUpdate represents a pending update to the remote commitment
-	// chain.
-	LogUpdate = cstate.LogUpdate
-
-	// CommitDiff represents the delta needed to apply the state
-	// transition between two subsequent commitment states.
-	CommitDiff = cstate.CommitDiff
-)
-
-// ChannelType is an enum-like type that describes one of several possible
-// channel types.
-type ChannelType = cstate.ChannelType
-
 const (
 	// SingleFunderBit represents a channel wherein one party solely funds
 	// the entire capacity of the channel.
@@ -155,22 +134,6 @@ const (
 	// final/production taproot scripts and feature bits 80/81.
 	TaprootFinalBit = cstate.TaprootFinalBit
 )
-
-// ChannelStateBounds are the parameters from OpenChannel and AcceptChannel
-// that bound the abstract channel state.
-type ChannelStateBounds = cstate.ChannelStateBounds
-
-// CommitmentParams are the parameters from OpenChannel and AcceptChannel that
-// are required to render an abstract channel state to a concrete commitment
-// transaction.
-type CommitmentParams = cstate.CommitmentParams
-
-// ChannelConfig houses the channel configuration for one side of a channel.
-type ChannelConfig = cstate.ChannelConfig
-
-// ChannelStatus is a bit vector used to indicate whether an OpenChannel is in
-// the default usable state, or a state where it shouldn't be used.
-type ChannelStatus = cstate.ChannelStatus
 
 var (
 	// ChanStatusDefault is the normal state of an open channel.
@@ -239,7 +202,7 @@ var (
 //
 // NOTE: This API is NOT stable, the on-disk format will likely change in the
 // future.
-func SerializeHtlcs(b io.Writer, htlcs ...HTLC) error {
+func SerializeHtlcs(b io.Writer, htlcs ...cstate.HTLC) error {
 	return cstate.SerializeHtlcs(b, htlcs...)
 }
 
@@ -260,12 +223,9 @@ func SerializeHtlcs(b io.Writer, htlcs ...HTLC) error {
 //
 // NOTE: This API is NOT stable, the on-disk format will likely change in the
 // future.
-func DeserializeHtlcs(r io.Reader) ([]HTLC, error) {
+func DeserializeHtlcs(r io.Reader) ([]cstate.HTLC, error) {
 	return cstate.DeserializeHtlcs(r)
 }
-
-// FinalHtlcInfo contains information about the final outcome of an htlc.
-type FinalHtlcInfo = cstate.FinalHtlcInfo
 
 const (
 	// CooperativeClose indicates that a channel has been closed
@@ -293,25 +253,6 @@ const (
 	Abandoned = cstate.Abandoned
 )
 
-// ChannelCloseSummary contains the final state of a channel at the point it
-// was closed.
-type ChannelCloseSummary = cstate.ChannelCloseSummary
-
-// ChannelSnapshot is a frozen snapshot of the current channel state.
-type ChannelSnapshot = cstate.ChannelSnapshot
-
-func serializeChannelCloseSummary(w io.Writer, cs *ChannelCloseSummary) error {
-	return cstate.SerializeChannelCloseSummary(w, cs)
-}
-
-func deserializeCloseChannelSummary(r io.Reader) (*ChannelCloseSummary, error) {
-	return cstate.DeserializeCloseChannelSummary(r)
-}
-
-func serializeChanCommit(w io.Writer, c *ChannelCommitment) error {
-	return cstate.SerializeChanCommit(w, c)
-}
-
 // makeLogKey converts a uint64 into an 8 byte array.
 //
 // TODO(chanstate): remove together with the deprecated revocation log
@@ -333,13 +274,9 @@ func DKeyLocator(r io.Reader, val interface{}, buf *[8]byte, l uint64) error {
 	return cstate.DKeyLocator(r, val, buf, l)
 }
 
-// ShutdownInfo contains various info about the shutdown initiation of a
-// channel.
-type ShutdownInfo = cstate.ShutdownInfo
-
 // NewShutdownInfo constructs a new ShutdownInfo object.
 func NewShutdownInfo(deliveryScript lnwire.DeliveryAddress,
-	locallyInitiated bool) *ShutdownInfo {
+	locallyInitiated bool) *cstate.ShutdownInfo {
 
 	return cstate.NewShutdownInfo(deliveryScript, locallyInitiated)
 }

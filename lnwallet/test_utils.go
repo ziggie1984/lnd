@@ -127,7 +127,7 @@ func SetTestChannelDBRegistrar(registrar func(*chanstate.OpenChannel,
 // allocated to each side. Within the channel, Alice is the initiator. If
 // tweaklessCommits is true, then the commits within the channels will use the
 // new format, otherwise the legacy format.
-func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
+func CreateTestChannels(t *testing.T, chanType chanstate.ChannelType,
 	dbModifiers ...channeldb.OptionModifier) (*LightningChannel,
 	*LightningChannel, error) {
 
@@ -144,7 +144,7 @@ func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
 
 // createTestChannels creates a pair of test channels with a configurable
 // capacity, initiator balance before fees and commitment fee rate.
-func createTestChannels(t *testing.T, chanType channeldb.ChannelType,
+func createTestChannels(t *testing.T, chanType chanstate.ChannelType,
 	channelCapacity, aliceBalanceBeforeFees btcutil.Amount,
 	feePerKw chainfee.SatPerKWeight,
 	dbModifiers ...channeldb.OptionModifier) (*LightningChannel,
@@ -183,14 +183,14 @@ func createTestChannels(t *testing.T, chanType channeldb.ChannelType,
 		bobKeys = append(bobKeys, bobKey)
 	}
 
-	aliceCfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	aliceCfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: lnwire.NewMSatFromSatoshis(channelCapacity),
 			ChanReserve:      channelCapacity / 100,
 			MinHTLC:          0,
 			MaxAcceptedHtlcs: input.MaxHTLCNumber / 2,
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: aliceDustLimit,
 			CsvDelay:  uint16(csvTimeoutAlice),
 		},
@@ -210,14 +210,14 @@ func createTestChannels(t *testing.T, chanType channeldb.ChannelType,
 			PubKey: aliceKeys[4].PubKey(),
 		},
 	}
-	bobCfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	bobCfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: lnwire.NewMSatFromSatoshis(channelCapacity),
 			ChanReserve:      channelCapacity / 100,
 			MinHTLC:          0,
 			MaxAcceptedHtlcs: input.MaxHTLCNumber / 2,
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: bobDustLimit,
 			CsvDelay:  uint16(csvTimeoutBob),
 		},
@@ -283,7 +283,7 @@ func createTestChannels(t *testing.T, chanType channeldb.ChannelType,
 	)
 	bobBalanceMSat := lnwire.NewMSatFromSatoshis(bobBalance)
 
-	aliceLocalCommit := channeldb.ChannelCommitment{
+	aliceLocalCommit := chanstate.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  aliceBalance,
 		RemoteBalance: bobBalanceMSat,
@@ -292,7 +292,7 @@ func createTestChannels(t *testing.T, chanType channeldb.ChannelType,
 		CommitTx:      aliceCommitTx,
 		CommitSig:     testSigBytes,
 	}
-	aliceRemoteCommit := channeldb.ChannelCommitment{
+	aliceRemoteCommit := chanstate.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  aliceBalance,
 		RemoteBalance: bobBalanceMSat,
@@ -301,7 +301,7 @@ func createTestChannels(t *testing.T, chanType channeldb.ChannelType,
 		CommitTx:      bobCommitTx,
 		CommitSig:     testSigBytes,
 	}
-	bobLocalCommit := channeldb.ChannelCommitment{
+	bobLocalCommit := chanstate.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  bobBalanceMSat,
 		RemoteBalance: aliceBalance,
@@ -310,7 +310,7 @@ func createTestChannels(t *testing.T, chanType channeldb.ChannelType,
 		CommitTx:      bobCommitTx,
 		CommitSig:     testSigBytes,
 	}
-	bobRemoteCommit := channeldb.ChannelCommitment{
+	bobRemoteCommit := chanstate.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  bobBalanceMSat,
 		RemoteBalance: aliceBalance,
@@ -563,7 +563,9 @@ func txFromHex(txHex string) (*btcutil.Tx, error) {
 // calculations into account.
 //
 // TODO(bvu): Refactor when dynamic fee estimation is added.
-func calcStaticFee(chanType channeldb.ChannelType, numHTLCs int) btcutil.Amount {
+func calcStaticFee(
+	chanType chanstate.ChannelType, numHTLCs int) btcutil.Amount {
+
 	const (
 		htlcWeight = 172
 		feePerKw   = btcutil.Amount(24/4) * 1000

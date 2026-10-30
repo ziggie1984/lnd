@@ -13,17 +13,6 @@ const (
 	OutputIndexEmpty = cstate.OutputIndexEmpty
 )
 
-type (
-	// HTLCEntry specifies the minimal info needed to be stored on disk for
-	// ALL the historical HTLCs, which is useful for constructing
-	// RevocationLog when a breach is detected.
-	HTLCEntry = cstate.HTLCEntry
-
-	// RevocationLog stores the info needed to construct a breach
-	// retribution.
-	RevocationLog = cstate.RevocationLog
-)
-
 var (
 	// NewSparsePayHash creates a new SparsePayHash from a 32 byte array.
 	NewSparsePayHash = cstate.NewSparsePayHash
@@ -44,47 +33,12 @@ var (
 	ErrOutputIndexTooBig = cstate.ErrOutputIndexTooBig
 )
 
-// putRevocationLog uses the fields `CommitTx` and `Htlcs` from a
-// ChannelCommitment to construct a revocation log entry and saves them to
-// disk. It also saves our output index and their output index, which are
-// useful when creating breach retribution.
-func putRevocationLog(bucket kvdb.RwBucket, commit *ChannelCommitment,
-	ourOutputIndex, theirOutputIndex uint32, noAmtData bool) error {
-
-	return cstate.PutRevocationLog(
-		bucket, commit, ourOutputIndex, theirOutputIndex, noAmtData,
-	)
-}
-
 // fetchRevocationLog queries the revocation log bucket to find an log entry.
 // Return an error if not found.
 func fetchRevocationLog(log kvdb.RBucket,
-	updateNum uint64) (RevocationLog, error) {
+	updateNum uint64) (cstate.RevocationLog, error) {
 
 	return cstate.FetchRevocationLog(log, updateNum)
-}
-
-// serializeRevocationLog serializes a RevocationLog record based on tlv
-// format.
-func serializeRevocationLog(w io.Writer, rl *RevocationLog) error {
-	return cstate.SerializeRevocationLog(w, rl)
-}
-
-// serializeHTLCEntries serializes a list of HTLCEntry records based on tlv
-// format.
-func serializeHTLCEntries(w io.Writer, htlcs []*HTLCEntry) error {
-	return cstate.SerializeHTLCEntries(w, htlcs)
-}
-
-// deserializeRevocationLog deserializes a RevocationLog based on tlv format.
-func deserializeRevocationLog(r io.Reader) (RevocationLog, error) {
-	return cstate.DeserializeRevocationLog(r)
-}
-
-// deserializeHTLCEntries deserializes a list of HTLC entries based on tlv
-// format.
-func deserializeHTLCEntries(r io.Reader) ([]*HTLCEntry, error) {
-	return cstate.DeserializeHTLCEntries(r)
 }
 
 // writeTlvStream is a helper function that encodes the tlv stream into the
@@ -99,6 +53,14 @@ func readTlvStream(r io.Reader, s *tlv.Stream) (tlv.TypeMap, error) {
 	return cstate.ReadTlvStream(r, s)
 }
 
+// fetchOldRevocationLog finds the revocation log from the deprecated
+// sub-bucket.
+func fetchOldRevocationLog(log kvdb.RBucket,
+	updateNum uint64) (cstate.ChannelCommitment, error) {
+
+	return cstate.FetchOldRevocationLog(log, updateNum)
+}
+
 // fetchRevocationLogCompatible finds the revocation log from both the
 // revocationLogBucket and revocationLogBucketDeprecated for compatibility
 // concern. It returns three values,
@@ -108,7 +70,8 @@ func readTlvStream(r io.Reader, s *tlv.Stream) (tlv.TypeMap, error) {
 //     old bucket.
 //   - error, this can happen if the log cannot be found in neither buckets.
 func fetchRevocationLogCompatible(chanBucket kvdb.RBucket,
-	updateNum uint64) (*RevocationLog, *ChannelCommitment, error) {
+	updateNum uint64) (*cstate.RevocationLog, *cstate.ChannelCommitment,
+	error) {
 
 	return cstate.FetchRevocationLogCompatible(chanBucket, updateNum)
 }

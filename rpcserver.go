@@ -4928,7 +4928,7 @@ func (r *rpcServer) ListChannels(ctx context.Context,
 
 // rpcCommitmentType takes the channel type and converts it to an rpc commitment
 // type value.
-func rpcCommitmentType(chanType channeldb.ChannelType) lnrpc.CommitmentType {
+func rpcCommitmentType(chanType chanstate.ChannelType) lnrpc.CommitmentType {
 	// Extract the commitment type from the channel type flags. We must
 	// first check whether it has anchors, since in that case it would also
 	// be tweakless.
@@ -4960,7 +4960,8 @@ func rpcCommitmentType(chanType channeldb.ChannelType) lnrpc.CommitmentType {
 // createChannelConstraint creates a *lnrpc.ChannelConstraints using the
 // *Channeldb.ChannelConfig.
 func createChannelConstraint(
-	chanCfg *channeldb.ChannelConfig) *lnrpc.ChannelConstraints {
+	chanCfg *chanstate.ChannelConfig) *lnrpc.ChannelConstraints {
+
 	return &lnrpc.ChannelConstraints{
 		CsvDelay:          uint32(chanCfg.CsvDelay),
 		ChanReserveSat:    uint64(chanCfg.ChanReserve),
@@ -5282,9 +5283,9 @@ func createRPCOpenChannel(ctx context.Context, r *rpcServer,
 }
 
 // createRPCClosedChannel creates an *lnrpc.ClosedChannelSummary from a
-// *channeldb.ChannelCloseSummary.
+// *chanstate.ChannelCloseSummary.
 func (r *rpcServer) createRPCClosedChannel(
-	dbChannel *channeldb.ChannelCloseSummary) (*lnrpc.ChannelCloseSummary,
+	dbChannel *chanstate.ChannelCloseSummary) (*lnrpc.ChannelCloseSummary,
 	error) {
 
 	nodePub := dbChannel.RemotePub

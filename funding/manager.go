@@ -1809,13 +1809,13 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 
 	// We'll also validate and apply all the constraints the initiating
 	// party is attempting to dictate for our commitment transaction.
-	stateBounds := &channeldb.ChannelStateBounds{
+	stateBounds := &chanstate.ChannelStateBounds{
 		ChanReserve:      msg.ChannelReserve,
 		MaxPendingAmount: msg.MaxValueInFlight,
 		MinHTLC:          msg.HtlcMinimum,
 		MaxAcceptedHtlcs: msg.MaxAcceptedHTLCs,
 	}
-	commitParams := &channeldb.CommitmentParams{
+	commitParams := &chanstate.CommitmentParams{
 		DustLimit: msg.DustLimit,
 		CsvDelay:  msg.CsvDelay,
 	}
@@ -1963,14 +1963,14 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 	// Update the timestamp once the fundingOpenMsg has been handled.
 	defer resCtx.updateTimestamp()
 
-	cfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	cfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: remoteMaxValue,
 			ChanReserve:      chanReserve,
 			MinHTLC:          minHtlc,
 			MaxAcceptedHtlcs: maxHtlcs,
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: msg.DustLimit,
 			CsvDelay:  remoteCsvDelay,
 		},
@@ -2180,13 +2180,13 @@ func (f *Manager) funderProcessAcceptChannel(peer lnpeer.Peer,
 	// required confirmations, and also the set of channel constraints
 	// they've specified for commitment states we can create.
 	resCtx.reservation.SetNumConfsRequired(uint16(minDepth))
-	bounds := channeldb.ChannelStateBounds{
+	bounds := chanstate.ChannelStateBounds{
 		ChanReserve:      msg.ChannelReserve,
 		MaxPendingAmount: msg.MaxValueInFlight,
 		MinHTLC:          msg.HtlcMinimum,
 		MaxAcceptedHtlcs: msg.MaxAcceptedHTLCs,
 	}
-	commitParams := channeldb.CommitmentParams{
+	commitParams := chanstate.CommitmentParams{
 		DustLimit: msg.DustLimit,
 		CsvDelay:  msg.CsvDelay,
 	}
@@ -2199,14 +2199,14 @@ func (f *Manager) funderProcessAcceptChannel(peer lnpeer.Peer,
 		return
 	}
 
-	cfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	cfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: resCtx.remoteMaxValue,
 			ChanReserve:      resCtx.remoteChanReserve,
 			MinHTLC:          resCtx.remoteMinHtlc,
 			MaxAcceptedHtlcs: resCtx.remoteMaxHtlcs,
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: msg.DustLimit,
 			CsvDelay:  resCtx.remoteCsvDelay,
 		},
@@ -2614,7 +2614,7 @@ func (f *Manager) fundeeProcessFundingCreated(peer lnpeer.Peer,
 	// from the database.
 	deleteFromDatabase := func() {
 		localBalance := completeChan.LocalCommitment.LocalBalance.ToSatoshis()
-		closeInfo := &channeldb.ChannelCloseSummary{
+		closeInfo := &chanstate.ChannelCloseSummary{
 			ChanPoint:               completeChan.FundingOutpoint,
 			ChainHash:               completeChan.ChainHash,
 			RemotePub:               completeChan.IdentityPub,
@@ -2984,7 +2984,7 @@ func (f *Manager) fundingTimeout(c *chanstate.OpenChannel,
 	// was initiated reaches MaxWaitNumBlocksFundingConf and we are not the
 	// channel initiator.
 	localBalance := c.LocalCommitment.LocalBalance.ToSatoshis()
-	closeInfo := &channeldb.ChannelCloseSummary{
+	closeInfo := &chanstate.ChannelCloseSummary{
 		ChainHash:               c.ChainHash,
 		ChanPoint:               c.FundingOutpoint,
 		RemotePub:               c.IdentityPub,
@@ -4596,7 +4596,7 @@ func (f *Manager) newChanAnnouncement(localPubKey,
 	remoteFundingKey *btcec.PublicKey, shortChanID lnwire.ShortChannelID,
 	chanID lnwire.ChannelID, fwdMinHTLC, fwdMaxHTLC lnwire.MilliSatoshi,
 	ourPolicy *models.ChannelEdgePolicy,
-	chanType channeldb.ChannelType) (*chanAnnouncement, error) {
+	chanType chanstate.ChannelType) (*chanAnnouncement, error) {
 
 	chainHash := *f.cfg.Wallet.Cfg.NetParams.GenesisHash
 
@@ -4802,7 +4802,7 @@ func (f *Manager) newChanAnnouncement(localPubKey,
 func (f *Manager) announceChannel(localIDKey, remoteIDKey *btcec.PublicKey,
 	localFundingKey *keychain.KeyDescriptor,
 	remoteFundingKey *btcec.PublicKey, shortChanID lnwire.ShortChannelID,
-	chanID lnwire.ChannelID, chanType channeldb.ChannelType) error {
+	chanID lnwire.ChannelID, chanType chanstate.ChannelType) error {
 
 	// First, we'll create the batch of announcements to be sent upon
 	// initial channel creation. This includes the channel announcement
@@ -5242,13 +5242,13 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	defer resCtx.updateTimestamp()
 
 	// Check the sanity of the selected channel constraints.
-	bounds := &channeldb.ChannelStateBounds{
+	bounds := &chanstate.ChannelStateBounds{
 		ChanReserve:      chanReserve,
 		MaxPendingAmount: maxValue,
 		MinHTLC:          minHtlcIn,
 		MaxAcceptedHtlcs: maxHtlcs,
 	}
-	commitParams := &channeldb.CommitmentParams{
+	commitParams := &chanstate.CommitmentParams{
 		DustLimit: ourDustLimit,
 		CsvDelay:  remoteCsvDelay,
 	}
@@ -5528,7 +5528,7 @@ func copyPubKey(pub *btcec.PublicKey) *btcec.PublicKey {
 // defaultForwardingPolicy returns the default forwarding policy based on the
 // default routing policy and our local channel constraints.
 func (f *Manager) defaultForwardingPolicy(
-	bounds channeldb.ChannelStateBounds) *models.ForwardingPolicy {
+	bounds chanstate.ChannelStateBounds) *models.ForwardingPolicy {
 
 	return &models.ForwardingPolicy{
 		MinHTLCOut:    bounds.MinHTLC,

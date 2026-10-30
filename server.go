@@ -1273,7 +1273,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 	}, nodeKeyDesc)
 
 	accessCfg := &accessManConfig{
-		initAccessPerms: func() (map[string]channeldb.ChanCount,
+		initAccessPerms: func() (map[string]chanstate.ChanCount,
 			error) {
 
 			genesisHash := *s.cfg.ActiveNetParams.GenesisHash
@@ -1895,7 +1895,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		// channel ID and commitment height.
 		buildBreachRetribution := func(chanID lnwire.ChannelID,
 			commitHeight uint64) (*lnwallet.BreachRetribution,
-			channeldb.ChannelType, error) {
+			chanstate.ChannelType, error) {
 
 			channel, err := s.channelStore.FetchChannelByID(chanID)
 			if err != nil {

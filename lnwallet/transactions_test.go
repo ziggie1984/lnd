@@ -204,7 +204,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 	vectorSets := []struct {
 		name     string
 		jsonFile string
-		chanType channeldb.ChannelType
+		chanType chanstate.ChannelType
 	}{
 		{
 			name:     "legacy",
@@ -300,7 +300,7 @@ func addTestHtlcs(t *testing.T, remote, local *LightningChannel,
 // testVectors executes a commit dance to end up with the commitment transaction
 // that is described in the test vectors and then asserts that all values are
 // correct.
-func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
+func testVectors(t *testing.T, chanType chanstate.ChannelType, test testCase) {
 	tc := newTestContext(t)
 
 	// Determine which htlc set to use.
@@ -605,15 +605,15 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// Calculate the dust limit we'll use for the test.
 	dustLimit := DustLimitForSize(input.UnknownWitnessSize)
 
-	aliceChanCfg := &channeldb.ChannelConfig{
-		CommitmentParams: channeldb.CommitmentParams{
+	aliceChanCfg := &chanstate.ChannelConfig{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: dustLimit,
 			CsvDelay:  csvTimeout,
 		},
 	}
 
-	bobChanCfg := &channeldb.ChannelConfig{
-		CommitmentParams: channeldb.CommitmentParams{
+	bobChanCfg := &chanstate.ChannelConfig{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: dustLimit,
 			CsvDelay:  csvTimeout,
 		},
@@ -807,7 +807,8 @@ func (p *mockProducer) Encode(w io.Writer) error {
 
 // createTestChannelsForVectors creates two LightningChannel instances for the
 // test channel that is used to verify the test vectors.
-func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelType,
+func createTestChannelsForVectors(
+	tc *testContext, chanType chanstate.ChannelType,
 	feeRate btcutil.Amount, remoteBalance, localBalance btcutil.Amount) (
 	*LightningChannel, *LightningChannel) {
 
@@ -836,8 +837,8 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	}
 
 	// Define channel configurations.
-	remoteCfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	remoteCfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: lnwire.NewMSatFromSatoshis(
 				tc.fundingAmount,
 			),
@@ -845,7 +846,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 			MinHTLC:          0,
 			MaxAcceptedHtlcs: input.MaxHTLCNumber / 2,
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: tc.dustLimit,
 			CsvDelay:  tc.localCsvDelay,
 		},
@@ -865,8 +866,8 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 			PubKey: tc.remoteRevocationBasepointSecret.PubKey(),
 		},
 	}
-	localCfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	localCfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: lnwire.NewMSatFromSatoshis(
 				tc.fundingAmount,
 			),
@@ -874,7 +875,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 			MinHTLC:          0,
 			MaxAcceptedHtlcs: input.MaxHTLCNumber / 2,
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: tc.dustLimit,
 			CsvDelay:  tc.localCsvDelay,
 		},
@@ -941,7 +942,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	// to get to the right test point.
 	var commitHeight = tc.commitHeight - 1
 
-	remoteCommit := channeldb.ChannelCommitment{
+	remoteCommit := chanstate.ChannelCommitment{
 		CommitHeight:  commitHeight,
 		LocalBalance:  lnwire.NewMSatFromSatoshis(remoteBalance),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(localBalance - commitFee - anchorAmt),
@@ -950,7 +951,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 		CommitTx:      remoteCommitTx,
 		CommitSig:     testSigBytes,
 	}
-	localCommit := channeldb.ChannelCommitment{
+	localCommit := chanstate.ChannelCommitment{
 		CommitHeight:  commitHeight,
 		LocalBalance:  lnwire.NewMSatFromSatoshis(localBalance - commitFee - anchorAmt),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(remoteBalance),

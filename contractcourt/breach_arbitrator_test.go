@@ -1615,7 +1615,7 @@ func testBreachSpends(t *testing.T, test breachTest) {
 	}
 
 	state := alice.State()
-	err = state.CloseChannel(&channeldb.ChannelCloseSummary{
+	err = state.CloseChannel(&chanstate.ChannelCloseSummary{
 		ChanPoint:               state.FundingOutpoint,
 		ChainHash:               state.ChainHash,
 		RemotePub:               state.IdentityPub,
@@ -1831,7 +1831,7 @@ func TestBreachDelayedJusticeConfirmation(t *testing.T) {
 	}
 
 	state := alice.State()
-	err = state.CloseChannel(&channeldb.ChannelCloseSummary{
+	err = state.CloseChannel(&chanstate.ChannelCloseSummary{
 		ChanPoint:               state.FundingOutpoint,
 		ChainHash:               state.ChainHash,
 		RemotePub:               state.IdentityPub,
@@ -2193,14 +2193,14 @@ func createInitChannels(t *testing.T) (
 	}
 	fundingTxIn := wire.NewTxIn(prevOut, nil, nil)
 
-	aliceCfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	aliceCfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: lnwire.MilliSatoshi(rand.Int63()),
 			ChanReserve:      0,
 			MinHTLC:          0,
 			MaxAcceptedHtlcs: uint16(rand.Int31()),
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: aliceDustLimit,
 			CsvDelay:  uint16(csvTimeoutAlice),
 		},
@@ -2220,14 +2220,14 @@ func createInitChannels(t *testing.T) (
 			PubKey: aliceKeyPub,
 		},
 	}
-	bobCfg := channeldb.ChannelConfig{
-		ChannelStateBounds: channeldb.ChannelStateBounds{
+	bobCfg := chanstate.ChannelConfig{
+		ChannelStateBounds: chanstate.ChannelStateBounds{
 			MaxPendingAmount: lnwire.MilliSatoshi(rand.Int63()),
 			ChanReserve:      0,
 			MinHTLC:          0,
 			MaxAcceptedHtlcs: uint16(rand.Int31()),
 		},
-		CommitmentParams: channeldb.CommitmentParams{
+		CommitmentParams: chanstate.CommitmentParams{
 			DustLimit: bobDustLimit,
 			CsvDelay:  uint16(csvTimeoutBob),
 		},
@@ -2291,7 +2291,7 @@ func createInitChannels(t *testing.T) (
 	commitFee := feePerKw.FeeForWeight(input.CommitWeight)
 
 	// TODO(roasbeef): need to factor in commit fee?
-	aliceCommit := channeldb.ChannelCommitment{
+	aliceCommit := chanstate.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal - commitFee),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal),
@@ -2300,7 +2300,7 @@ func createInitChannels(t *testing.T) (
 		CommitTx:      aliceCommitTx,
 		CommitSig:     bytes.Repeat([]byte{1}, 71),
 	}
-	bobCommit := channeldb.ChannelCommitment{
+	bobCommit := chanstate.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal - commitFee),

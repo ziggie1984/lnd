@@ -22,7 +22,6 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/wallet"
-	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
@@ -1573,9 +1572,9 @@ type CreateCommitOpt func(*createCommitOpts)
 // remote party's commitment transaction, and verify the signature for their
 // version of the commitment transaction.
 func CreateCommitmentTxns(localBalance, remoteBalance btcutil.Amount,
-	ourChanCfg, theirChanCfg *channeldb.ChannelConfig,
+	ourChanCfg, theirChanCfg *chanstate.ChannelConfig,
 	localCommitPoint, remoteCommitPoint *btcec.PublicKey,
-	fundingTxIn wire.TxIn, chanType channeldb.ChannelType, initiator bool,
+	fundingTxIn wire.TxIn, chanType chanstate.ChannelType, initiator bool,
 	leaseExpiry uint32, opts ...CreateCommitOpt) (*wire.MsgTx, *wire.MsgTx,
 	error) {
 

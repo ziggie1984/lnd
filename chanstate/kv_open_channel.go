@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btcwallet/walletdb"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -78,6 +79,11 @@ var (
 // OpenChannelBucketKey returns the top-level open-channel bucket key.
 func OpenChannelBucketKey() []byte {
 	return openChannelBucket
+}
+
+// OpenChannelBucket returns the top-level open-channel bucket.
+func OpenChannelBucket(tx kvdb.RTx) kvdb.RBucket {
+	return tx.ReadBucket(openChannelBucket)
 }
 
 // OutpointBucketKey returns the top-level outpoint index bucket key.
@@ -186,10 +192,10 @@ func IsOutpointClosed(opBucket kvdb.RBucket, chanKey []byte) (bool, error) {
 	return IndexStatus(status) == OutpointClosed, nil
 }
 
-// FetchChanBucket is a helper function that returns the bucket where a
+// fetchChanBucket is a helper function that returns the bucket where a
 // channel's data resides in given: the public key for the node, the outpoint,
 // and the chainhash that the channel resides on.
-func FetchChanBucket(tx kvdb.RTx, nodeKey *btcec.PublicKey,
+func fetchChanBucket(tx kvdb.RTx, nodeKey *btcec.PublicKey,
 	outPoint *wire.OutPoint, chainHash chainhash.Hash) (
 	kvdb.RBucket, error) {
 
@@ -245,11 +251,11 @@ func FetchChanBucket(tx kvdb.RTx, nodeKey *btcec.PublicKey,
 	return chanBucket, nil
 }
 
-// FetchChanBucketRw is a helper function that returns the bucket where a
+// fetchChanBucketRw is a helper function that returns the bucket where a
 // channel's data resides in given: the public key for the node, the outpoint,
 // and the chainhash that the channel resides on. This differs from
-// FetchChanBucket in that it returns a writeable bucket.
-func FetchChanBucketRw(tx kvdb.RwTx, nodeKey *btcec.PublicKey,
+// fetchChanBucket in that it returns a writeable bucket.
+func fetchChanBucketRw(tx kvdb.RwTx, nodeKey *btcec.PublicKey,
 	outPoint *wire.OutPoint, chainHash chainhash.Hash) (kvdb.RwBucket,
 	error) {
 
@@ -334,9 +340,9 @@ func DeleteThawHeight(chanBucket kvdb.RwBucket) error {
 	return chanBucket.Delete(frozenChanKey)
 }
 
-// FullSyncOpenChannel syncs the contents of an OpenChannel while re-using an
+// fullSyncOpenChannel syncs the contents of an OpenChannel while re-using an
 // existing database transaction.
-func FullSyncOpenChannel(tx kvdb.RwTx, c *OpenChannel) error {
+func fullSyncOpenChannel(tx kvdb.RwTx, c *OpenChannel) error {
 	// Fetch the outpoint bucket and check if the outpoint already exists.
 	opBucket := tx.ReadWriteBucket(outpointBucket)
 	if opBucket == nil {
@@ -739,14 +745,806 @@ func SyncPendingOpenChannel(tx kvdb.RwTx, channel *OpenChannel,
 
 	channel.FundingBroadcastHeight = pendingHeight
 
-	return FullSyncOpenChannel(tx, channel)
+	return fullSyncOpenChannel(tx, channel)
+}
+
+// FetchOpenChannels starts a new database transaction and returns all stored
+// currently active/open channels associated with the target nodeID. In the
+// case that no active channels are known to have been created with this node,
+// then a zero-length slice is returned.
+func (s *KVStore) FetchOpenChannels(nodeID *btcec.PublicKey) (
+	[]*OpenChannel, error) {
+
+	var channels []*OpenChannel
+	err := kvdb.View(s.backend, func(tx kvdb.RTx) error {
+		var err error
+		channels, err = FetchOpenChannelsTx(tx, nodeID)
+
+		return err
+	}, func() {
+		channels = nil
+	})
+
+	return s.attachOpenChannelStores(channels), err
+}
+
+func (s *KVStore) attachOpenChannelStore(channel *OpenChannel) *OpenChannel {
+	if channel != nil {
+		channel.Db = s
+	}
+
+	return channel
+}
+
+func (s *KVStore) attachOpenChannelStores(
+	channels []*OpenChannel) []*OpenChannel {
+
+	for _, channel := range channels {
+		s.attachOpenChannelStore(channel)
+	}
+
+	return channels
+}
+
+// FetchOpenChannelsTx uses an existing database transaction and returns all
+// stored currently active/open channels associated with the target nodeID. In
+// the case that no active channels are known to have been created with this
+// node, then a zero-length slice is returned.
+func FetchOpenChannelsTx(tx kvdb.RTx,
+	nodeID *btcec.PublicKey) ([]*OpenChannel, error) {
+
+	// Get the bucket dedicated to storing the metadata for open channels.
+	openChanBucket := tx.ReadBucket(openChannelBucket)
+	if openChanBucket == nil {
+		return nil, nil
+	}
+
+	// Within this top level bucket, fetch the bucket dedicated to storing
+	// open channel data specific to the remote node.
+	pub := nodeID.SerializeCompressed()
+	nodeChanBucket := openChanBucket.NestedReadBucket(pub)
+	if nodeChanBucket == nil {
+		return nil, nil
+	}
+
+	// Next, we'll need to go down an additional layer in order to retrieve
+	// the channels for each chain the node knows of.
+	var channels []*OpenChannel
+	err := nodeChanBucket.ForEach(func(chainHash, v []byte) error {
+		// If there's a value, it's not a bucket so ignore it.
+		if v != nil {
+			return nil
+		}
+
+		// If we've found a valid chainhash bucket, then we'll retrieve
+		// that so we can extract all the channels.
+		chainBucket := nodeChanBucket.NestedReadBucket(chainHash)
+		if chainBucket == nil {
+			return fmt.Errorf("unable to read bucket for chain=%x",
+				chainHash)
+		}
+
+		// Finally, we both of the necessary buckets retrieved, fetch
+		// all the active channels related to this node.
+		nodeChannels, err := fetchNodeChannels(tx, chainBucket)
+		if err != nil {
+			return fmt.Errorf("unable to read channel for "+
+				"chain_hash=%x, node_key=%x: %v",
+				chainHash, pub, err)
+		}
+
+		channels = append(channels, nodeChannels...)
+
+		return nil
+	})
+
+	return channels, err
+}
+
+// fetchNodeChannels retrieves all active channels from the target chainBucket
+// which is under a node's dedicated channel bucket. This function is typically
+// used to fetch all the active channels related to a particular node. Channels
+// already flipped to outpointClosed in the outpoint index are skipped silently
+// — readers see only channels that are still considered open.
+func fetchNodeChannels(tx kvdb.RTx,
+	chainBucket kvdb.RBucket) ([]*OpenChannel, error) {
+
+	var channels []*OpenChannel
+
+	// Hoist the outpoint-bucket lookup so the closed-channel check inside
+	// the loop is a per-iteration map probe rather than a tx-level bucket
+	// resolve.
+	opBucket := tx.ReadBucket(outpointBucket)
+
+	// A node may have channels on several chains, so for each known chain,
+	// we'll extract all the channels.
+	err := chainBucket.ForEach(func(chanPoint, v []byte) error {
+		// If there's a value, it's not a bucket so ignore it.
+		if v != nil {
+			return nil
+		}
+
+		// Skip already-closed channels. The chanBucket still exists
+		// on disk on tombstone-enabled backends; the outpoint flip is
+		// the sole signal that the channel should be treated as
+		// closed.
+		isClosed, err := IsOutpointClosed(opBucket, chanPoint)
+		if err != nil {
+			return err
+		}
+		if isClosed {
+			return nil
+		}
+
+		// Once we've found a valid channel bucket, we'll extract it
+		// from the node's chain bucket.
+		chanBucket := chainBucket.NestedReadBucket(chanPoint)
+
+		var outPoint wire.OutPoint
+		err = graphdb.ReadOutpoint(
+			bytes.NewReader(chanPoint), &outPoint,
+		)
+		if err != nil {
+			return err
+		}
+		oChannel, err := FetchOpenChannel(chanBucket, &outPoint)
+		if err != nil {
+			return fmt.Errorf("unable to read channel data for "+
+				"chan_point=%v: %w", outPoint, err)
+		}
+
+		channels = append(channels, oChannel)
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return channels, nil
+}
+
+// FetchChannel attempts to locate a channel specified by the passed channel
+// point. If the channel cannot be found, then an error will be returned.
+func (s *KVStore) FetchChannel(chanPoint wire.OutPoint) (*OpenChannel,
+	error) {
+
+	var targetChanPoint bytes.Buffer
+	err := graphdb.WriteOutpoint(&targetChanPoint, &chanPoint)
+	if err != nil {
+		return nil, err
+	}
+
+	targetChanPointBytes := targetChanPoint.Bytes()
+	selector := func(chainBkt walletdb.ReadBucket) ([]byte, *wire.OutPoint,
+		error) {
+
+		return targetChanPointBytes, &chanPoint, nil
+	}
+
+	return s.channelScanner(nil, selector)
+}
+
+// FetchChannelByID attempts to locate a channel specified by the passed channel
+// ID. If the channel cannot be found, then an error will be returned.
+func (s *KVStore) FetchChannelByID(id lnwire.ChannelID) (*OpenChannel,
+	error) {
+
+	selector := func(chainBkt walletdb.ReadBucket) ([]byte, *wire.OutPoint,
+		error) {
+
+		var (
+			targetChanPointBytes []byte
+			targetChanPoint      *wire.OutPoint
+
+			// errChanFound is used to signal that the channel has
+			// been found so that iteration through the DB buckets
+			// can stop.
+			errChanFound = errors.New("channel found")
+		)
+		err := chainBkt.ForEach(func(k, _ []byte) error {
+			var outPoint wire.OutPoint
+			err := graphdb.ReadOutpoint(
+				bytes.NewReader(k), &outPoint,
+			)
+			if err != nil {
+				return err
+			}
+
+			chanID := lnwire.NewChanIDFromOutPoint(outPoint)
+			if chanID != id {
+				return nil
+			}
+
+			targetChanPoint = &outPoint
+			targetChanPointBytes = k
+
+			return errChanFound
+		})
+		if err != nil && !errors.Is(err, errChanFound) {
+			return nil, nil, err
+		}
+		if targetChanPoint == nil {
+			return nil, nil, ErrChannelNotFound
+		}
+
+		return targetChanPointBytes, targetChanPoint, nil
+	}
+
+	return s.channelScanner(nil, selector)
+}
+
+// FetchPermAndTempPeers returns a map where the key is the remote node's
+// public key and the value is a struct that has a tally of the pending-open
+// channels and whether the peer has an open or closed channel with us.
+func (s *KVStore) FetchPermAndTempPeers(
+	chainHash []byte) (map[string]ChanCount, error) {
+
+	peerChanInfo := make(map[string]ChanCount)
+
+	err := kvdb.View(s.backend, func(tx kvdb.RTx) error {
+		openChanBucket := tx.ReadBucket(openChannelBucket)
+		if openChanBucket == nil {
+			return ErrNoChanDBExists
+		}
+
+		// Hoist the outpoint-bucket lookup so the closed-channel check
+		// inside the nested chainBucket.ForEach below is a per-channel
+		// map probe rather than a tx-level bucket resolve.
+		opBucket := tx.ReadBucket(outpointBucket)
+
+		openChanErr := openChanBucket.ForEach(func(nodePub,
+			v []byte) error {
+
+			// If there is a value, this is not a bucket.
+			if v != nil {
+				return nil
+			}
+
+			nodeChanBucket := openChanBucket.NestedReadBucket(
+				nodePub,
+			)
+			if nodeChanBucket == nil {
+				return nil
+			}
+
+			chainBucket := nodeChanBucket.NestedReadBucket(
+				chainHash,
+			)
+			if chainBucket == nil {
+				return fmt.Errorf("no chain bucket exists")
+			}
+
+			var isPermPeer bool
+			var pendingOpenCount uint64
+
+			internalErr := chainBucket.ForEach(func(chanPoint,
+				val []byte) error {
+
+				// If there is a value, this is not a bucket.
+				if val != nil {
+					return nil
+				}
+
+				// Skip already-closed channels: they are
+				// logically closed even though their
+				// per-channel state still resides under
+				// chainBucket. The closed peer's protected
+				// status is established below via the
+				// historical-channel scan.
+				isClosed, err := IsOutpointClosed(
+					opBucket, chanPoint,
+				)
+				if err != nil {
+					return err
+				}
+				if isClosed {
+					return nil
+				}
+
+				chanBucket := chainBucket.NestedReadBucket(
+					chanPoint,
+				)
+				if chanBucket == nil {
+					return nil
+				}
+
+				var op wire.OutPoint
+				readErr := graphdb.ReadOutpoint(
+					bytes.NewReader(chanPoint), &op,
+				)
+				if readErr != nil {
+					return readErr
+				}
+
+				// We need to go through each channel and look
+				// at the IsPending status.
+				openChan, err := FetchOpenChannel(
+					chanBucket, &op,
+				)
+				if err != nil {
+					return err
+				}
+
+				if openChan.IsPending {
+					// Add to the pending-open count since
+					// this is a temp peer.
+					pendingOpenCount++
+					return nil
+				}
+
+				// Since IsPending is false, this is a perm
+				// peer.
+				isPermPeer = true
+
+				return nil
+			})
+			if internalErr != nil {
+				return internalErr
+			}
+
+			peerCount := ChanCount{
+				HasOpenOrClosedChan: isPermPeer,
+				PendingOpenCount:    pendingOpenCount,
+			}
+			peerChanInfo[string(nodePub)] = peerCount
+
+			return nil
+		})
+		if openChanErr != nil {
+			return openChanErr
+		}
+
+		// Now check the closed channel bucket.
+		historicalChanBucket := tx.ReadBucket(historicalChannelBucket)
+		if historicalChanBucket == nil {
+			return ErrNoHistoricalBucket
+		}
+
+		historicalErr := historicalChanBucket.ForEach(func(chanPoint,
+			v []byte) error {
+
+			// Parse each nested bucket and the chanInfoKey to get
+			// the IsPending bool. This determines whether the
+			// peer is protected or not.
+			if v != nil {
+				// This is not a bucket. This is currently not
+				// possible.
+				return nil
+			}
+
+			chanBucket := historicalChanBucket.NestedReadBucket(
+				chanPoint,
+			)
+			if chanBucket == nil {
+				// This is not possible.
+				return fmt.Errorf("no historical channel " +
+					"bucket exists")
+			}
+
+			var op wire.OutPoint
+			readErr := graphdb.ReadOutpoint(
+				bytes.NewReader(chanPoint), &op,
+			)
+			if readErr != nil {
+				return readErr
+			}
+
+			// This channel is closed, but the structure of the
+			// historical bucket is the same. This is by design,
+			// which means we can call FetchOpenChannel.
+			channel, fetchErr := FetchOpenChannel(chanBucket, &op)
+			if fetchErr != nil {
+				return fetchErr
+			}
+
+			// Only include this peer in the protected class if
+			// the closing transaction confirmed. Note that
+			// CloseChannel can be called in the funding manager
+			// while IsPending is true which is why we need this
+			// special-casing to not count premature funding
+			// manager calls to CloseChannel.
+			if !channel.IsPending {
+				// Fetch the public key of the remote node. We
+				// need to use the string-ified serialized,
+				// compressed bytes as the key.
+				remotePub := channel.IdentityPub
+				remoteSer := remotePub.SerializeCompressed()
+				remoteKey := string(remoteSer)
+
+				count, exists := peerChanInfo[remoteKey]
+				if exists {
+					count.HasOpenOrClosedChan = true
+					peerChanInfo[remoteKey] = count
+				} else {
+					peerCount := ChanCount{
+						HasOpenOrClosedChan: true,
+					}
+					peerChanInfo[remoteKey] = peerCount
+				}
+			}
+
+			return nil
+		})
+		if historicalErr != nil {
+			return historicalErr
+		}
+
+		return nil
+	}, func() {
+		clear(peerChanInfo)
+	})
+
+	return peerChanInfo, err
+}
+
+// channelSelector describes a function that takes a chain-hash bucket from
+// within the open-channel DB and returns the wanted channel point bytes, and
+// channel point. It must return the ErrChannelNotFound error if the wanted
+// channel is not in the given bucket.
+type channelSelector func(chainBkt walletdb.ReadBucket) ([]byte,
+	*wire.OutPoint, error)
+
+// channelScanner will traverse the DB to each chain-hash bucket of each node
+// pub-key bucket in the open-channel-bucket. The chanSelector will then be used
+// to fetch the wanted channel outpoint from the chain bucket.
+func (s *KVStore) channelScanner(tx kvdb.RTx,
+	chanSelect channelSelector) (*OpenChannel, error) {
+
+	var (
+		targetChan *OpenChannel
+
+		// errChanFound is used to signal that the channel has been
+		// found so that iteration through the DB buckets can stop.
+		errChanFound = errors.New("channel found")
+	)
+
+	// chanScan will traverse the following bucket structure:
+	//  * nodePub => chainHash => chanPoint
+	//
+	// At each level we go one further, ensuring that we're traversing the
+	// proper key (that's actually a bucket). By only reading the bucket
+	// structure and skipping fully decoding each channel, we save a good
+	// bit of CPU as we don't need to do things like decompress public
+	// keys.
+	chanScan := func(tx kvdb.RTx) error {
+		// Get the bucket dedicated to storing the metadata for open
+		// channels.
+		openChanBucket := tx.ReadBucket(openChannelBucket)
+		if openChanBucket == nil {
+			return ErrNoActiveChannels
+		}
+
+		// Hoist the outpoint-bucket lookup so the closed-channel
+		// check inside the per-chain ForEach below pays one tx-level
+		// bucket resolve total instead of one per visited chanKey.
+		opBucket := tx.ReadBucket(outpointBucket)
+
+		// Within the node channel bucket, are the set of node pubkeys
+		// we have channels with, we don't know the entire set, so we'll
+		// check them all.
+		return openChanBucket.ForEach(func(nodePub, v []byte) error {
+			// Ensure that this is a key the same size as a pubkey,
+			// and also that it leads directly to a bucket.
+			if len(nodePub) != 33 || v != nil {
+				return nil
+			}
+
+			nodeChanBucket := openChanBucket.NestedReadBucket(
+				nodePub,
+			)
+			if nodeChanBucket == nil {
+				return nil
+			}
+
+			// The next layer down is all the chains that this node
+			// has channels on with us.
+			return nodeChanBucket.ForEach(func(chainHash,
+				v []byte) error {
+
+				// If there's a value, it's not a bucket so
+				// ignore it.
+				if v != nil {
+					return nil
+				}
+
+				chainBucket := nodeChanBucket.NestedReadBucket(
+					chainHash,
+				)
+				if chainBucket == nil {
+					return fmt.Errorf("unable to read "+
+						"bucket for chain=%x",
+						chainHash)
+				}
+
+				// Finally, we reach the leaf bucket that stores
+				// all the chanPoints for this node.
+				targetChanBytes, chanPoint, err := chanSelect(
+					chainBucket,
+				)
+				if errors.Is(err, ErrChannelNotFound) {
+					return nil
+				} else if err != nil {
+					return err
+				}
+
+				// An already-closed channel is logically gone
+				// and must not be surfaced by lookup-style
+				// scans.
+				isClosed, err := IsOutpointClosed(
+					opBucket, targetChanBytes,
+				)
+				if err != nil {
+					return err
+				}
+				if isClosed {
+					return nil
+				}
+
+				chanBucket := chainBucket.NestedReadBucket(
+					targetChanBytes,
+				)
+				if chanBucket == nil {
+					return nil
+				}
+
+				channel, err := FetchOpenChannel(
+					chanBucket, chanPoint,
+				)
+				if err != nil {
+					return err
+				}
+
+				targetChan = channel
+
+				return errChanFound
+			})
+		})
+	}
+
+	var err error
+	if tx == nil {
+		err = kvdb.View(s.backend, chanScan, func() {})
+	} else {
+		err = chanScan(tx)
+	}
+	if err != nil && !errors.Is(err, errChanFound) {
+		return nil, err
+	}
+
+	if targetChan != nil {
+		return s.attachOpenChannelStore(targetChan), nil
+	}
+
+	// If we can't find the channel, then we return with an error, as we
+	// have nothing to back up.
+	return nil, ErrChannelNotFound
+}
+
+// FetchAllChannels attempts to retrieve all open channels currently stored
+// within the database, including pending open, fully open and channels waiting
+// for a closing transaction to confirm.
+func (s *KVStore) FetchAllChannels() ([]*OpenChannel, error) {
+	return s.fetchChannels()
+}
+
+// FetchAllOpenChannels will return all channels that have the funding
+// transaction confirmed, and is not waiting for a closing transaction to be
+// confirmed.
+func (s *KVStore) FetchAllOpenChannels() ([]*OpenChannel, error) {
+	return s.fetchChannels(
+		pendingChannelFilter(false),
+		waitingCloseFilter(false),
+	)
+}
+
+// FetchPendingChannels will return channels that have completed the process of
+// generating and broadcasting funding transactions, but whose funding
+// transactions have yet to be confirmed on the blockchain.
+func (s *KVStore) FetchPendingChannels() ([]*OpenChannel, error) {
+	return s.fetchChannels(
+		pendingChannelFilter(true),
+		waitingCloseFilter(false),
+	)
+}
+
+// FetchWaitingCloseChannels will return all channels that have been opened,
+// but are now waiting for a closing transaction to be confirmed.
+//
+// NOTE: This includes channels that are also pending to be opened.
+func (s *KVStore) FetchWaitingCloseChannels() ([]*OpenChannel, error) {
+	return s.fetchChannels(waitingCloseFilter(true))
+}
+
+// fetchChannelsFilter applies a filter to channels retrieved in fetchchannels.
+// A set of filters can be combined to filter across multiple dimensions.
+type fetchChannelsFilter func(channel *OpenChannel) bool
+
+// pendingChannelFilter returns a filter based on whether channels are pending
+// (ie, their funding transaction still needs to confirm). If pending is false,
+// channels with confirmed funding transactions are returned.
+func pendingChannelFilter(pending bool) fetchChannelsFilter {
+	return func(channel *OpenChannel) bool {
+		return channel.IsPending == pending
+	}
+}
+
+// waitingCloseFilter returns a filter which filters channels based on whether
+// they are awaiting the confirmation of their closing transaction. If waiting
+// close is true, channels that have had their closing tx broadcast are
+// included. If it is false, channels that are not awaiting confirmation of
+// their close transaction are returned.
+func waitingCloseFilter(waitingClose bool) fetchChannelsFilter {
+	return func(channel *OpenChannel) bool {
+		// If the channel is in any other state than Default,
+		// then it means it is waiting to be closed.
+		channelWaitingClose :=
+			channel.ChanStatus() != ChanStatusDefault
+
+		// Include the channel if it matches the value for
+		// waiting close that we are filtering on.
+		return channelWaitingClose == waitingClose
+	}
+}
+
+// fetchChannels attempts to retrieve channels currently stored in the
+// database. It takes a set of filters which are applied to each channel to
+// obtain a set of channels with the desired set of properties. Only channels
+// which have a true value returned for *all* of the filters will be returned.
+// If no filters are provided, every channel in the open channels bucket will
+// be returned.
+func (s *KVStore) fetchChannels(filters ...fetchChannelsFilter) (
+	[]*OpenChannel, error) {
+
+	var channels []*OpenChannel
+	addChannel := func(channel *OpenChannel) {
+		channels = append(channels, channel)
+	}
+
+	err := kvdb.View(s.backend, func(tx kvdb.RTx) error {
+		// Get the bucket dedicated to storing the metadata for open
+		// channels.
+		openChanBucket := tx.ReadBucket(openChannelBucket)
+		if openChanBucket == nil {
+			return ErrNoActiveChannels
+		}
+
+		// Finally for each node public key in the open channel
+		// bucket, fetch all the channels related to this particular
+		// node.
+		return openChanBucket.ForEach(func(k, v []byte) error {
+			// Ensure that this is a key the same size as a pubkey,
+			// and also that it leads directly to a bucket.
+			if len(k) != 33 || v != nil {
+				return nil
+			}
+
+			nodeChanBucket := openChanBucket.NestedReadBucket(k)
+			if nodeChanBucket == nil {
+				return nil
+			}
+
+			return nodeChanBucket.ForEach(func(chainHash,
+				v []byte) error {
+
+				// If there's a value, it's not a bucket so
+				// ignore it.
+				if v != nil {
+					return nil
+				}
+
+				// If we've found a valid chainhash bucket,
+				// then we'll retrieve that so we can extract
+				// all the channels.
+				chainBucket := nodeChanBucket.NestedReadBucket(
+					chainHash,
+				)
+				if chainBucket == nil {
+					return fmt.Errorf("unable to read "+
+						"chain bucket %x", chainHash)
+				}
+
+				nodeChans, err := fetchNodeChannels(
+					tx, chainBucket,
+				)
+				if err != nil {
+					return fmt.Errorf("unable to read "+
+						"channel chain=%x node=%x: %v",
+						chainHash, k, err)
+				}
+				for _, channel := range nodeChans {
+					// includeChannel indicates whether
+					// the channel meets our filters.
+					includeChannel := true
+
+					// Check each filter.
+					for _, f := range filters {
+						// Stop once one filter fails.
+						if !f(channel) {
+							includeChannel = false
+							break
+						}
+					}
+
+					// If the channel passed every filter,
+					// include it in our set of channels.
+					if includeChannel {
+						addChannel(channel)
+					}
+				}
+
+				return nil
+			})
+		})
+	}, func() {
+		channels = nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return s.attachOpenChannelStores(channels), nil
+}
+
+// fetchHistoricalChanBucket returns a the channel bucket for a given outpoint
+// from the historical channel bucket. If the bucket does not exist,
+// ErrNoHistoricalBucket is returned.
+func fetchHistoricalChanBucket(tx kvdb.RTx,
+	outPoint *wire.OutPoint) (kvdb.RBucket, error) {
+
+	// First fetch the top level bucket which stores all data related to
+	// historically stored channels.
+	historicalChanBucket := tx.ReadBucket(historicalChannelBucket)
+	if historicalChanBucket == nil {
+		return nil, ErrNoHistoricalBucket
+	}
+
+	// With the bucket for the node and chain fetched, we can now go down
+	// another level, for the channel itself.
+	var chanPointBuf bytes.Buffer
+	if err := graphdb.WriteOutpoint(&chanPointBuf, outPoint); err != nil {
+		return nil, err
+	}
+	chanBucket := historicalChanBucket.NestedReadBucket(
+		chanPointBuf.Bytes(),
+	)
+	if chanBucket == nil {
+		return nil, ErrChannelNotFound
+	}
+
+	return chanBucket, nil
+}
+
+// FetchHistoricalChannel fetches open channel data from the historical channel
+// bucket.
+func (s *KVStore) FetchHistoricalChannel(outPoint *wire.OutPoint) (
+	*OpenChannel, error) {
+
+	var channel *OpenChannel
+	err := kvdb.View(s.backend, func(tx kvdb.RTx) error {
+		chanBucket, err := fetchHistoricalChanBucket(tx, outPoint)
+		if err != nil {
+			return err
+		}
+
+		channel, err = FetchOpenChannel(chanBucket, outPoint)
+
+		return err
+	}, func() {
+		channel = nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return s.attachOpenChannelStore(channel), nil
 }
 
 // RefreshChannel updates the in-memory channel state using the latest state
 // observed on disk.
 func (s *KVStore) RefreshChannel(channel *OpenChannel) error {
 	return kvdb.View(s.backend, func(tx kvdb.RTx) error {
-		chanBucket, err := FetchChanBucket(
+		chanBucket, err := fetchChanBucket(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -785,7 +1583,7 @@ func (s *KVStore) MarkChannelConfirmationHeight(channel *OpenChannel,
 	height uint32) error {
 
 	return kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
-		chanBucket, err := FetchChanBucketRw(
+		chanBucket, err := fetchChanBucketRw(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -812,7 +1610,7 @@ func (s *KVStore) MarkChannelCloseConfirmationHeight(
 	channel *OpenChannel, height fn.Option[uint32]) error {
 
 	return kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
-		chanBucket, err := FetchChanBucketRw(
+		chanBucket, err := fetchChanBucketRw(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -839,7 +1637,7 @@ func (s *KVStore) MarkChannelOpen(channel *OpenChannel,
 	openLoc lnwire.ShortChannelID) error {
 
 	return kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
-		chanBucket, err := FetchChanBucketRw(
+		chanBucket, err := fetchChanBucketRw(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -866,7 +1664,7 @@ func (s *KVStore) MarkChannelRealScid(channel *OpenChannel,
 	realScid lnwire.ShortChannelID) error {
 
 	return kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
-		chanBucket, err := FetchChanBucketRw(
+		chanBucket, err := fetchChanBucketRw(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -893,7 +1691,7 @@ func (s *KVStore) MarkChannelScidAliasNegotiated(
 	channel *OpenChannel) error {
 
 	return kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
-		chanBucket, err := FetchChanBucketRw(
+		chanBucket, err := fetchChanBucketRw(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -973,7 +1771,7 @@ func (s *KVStore) FetchChannelDataLossCommitPoint(
 	var commitPoint *btcec.PublicKey
 
 	err := kvdb.View(s.backend, func(tx kvdb.RTx) error {
-		chanBucket, err := FetchChanBucket(
+		chanBucket, err := fetchChanBucket(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -1013,7 +1811,7 @@ func (s *KVStore) putChanStatus(channel *OpenChannel,
 	status ChannelStatus, fs ...func(kvdb.RwBucket) error) error {
 
 	if err := kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
-		chanBucket, err := FetchChanBucketRw(
+		chanBucket, err := fetchChanBucketRw(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)
@@ -1064,7 +1862,7 @@ func (s *KVStore) ClearChannelStatus(channel *OpenChannel,
 	status ChannelStatus) error {
 
 	if err := kvdb.Update(s.backend, func(tx kvdb.RwTx) error {
-		chanBucket, err := FetchChanBucketRw(
+		chanBucket, err := fetchChanBucketRw(
 			tx, channel.IdentityPub, &channel.FundingOutpoint,
 			channel.ChainHash,
 		)

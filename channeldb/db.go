@@ -364,7 +364,7 @@ type DB struct {
 
 	// fwdResponseStore persists off-chain settle and fail messages until
 	// the switch can safely replay or reap them.
-	fwdResponseStore *fwdresponse.KVStore
+	fwdResponseStore fwdresponse.KVStore
 
 	dbPath string
 	clock  clock.Clock
@@ -429,9 +429,7 @@ func CreateWithBackend(backend kvdb.Backend, modifiers ...OptionModifier) (*DB,
 		chanstate.WithTombstoneClosedChannels(
 			opts.tombstoneClosedChannels,
 		),
-		chanstate.WithExtractFwdResponses(
-			fwdResponseStore.ExtractFwdResponses,
-		),
+		chanstate.WithFwdResponseExtractor(fwdResponseStore),
 	)
 	chanDB := &DB{
 		Backend:          backend,

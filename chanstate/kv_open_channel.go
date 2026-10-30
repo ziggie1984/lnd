@@ -140,10 +140,10 @@ func PutOpenOutpointIndex(opBucket kvdb.RwBucket, chanKey []byte) error {
 	return putOutpointIndexStatus(opBucket, chanKey, OutpointOpen)
 }
 
-// UpdateClosedOutpointIndex flips the outpoint index entry for chanKey from
+// updateClosedOutpointIndex flips the outpoint index entry for chanKey from
 // open to closed. The index entry must already exist; it was placed there when
 // the channel was opened.
-func UpdateClosedOutpointIndex(tx kvdb.RwTx, chanKey []byte) error {
+func updateClosedOutpointIndex(tx kvdb.RwTx, chanKey []byte) error {
 	opBucket := tx.ReadWriteBucket(outpointBucket)
 	if opBucket == nil {
 		return ErrNoChanDBExists
@@ -1082,6 +1082,24 @@ func (s *KVStore) ClearChannelStatus(channel *OpenChannel,
 	channel.SetChannelStatusForStore(status)
 
 	return nil
+}
+
+// isChannelBorked returns true if the channel has been marked as borked in the
+// database. This requires an existing database transaction to already be
+// active.
+//
+// NOTE: The primary mutex should already be held before this method is called.
+func isChannelBorked(channel *OpenChannel, chanBucket kvdb.RBucket) (
+	bool, error) {
+
+	diskChannel, err := FetchOpenChannel(
+		chanBucket, &channel.FundingOutpoint,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return diskChannel.ChannelStatusForStore() != ChanStatusDefault, nil
 }
 
 // openChannelTlvData houses the new data fields that are stored for each

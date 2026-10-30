@@ -55,14 +55,6 @@ var (
 	// ErrDryRunMigrationOK signals that a migration executed successful,
 	// but we intentionally did not commit the result.
 	ErrDryRunMigrationOK = errors.New("dry run migration successful")
-
-	// ErrFinalHtlcsBucketNotFound signals that the top-level final htlcs
-	// bucket does not exist.
-	ErrFinalHtlcsBucketNotFound = chanstate.ErrFinalHtlcsBucketNotFound
-
-	// ErrFinalChannelBucketNotFound signals that the channel bucket for
-	// final htlc outcomes does not exist.
-	ErrFinalChannelBucketNotFound = chanstate.ErrFinalChannelBucketNotFound
 )
 
 // migration is a function which takes a prior outdated version of the database
@@ -239,7 +231,7 @@ var (
 			// Create a top level bucket which holds outpoint
 			// information.
 			number:    19,
-			migration: mig.CreateTLB(outpointBucket),
+			migration: mig.CreateTLB(chanstate.OutpointBucketKey()),
 		},
 		{
 			// Migrate some data to the outpoint index.
@@ -287,7 +279,7 @@ var (
 		},
 		{
 			number:    28,
-			migration: mig.CreateTLB(chanIDBucket),
+			migration: mig.CreateTLB(chanstate.ChanIDBucketKey()),
 		},
 		{
 			number:    29,
@@ -480,20 +472,20 @@ func (d *DB) Path() string {
 }
 
 var dbTopLevelBuckets = [][]byte{
-	openChannelBucket,
-	closedChannelBucket,
+	chanstate.OpenChannelBucketKey(),
+	chanstate.ClosedChannelBucketKey(),
 	forwardingLogBucket,
-	fwdPackagesKey,
+	chanstate.FwdPackagesBucketKey(),
 	invoiceBucket,
 	payAddrIndexBucket,
 	setIDIndexBucket,
 	peersBucket,
-	nodeInfoBucket,
+	linknode.NodeInfoBucket,
 	metaBucket,
 	closeSummaryBucket,
-	outpointBucket,
-	chanIDBucket,
-	historicalChannelBucket,
+	chanstate.OutpointBucketKey(),
+	chanstate.ChanIDBucketKey(),
+	chanstate.HistoricalChannelBucketKey(),
 }
 
 // Wipe completely deletes all saved state within all used buckets within the
@@ -834,8 +826,6 @@ func getMigrationsToApply(versions []mandatoryVersion,
 
 	return migrations, migrationVersions
 }
-
-var ErrHtlcUnknown = chanstate.ErrHtlcUnknown
 
 // MakeTestInvoiceDB is used to create a test invoice database for testing
 // purposes. It simply calls into MakeTestDB so the same modifiers can be used.

@@ -23,7 +23,6 @@ import (
 	"github.com/lightningnetwork/lnd/brontide"
 	"github.com/lightningnetwork/lnd/buffer"
 	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channelnotifier"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/contractcourt"
@@ -1330,8 +1329,8 @@ func (p *Brontide) loadActiveChannels(chans []*chanstate.OpenChannel) (
 
 		// Skip adding any permanently irreconcilable channels to the
 		// htlcswitch.
-		if !dbChan.HasChanStatus(channeldb.ChanStatusDefault) &&
-			!dbChan.HasChanStatus(channeldb.ChanStatusRestored) {
+		if !dbChan.HasChanStatus(chanstate.ChanStatusDefault) &&
+			!dbChan.HasChanStatus(chanstate.ChanStatusRestored) {
 
 			p.log.Warnf("ChannelPoint(%v) has status %v, won't "+
 				"start.", chanPoint, dbChan.ChanStatus())
@@ -1356,7 +1355,7 @@ func (p *Brontide) loadActiveChannels(chans []*chanstate.OpenChannel) (
 			// close process restarted. If so, we'll need to send
 			// the Shutdown message that is returned.
 			if dbChan.HasChanStatus(
-				channeldb.ChanStatusCoopBroadcasted,
+				chanstate.ChanStatusCoopBroadcasted,
 			) {
 
 				shutdownMsg, err := p.restartCoopClose(lnChan)
@@ -1445,7 +1444,7 @@ func (p *Brontide) loadActiveChannels(chans []*chanstate.OpenChannel) (
 		}
 
 		shutdownInfo, err := lnChan.State().ShutdownInfo()
-		if err != nil && !errors.Is(err, channeldb.ErrNoShutdownInfo) {
+		if err != nil && !errors.Is(err, chanstate.ErrNoShutdownInfo) {
 			return nil, err
 		}
 
@@ -4088,7 +4087,7 @@ func (p *Brontide) restartCoopClose(lnChan *lnwallet.LightningChannel) (
 	_, err := c.BroadcastedCooperative()
 
 	// Any error other than "no close tx" is a real failure.
-	if err != nil && !errors.Is(err, channeldb.ErrNoCloseTx) {
+	if err != nil && !errors.Is(err, chanstate.ErrNoCloseTx) {
 		return nil, err
 	}
 
@@ -4112,10 +4111,10 @@ func (p *Brontide) restartCoopClose(lnChan *lnwallet.LightningChannel) (
 		})
 
 	// An error other than ErrNoShutdownInfo was returned
-	case !errors.Is(err, channeldb.ErrNoShutdownInfo):
+	case !errors.Is(err, chanstate.ErrNoShutdownInfo):
 		return nil, err
 
-	case errors.Is(err, channeldb.ErrNoShutdownInfo):
+	case errors.Is(err, chanstate.ErrNoShutdownInfo):
 		deliveryScript = c.LocalShutdownScript
 		if len(deliveryScript) == 0 {
 			var err error
@@ -4162,7 +4161,7 @@ func (p *Brontide) restartCoopClose(lnChan *lnwallet.LightningChannel) (
 	// Determine whether we or the peer are the initiator of the coop
 	// close attempt by looking at the channel's status.
 	closingParty := lntypes.Remote
-	if c.HasChanStatus(channeldb.ChanStatusLocalCloseInitiator) {
+	if c.HasChanStatus(chanstate.ChanStatusLocalCloseInitiator) {
 		closingParty = lntypes.Local
 	}
 
@@ -4796,7 +4795,9 @@ func (p *Brontide) initRbfChanCloser(
 // party (for w/e reason), but crashed before the close was complete.
 //
 //nolint:ll
-type shutdownInit = fn.Option[fn.Either[*htlcswitch.ChanClose, chanstate.ShutdownInfo]]
+type shutdownResult = fn.Either[*htlcswitch.ChanClose, chanstate.ShutdownInfo]
+
+type shutdownInit = fn.Option[shutdownResult]
 
 // shutdownStartFeeRate returns the fee rate that should be used for the
 // shutdown.  This returns a doubly wrapped option as the shutdown info might

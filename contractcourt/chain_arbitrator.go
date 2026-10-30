@@ -467,7 +467,7 @@ func (a *arbChannel) ForceCloseChan() (*wire.MsgTx, error) {
 func shouldSuppressClosedChannelNotify(closeType chanstate.ClosureType,
 	earlyDispatched bool) bool {
 
-	return closeType == channeldb.CooperativeClose && earlyDispatched
+	return closeType == chanstate.CooperativeClose && earlyDispatched
 }
 
 // newActiveChannelArbitrator creates a new instance of an active channel
@@ -575,7 +575,7 @@ func newActiveChannelArbitrator(channel *chanstate.OpenChannel,
 	htlcSets[RemoteHtlcSet] = newHtlcSet(channel.RemoteCommitment.Htlcs)
 
 	pendingRemoteCommitment, err := channel.RemoteCommitChainTip()
-	if err != nil && err != channeldb.ErrNoPendingCommit {
+	if err != nil && !errors.Is(err, chanstate.ErrNoPendingCommit) {
 		return nil, err
 	}
 	if pendingRemoteCommitment != nil {
@@ -903,9 +903,9 @@ func (c *ChainArbitrator) republishClosingTxs(
 
 	// If the channel has had its unilateral close broadcasted already,
 	// republish it in case it didn't propagate.
-	if channel.HasChanStatus(channeldb.ChanStatusCommitBroadcasted) {
+	if channel.HasChanStatus(chanstate.ChanStatusCommitBroadcasted) {
 		err := c.rebroadcast(
-			channel, channeldb.ChanStatusCommitBroadcasted,
+			channel, chanstate.ChanStatusCommitBroadcasted,
 		)
 		if err != nil {
 			return err
@@ -914,9 +914,9 @@ func (c *ChainArbitrator) republishClosingTxs(
 
 	// If the channel has had its cooperative close broadcasted
 	// already, republish it in case it didn't propagate.
-	if channel.HasChanStatus(channeldb.ChanStatusCoopBroadcasted) {
+	if channel.HasChanStatus(chanstate.ChanStatusCoopBroadcasted) {
 		err := c.rebroadcast(
-			channel, channeldb.ChanStatusCoopBroadcasted,
+			channel, chanstate.ChanStatusCoopBroadcasted,
 		)
 		if err != nil {
 			return err
@@ -942,11 +942,11 @@ func (c *ChainArbitrator) rebroadcast(channel *chanstate.OpenChannel,
 		err     error
 	)
 	switch state {
-	case channeldb.ChanStatusCommitBroadcasted:
+	case chanstate.ChanStatusCommitBroadcasted:
 		kind = "force"
 		closeTx, err = channel.BroadcastedCommitment()
 
-	case channeldb.ChanStatusCoopBroadcasted:
+	case chanstate.ChanStatusCoopBroadcasted:
 		kind = "coop"
 		closeTx, err = channel.BroadcastedCooperative()
 
@@ -957,7 +957,7 @@ func (c *ChainArbitrator) rebroadcast(channel *chanstate.OpenChannel,
 	switch {
 	// This can happen for channels that had their closing tx published
 	// before we started storing it to disk.
-	case err == channeldb.ErrNoCloseTx:
+	case errors.Is(err, chanstate.ErrNoCloseTx):
 		log.Warnf("Channel %v is in state %v, but no %s closing tx "+
 			"to re-publish...", chanPoint, state, kind)
 		return nil

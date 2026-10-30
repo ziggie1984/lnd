@@ -184,7 +184,7 @@ func initSwitchWithDB(startingHeight uint32, db *channeldb.DB) (*Switch, error) 
 		CheckFwdResponse:     db.FwdResponseStore().CheckFwdResponse,
 		FetchFwdResponses:    db.FwdResponseStore().FetchFwdResponses,
 		DeleteFwdResponse:    db.FwdResponseStore().DeleteFwdResponse,
-		SwitchPackager:       channeldb.NewSwitchPackager(),
+		SwitchPackager:       chanstate.NewSwitchPackager(),
 		FwdingLog: &mockForwardingLog{
 			events: make(map[time.Time]channeldb.ForwardingEvent),
 		},
@@ -851,7 +851,7 @@ func (f *mockChannelLink) getFeeRate() chainfee.SatPerKWeight {
 func (f *mockChannelLink) getDustClosure() dustClosure {
 	dustLimit := btcutil.Amount(400)
 	return dustHelper(
-		channeldb.SingleFunderTweaklessBit, dustLimit, dustLimit,
+		chanstate.SingleFunderTweaklessBit, dustLimit, dustLimit,
 	)
 }
 

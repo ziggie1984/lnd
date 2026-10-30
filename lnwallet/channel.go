@@ -23,7 +23,6 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/graph/db/models"
@@ -988,7 +987,7 @@ func NewLightningChannel(signer input.Signer,
 
 	logPrefix := fmt.Sprintf("ChannelPoint(%v):", state.FundingOutpoint)
 
-	taprootNonceProducer, err := channeldb.DeriveMusig2Shachain(
+	taprootNonceProducer, err := chanstate.DeriveMusig2Shachain(
 		state.RevocationProducer,
 	)
 	if err != nil {
@@ -1555,7 +1554,7 @@ func (lc *LightningChannel) restoreCommitState(
 	// Next, we'll check to see if we have an un-acked commitment state we
 	// extended to the remote party but which was never ACK'd.
 	pendingRemoteCommitDiff, err = lc.channelState.RemoteCommitChainTip()
-	if err != nil && err != channeldb.ErrNoPendingCommit {
+	if err != nil && !errors.Is(err, chanstate.ErrNoPendingCommit) {
 		return err
 	}
 
@@ -2566,7 +2565,7 @@ func createBreachRetribution(revokedLog *chanstate.RevocationLog,
 	ourOutpoint := wire.OutPoint{
 		Hash: commitHash.Val,
 	}
-	if revokedLog.OurOutputIndex.Val != channeldb.OutputIndexEmpty {
+	if revokedLog.OurOutputIndex.Val != chanstate.OutputIndexEmpty {
 		ourOutpoint.Index = uint32(revokedLog.OurOutputIndex.Val)
 
 		// If the spend transaction is provided, then we use it to get
@@ -2605,7 +2604,7 @@ func createBreachRetribution(revokedLog *chanstate.RevocationLog,
 	theirOutpoint := wire.OutPoint{
 		Hash: commitHash.Val,
 	}
-	if revokedLog.TheirOutputIndex.Val != channeldb.OutputIndexEmpty {
+	if revokedLog.TheirOutputIndex.Val != chanstate.OutputIndexEmpty {
 		theirOutpoint.Index = uint32(revokedLog.TheirOutputIndex.Val)
 
 		// If the spend transaction is provided, then we use it to get
@@ -2716,7 +2715,7 @@ func createBreachRetributionLegacy(revokedLog *chanstate.ChannelCommitment,
 			continue
 		}
 
-		entry, err := channeldb.NewHTLCEntryFromHTLC(htlc)
+		entry, err := chanstate.NewHTLCEntryFromHTLC(htlc)
 		if err != nil {
 			return nil, 0, 0, err
 		}
@@ -4555,7 +4554,7 @@ func (lc *LightningChannel) ProcessChanSyncMsg(ctx context.Context,
 	// portion of the verification, as we already know that we're unable to
 	// proceed with any updates.
 	isRestoredChan := lc.channelState.HasChanStatus(
-		channeldb.ChanStatusRestored,
+		chanstate.ChanStatusRestored,
 	)
 
 	// Take note of our current commit chain heights before we begin adding
@@ -6119,7 +6118,7 @@ func (lc *LightningChannel) ReceiveRevocation(revMsg *lnwire.RevokeAndAck) (
 	// Now that we have gathered the set of HTLCs to forward, separated by
 	// type, construct a forwarding package using the height that the remote
 	// commitment chain will be extended after persisting the revocation.
-	fwdPkg := channeldb.NewFwdPkg(
+	fwdPkg := chanstate.NewFwdPkg(
 		source, remoteChainTail, addUpdatesToForward,
 		settleFailUpdatesToForward,
 	)
@@ -6959,7 +6958,7 @@ func GetSignedCommitTx(inputs SignedCommitTxInputs,
 		// the remote party to create this musig session. We pass in
 		// the same height here as we're generating the nonce needed
 		// for the _current_ state.
-		localNonce, err := channeldb.NewMusigVerificationNonce(
+		localNonce, err := chanstate.NewMusigVerificationNonce(
 			inputs.OurKey.PubKey, taproot.CommitHeight,
 			taproot.TaprootNonceProducer,
 		)
@@ -7331,7 +7330,7 @@ func NewUnilateralCloseSummary(chanState *chanstate.OpenChannel,
 		RemotePub:               chanState.IdentityPub,
 		Capacity:                chanState.Capacity,
 		SettledBalance:          btcutil.Amount(localBalance),
-		CloseType:               channeldb.RemoteForceClose,
+		CloseType:               chanstate.RemoteForceClose,
 		IsPending:               true,
 		RemoteCurrentRevocation: chanState.RemoteCurrentRevocation,
 		RemoteNextRevocation:    chanState.RemoteNextRevocation,
@@ -8431,7 +8430,7 @@ func (lc *LightningChannel) ForceClose(opts ...ForceCloseOpt) (
 	// If we've detected local data loss for this channel, then we won't
 	// allow a force close, as it may be the case that we have a dated
 	// version of the commitment, or this is actually a channel shell.
-	if lc.channelState.HasChanStatus(channeldb.ChanStatusLocalDataLoss) {
+	if lc.channelState.HasChanStatus(chanstate.ChanStatusLocalDataLoss) {
 		return nil, fmt.Errorf("%w: channel_state=%v",
 			ErrForceCloseLocalDataLoss,
 			lc.channelState.ChanStatus())
@@ -9099,7 +9098,7 @@ func (lc *LightningChannel) NewAnchorResolutions() (*AnchorResolutions,
 
 	// Add anchor for remote pending commitment tx, if any.
 	remotePendingCommit, err := lc.channelState.RemoteCommitChainTip()
-	if err != nil && err != channeldb.ErrNoPendingCommit {
+	if err != nil && !errors.Is(err, chanstate.ErrNoPendingCommit) {
 		return nil, err
 	}
 
@@ -9660,7 +9659,7 @@ func (lc *LightningChannel) generateRevocation(height uint64) (*lnwire.RevokeAnd
 	// If this is a taproot channel, then we also need to generate the
 	// verification nonce for this target state.
 	if lc.channelState.ChanType.IsTaproot() {
-		nextVerificationNonce, err := channeldb.NewMusigVerificationNonce( //nolint:ll
+		nextVerificationNonce, err := chanstate.NewMusigVerificationNonce( //nolint:ll
 			lc.channelState.LocalChanCfg.MultiSigKey.PubKey,
 			revHeight, lc.taprootNonceProducer,
 		)
@@ -10331,7 +10330,7 @@ func (lc *LightningChannel) GenMusigNonces() (*musig2.Nonces, error) {
 	// We pass in the current height+1 as this'll be the set of
 	// verification nonces we'll send to the party to create our _next_
 	// state.
-	lc.pendingVerificationNonce, err = channeldb.NewMusigVerificationNonce(
+	lc.pendingVerificationNonce, err = chanstate.NewMusigVerificationNonce(
 		lc.channelState.LocalChanCfg.MultiSigKey.PubKey,
 		lc.currentHeight+1, lc.taprootNonceProducer,
 	)

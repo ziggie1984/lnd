@@ -32,6 +32,7 @@ import (
 	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/contractcourt"
@@ -170,6 +171,10 @@ var (
 		"/walletrpc.WalletKit/ListAccounts": {{
 			Entity: "onchain",
 			Action: "read",
+		}},
+		"/walletrpc.WalletKit/XCreateAccount": {{
+			Entity: "onchain",
+			Action: "write",
 		}},
 		"/walletrpc.WalletKit/RequiredReserve": {{
 			Entity: "onchain",
@@ -505,23 +510,76 @@ func (w *WalletKit) LeaseOutput(ctx context.Context,
 	if req.ExpirationSeconds != 0 {
 		duration = time.Duration(req.ExpirationSeconds) * time.Second
 	}
+	releaseAfterSpendConfs := req.ReleaseAfterSpendConfs
 
 	// Acquire the global coin selection lock to ensure there aren't any
 	// other concurrent processes attempting to lease the same UTXO.
 	var expiration time.Time
 	err = w.cfg.CoinSelectionLocker.WithCoinSelectLock(func() error {
-		expiration, err = w.cfg.Wallet.LeaseOutput(
-			lockID, *op, duration,
-		)
+		if releaseAfterSpendConfs > 0 {
+			leaser, ok := lnwallet.ResolveOutputLeaser(w.cfg.Wallet)
+			if !ok {
+				return fmt.Errorf(
+					"lease output: %w",
+					errOutputLeaseOptionsUnsupported,
+				)
+			}
+
+			leaseOpts := lnwallet.LeaseOutputOptions{
+				ReleaseAfterSpendConfs: releaseAfterSpendConfs,
+			}
+			expiration, err = leaser.LeaseOutputWithOptions(
+				lockID, *op, duration, leaseOpts,
+			)
+		} else {
+			expiration, err = w.cfg.Wallet.LeaseOutput(
+				lockID, *op, duration,
+			)
+		}
+
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	// A zero-depth same-owner renewal preserves any existing confirmation
+	// depth. Read it after the lease succeeds so this informational field
+	// cannot prevent a legacy lease or extend the coin selection lock.
+	if releaseAfterSpendConfs == 0 {
+		depth, err := storedLeaseDepth(w.cfg.Wallet, lockID, *op)
+		if err != nil {
+			log.Warnf("Unable to report retained confirmation "+
+				"depth for lease %v: %v", op, err)
+		} else {
+			releaseAfterSpendConfs = depth
+		}
+	}
+
 	return &LeaseOutputResponse{
-		Expiration: uint64(expiration.Unix()),
+		Expiration:             uint64(expiration.Unix()),
+		ReleaseAfterSpendConfs: releaseAfterSpendConfs,
 	}, nil
+}
+
+// storedLeaseDepth returns the confirmation depth of an existing lease owned
+// by lockID. It lets a zero-depth renewal report the depth that the legacy
+// wallet lease method preserves.
+func storedLeaseDepth(wallet lnwallet.WalletController, lockID wtxmgr.LockID,
+	op wire.OutPoint) (uint32, error) {
+
+	leases, err := wallet.ListLeasedOutputs()
+	if err != nil {
+		return 0, fmt.Errorf("list existing output leases: %w", err)
+	}
+
+	for _, lease := range leases {
+		if lease.Outpoint == op && lease.LockID == lockID {
+			return lease.ReleaseAfterSpendConfs, nil
+		}
+	}
+
+	return 0, nil
 }
 
 // ReleaseOutput unlocks an output, allowing it to be available for coin
@@ -1560,7 +1618,7 @@ func (w *WalletKit) ListSweeps(ctx context.Context,
 		return &ListSweepsResponse{
 			Sweeps: &ListSweepsResponse_TransactionDetails{
 				TransactionDetails: lnrpc.RPCTransactionDetails(
-					txDetails, firstIdx, lastIdx,
+					txDetails, firstIdx, lastIdx, false,
 				),
 			},
 		}, nil
@@ -1636,6 +1694,38 @@ func (w *WalletKit) LabelTransaction(ctx context.Context,
 func (w *WalletKit) FundPsbt(_ context.Context,
 	req *FundPsbtRequest) (*FundPsbtResponse, error) {
 
+	var customLockID *wtxmgr.LockID
+	if len(req.CustomLockId) > 0 {
+		lockID := wtxmgr.LockID{}
+		if len(req.CustomLockId) != len(lockID) {
+			return nil, fmt.Errorf("custom lock ID must be " +
+				"exactly 32 bytes")
+		}
+
+		copy(lockID[:], req.CustomLockId)
+		customLockID = &lockID
+	}
+
+	if req.InputReleaseAfterSpendConfs > 0 {
+		switch {
+		case customLockID == nil:
+			return nil, errors.New("custom lock ID required for " +
+				"confirmation-controlled input leases")
+
+		case *customLockID == (wtxmgr.LockID{}):
+			return nil, errors.New(
+				"custom lock ID must not be all zeros for " +
+					"confirmation-controlled input leases",
+			)
+
+		case *customLockID == chanfunding.LndInternalLockID:
+			return nil, errors.New(
+				"reserved custom lock ID cannot be used for " +
+					"confirmation-controlled input leases",
+			)
+		}
+	}
+
 	coinSelectionStrategy, err := lnrpc.UnmarshallCoinSelectionStrategy(
 		req.CoinSelectionStrategy, w.cfg.CoinSelectionStrategy,
 	)
@@ -1693,18 +1783,6 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 		account = req.Account
 	}
 
-	var customLockID *wtxmgr.LockID
-	if len(req.CustomLockId) > 0 {
-		lockID := wtxmgr.LockID{}
-		if len(req.CustomLockId) != len(lockID) {
-			return nil, fmt.Errorf("custom lock ID must be " +
-				"exactly 32 bytes")
-		}
-
-		copy(lockID[:], req.CustomLockId)
-		customLockID = &lockID
-	}
-
 	var customLockDuration time.Duration
 	if req.LockExpirationSeconds != 0 {
 		customLockDuration = time.Duration(req.LockExpirationSeconds) *
@@ -1731,6 +1809,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			account, keyScopeFromChangeAddressType(req.ChangeType),
 			packet, minConfs, feeSatPerKW, coinSelectionStrategy,
 			customLockID, customLockDuration,
+			req.InputReleaseAfterSpendConfs,
 		)
 
 	// The template is specified as a PSBT with the intention to perform
@@ -1808,12 +1887,22 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			maxFeeRatio = req.MaxFeeRatio
 		}
 
+		// A ratio above 1.0 means the caller explicitly allows fees
+		// exceeding the funded outputs' value (legitimate for sweeps
+		// of small asset-bearing outputs). Make that auditable.
+		if maxFeeRatio > 1.0 {
+			log.Warnf("FundPsbt: caller requested max fee ratio "+
+				"%.2f, allowing fees above the total output "+
+				"value", maxFeeRatio)
+		}
+
 		// Run the actual funding process now, using the channel funding
 		// coin selection algorithm.
 		return w.fundPsbtCoinSelect(
 			account, changeIndex, packet, minConfs, changeType,
 			feeSatPerKW, coinSelectionStrategy, maxFeeRatio,
 			customLockID, customLockDuration,
+			req.InputReleaseAfterSpendConfs,
 		)
 
 	// The template is specified as a RPC message. We need to create a new
@@ -1872,6 +1961,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			account, keyScopeFromChangeAddressType(req.ChangeType),
 			packet, minConfs, feeSatPerKW, coinSelectionStrategy,
 			customLockID, customLockDuration,
+			req.InputReleaseAfterSpendConfs,
 		)
 
 	default:
@@ -1885,7 +1975,8 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 func (w *WalletKit) fundPsbtInternalWallet(account string,
 	keyScope *waddrmgr.KeyScope, packet *psbt.Packet, minConfs int32,
 	feeSatPerKW chainfee.SatPerKWeight, strategy base.CoinSelectionStrategy,
-	customLockID *wtxmgr.LockID, customLockDuration time.Duration) (
+	customLockID *wtxmgr.LockID, customLockDuration time.Duration,
+	releaseAfterSpendConfs uint32) (
 	*FundPsbtResponse, error) {
 
 	// The RPC parsing part is now over. Several of the following operations
@@ -2001,7 +2092,7 @@ func (w *WalletKit) fundPsbtInternalWallet(account string,
 
 		response, err = w.lockAndCreateFundingResponse(
 			packet, outpoints, changeIndex, customLockID,
-			customLockDuration,
+			customLockDuration, releaseAfterSpendConfs,
 		)
 
 		return err
@@ -2021,7 +2112,8 @@ func (w *WalletKit) fundPsbtCoinSelect(account string, changeIndex int32,
 	changeType chanfunding.ChangeAddressType,
 	feeRate chainfee.SatPerKWeight, strategy base.CoinSelectionStrategy,
 	maxFeeRatio float64, customLockID *wtxmgr.LockID,
-	customLockDuration time.Duration) (*FundPsbtResponse, error) {
+	customLockDuration time.Duration, releaseAfterSpendConfs uint32) (
+	*FundPsbtResponse, error) {
 
 	// We want to make sure we don't select any inputs that are already
 	// specified in the template. To do that, we require those inputs to
@@ -2138,7 +2230,7 @@ func (w *WalletKit) fundPsbtCoinSelect(account string, changeIndex int32,
 		// We're done. Let's serialize and return the updated package.
 		return w.lockAndCreateFundingResponse(
 			packet, nil, changeIndex, customLockID,
-			customLockDuration,
+			customLockDuration, releaseAfterSpendConfs,
 		)
 	}
 
@@ -2212,7 +2304,7 @@ func (w *WalletKit) fundPsbtCoinSelect(account string, changeIndex int32,
 
 		response, err = w.lockAndCreateFundingResponse(
 			packet, addedOutpoints, changeIndex, customLockID,
-			customLockDuration,
+			customLockDuration, releaseAfterSpendConfs,
 		)
 
 		return err
@@ -2258,7 +2350,8 @@ func (w *WalletKit) assertNotAvailable(inputs []*wire.TxIn, minConfs int32,
 // response with the serialized PSBT, the change index and the locked UTXOs.
 func (w *WalletKit) lockAndCreateFundingResponse(packet *psbt.Packet,
 	newOutpoints []wire.OutPoint, changeIndex int32,
-	customLockID *wtxmgr.LockID, customLockDuration time.Duration) (
+	customLockID *wtxmgr.LockID, customLockDuration time.Duration,
+	releaseAfterSpendConfs uint32) (
 	*FundPsbtResponse, error) {
 
 	// Make sure we can properly serialize the packet. If this goes wrong
@@ -2272,6 +2365,7 @@ func (w *WalletKit) lockAndCreateFundingResponse(packet *psbt.Packet,
 
 	locks, err := lockInputs(
 		w.cfg.Wallet, newOutpoints, customLockID, customLockDuration,
+		releaseAfterSpendConfs,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("could not lock inputs: %w", err)
@@ -2279,6 +2373,9 @@ func (w *WalletKit) lockAndCreateFundingResponse(packet *psbt.Packet,
 
 	// Convert the lock leases to the RPC format.
 	rpcLocks := marshallLeases(locks)
+	for _, lock := range rpcLocks {
+		lock.ReleaseAfterSpendConfs = releaseAfterSpendConfs
+	}
 
 	return &FundPsbtResponse{
 		FundedPsbt:        buf.Bytes(),
@@ -2362,11 +2459,15 @@ func marshallLeases(locks []*base.ListLeasedOutputResult) []*UtxoLease {
 	for idx, lock := range locks {
 
 		rpcLocks[idx] = &UtxoLease{
-			Id:         lock.LockID[:],
-			Outpoint:   lnrpc.MarshalOutPoint(&lock.Outpoint),
-			Expiration: uint64(lock.Expiration.Unix()),
-			PkScript:   lock.PkScript,
-			Value:      uint64(lock.Value),
+			Id: lock.LockID[:],
+			Outpoint: lnrpc.MarshalOutPoint(
+				&lock.Outpoint,
+			),
+			Expiration:             uint64(lock.Expiration.Unix()),
+			PkScript:               lock.PkScript,
+			Value:                  uint64(lock.Value),
+			ReleaseAfterSpendConfs: lock.ReleaseAfterSpendConfs,
+			ConfirmedSpendHeight:   lock.ConfirmedSpendHeight,
 		}
 	}
 
@@ -2690,6 +2791,95 @@ func (w *WalletKit) ListAccounts(ctx context.Context,
 	}
 
 	return &ListAccountsResponse{Accounts: rpcAccounts}, nil
+}
+
+// errAccountCreationNotAcked is returned on a release build when the caller
+// has not acknowledged that a created account is invisible to a seed-only
+// restore.
+var errAccountCreationNotAcked = errors.New("XCreateAccount is experimental: " +
+	"funds in a created account are NOT rediscovered by a seed-only " +
+	"restore. Set i_know_what_i_am_doing to proceed, having recorded the " +
+	"account's key scope and index")
+
+// defaultXCreateAccountAddrType is the address type a new account is created
+// with when the request does not specify one. A custom account lives in exactly
+// one key scope, and that scope permanently fixes the address type of both its
+// receive and its change addresses, so an unset value cannot be resolved later.
+// Taproot is chosen because it is the most recent scope the wallet supports and
+// its outputs are the cheapest to spend.
+const defaultXCreateAccountAddrType = AddressType_TAPROOT_PUBKEY
+
+// XCreateAccount is an experimental API that creates a new named account
+// within the wallet, deriving the account's keys from the wallet's master
+// key.
+//
+// In contrast to ImportAccount, which registers a watch-only account from an
+// externally supplied extended public key, the account created here is fully
+// owned by the wallet: it derives its own addresses and can sign for its own
+// outputs. That makes it usable as an isolated pocket of funds inside a single
+// wallet, because coin selection, change, balance and address derivation can
+// all be scoped to it by name.
+func (w *WalletKit) XCreateAccount(_ context.Context,
+	req *XCreateAccountRequest) (*XCreateAccountResponse, error) {
+
+	// Kept behind an explicit acknowledgement while recovery cannot find
+	// these accounts: funds held in one are not rediscovered by a
+	// seed-only restore, and reconstructing it by hand means reproducing
+	// its key scope, its account index and the addresses it issued. That
+	// is a foot-gun rather than a reason to withhold the RPC, so this
+	// follows AbandonChannel: available in dev builds, and on release
+	// builds to a caller that attests to knowing the consequence.
+	// Removing the gate is the last step of fixing recovery.
+	if !req.GetIKnowWhatIAmDoing() && !build.IsDevBuild() {
+		return nil, errAccountCreationNotAcked
+	}
+
+	addrType := req.AddressType
+	if addrType == AddressType_UNKNOWN {
+		addrType = defaultXCreateAccountAddrType
+	}
+
+	// Map the requested address type onto the key scope the account will
+	// live in.
+	var keyScope waddrmgr.KeyScope
+	switch addrType {
+	case AddressType_WITNESS_PUBKEY_HASH:
+		keyScope = waddrmgr.KeyScopeBIP0084
+
+	// An account derived by the wallet stores no address schema of its own,
+	// so BIP-0049Plus always behaves as the hybrid scheme (nested pubkeys
+	// externally, witness pubkeys internally). Honouring a request for the
+	// strict nested scheme is impossible here, and silently substituting
+	// the hybrid one would hand back an account whose change outputs are
+	// not what the caller asked for.
+	case AddressType_NESTED_WITNESS_PUBKEY_HASH:
+		return nil, fmt.Errorf("address type %v cannot be created; "+
+			"use %v, which is what a wallet-derived account of "+
+			"this key scope provides", req.AddressType,
+			AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH)
+
+	case AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH:
+		keyScope = waddrmgr.KeyScopeBIP0049Plus
+
+	case AddressType_TAPROOT_PUBKEY:
+		keyScope = waddrmgr.KeyScopeBIP0086
+
+	default:
+		return nil, fmt.Errorf("unhandled address type %v",
+			req.AddressType)
+	}
+
+	account, err := w.cfg.Wallet.CreateAccount(keyScope, req.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	rpcAccount, err := marshalWalletAccount(w.internalScope(), account)
+	if err != nil {
+		return nil, err
+	}
+
+	return &XCreateAccountResponse{Account: rpcAccount}, nil
 }
 
 // RequiredReserve returns the minimum amount of satoshis that should be

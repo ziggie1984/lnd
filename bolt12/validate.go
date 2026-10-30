@@ -1,6 +1,7 @@
 package bolt12
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -15,6 +16,14 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 	"golang.org/x/text/currency"
 )
+
+// Bolt12Features defines the set of BOLT 12 feature bits understood and
+// supported by our implementation: multi-path payments (MPP), both the
+// compulsory and optional variants.
+var Bolt12Features = map[lnwire.FeatureBit]string{
+	lnwire.MPPRequired: "mpp",
+	lnwire.MPPOptional: "mpp",
+}
 
 var (
 	// ErrOutOfRangeType is returned when a TLV type falls outside the
@@ -131,11 +140,11 @@ var (
 	// structurally malformed or contains a non-alphabet byte.
 	ErrInvalidBip353Name = errors.New("invalid invreq_bip_353_name")
 
-	// ErrMissingSignature is returned when a wire-form invoice or
-	// invoice_request is emitted without a populated signature TLV.
-	// Pre-sign Encode (used to compute the Merkle root) is permitted to run
-	// without a signature; the bech32 string-codec layer is where the
-	// signature becomes mandatory.
+	// ErrMissingSignature is returned when an invoice or invoice_request
+	// is emitted or verified without a populated signature TLV. Signing
+	// reads the struct directly, so encode never needs to run first and
+	// is free to serialise an unsigned message. EncodeSigned and the
+	// string encoders are where the signature becomes mandatory.
 	ErrMissingSignature = errors.New("missing signature")
 
 	// ErrOfferFieldsOnSpontaneous is returned when an invoice request
@@ -143,6 +152,84 @@ var (
 	// offer_chains, offer_amount, etc.).
 	ErrOfferFieldsOnSpontaneous = errors.New(
 		"offer fields present on non-offer response",
+	)
+
+	// ErrMissingCreatedAt is returned when invoice_created_at is absent.
+	ErrMissingCreatedAt = errors.New("missing invoice_created_at")
+
+	// ErrMissingPaymentHash is returned when invoice_payment_hash is
+	// absent.
+	ErrMissingPaymentHash = errors.New("missing invoice_payment_hash")
+
+	// ErrMissingNodeID is returned when invoice_node_id is absent.
+	ErrMissingNodeID = errors.New("missing invoice_node_id")
+
+	// ErrMissingBlindedPay is returned when invoice_blindedpay is absent.
+	ErrMissingBlindedPay = errors.New("missing invoice_blindedpay")
+
+	// ErrBlindedPayMismatch is returned when invoice_blindedpay does not
+	// correspond 1:1 with invoice_paths.
+	ErrBlindedPayMismatch = errors.New(
+		"invoice_blindedpay count does not match invoice_paths",
+	)
+
+	// ErrMissingPaths is returned when invoice_paths is absent.
+	ErrMissingPaths = errors.New("missing invoice_paths")
+
+	// ErrNoUsablePaths is returned by validateInvoiceRead when every
+	// blinded path in invoice_paths carries unknown required features in
+	// payinfo.
+	ErrNoUsablePaths = errors.New(
+		"no blinded paths with known required features",
+	)
+
+	// ErrInvoiceExpired is returned by validateInvoiceExpiry when the
+	// caller's clock is past invoice_created_at + invoice_relative_expiry
+	// (default 7200 seconds when relative expiry is absent).
+	ErrInvoiceExpired = errors.New("invoice has expired")
+
+	// ErrInvoiceMismatch is returned when an invoice field does not match
+	// the invoice request.
+	ErrInvoiceMismatch = errors.New(
+		"invoice field mismatch with request",
+	)
+
+	// ErrInvoiceNodeIDMismatch is returned when offer_issuer_id is present
+	// but invoice_node_id does not equal it. The spec requires the invoice
+	// to be signed by the offer's issuer in this case.
+	ErrInvoiceNodeIDMismatch = errors.New(
+		"invoice_node_id does not match offer_issuer_id",
+	)
+
+	// ErrUnexpectedInvoiceNodeID is returned by validateInvoiceNodeID when
+	// the invoice was signed by a node other than the one the payer
+	// expected to answer.
+	ErrUnexpectedInvoiceNodeID = errors.New(
+		"invoice_node_id does not match the node the payer expected",
+	)
+
+	// ErrZeroInvoiceAmount is returned when invoice_amount is present but
+	// set to zero. The spec permits a zero "minimum amount", but a
+	// zero-amount HTLC cannot settle past the channel-layer dust limit, so
+	// the codec rejects it with a typed sentinel a spec-strict caller can
+	// distinguish from a missing-field violation.
+	ErrZeroInvoiceAmount = errors.New("invoice_amount must be greater " +
+		"than zero")
+
+	// ErrMissingError is returned when an invoice_error omits the error
+	// field.
+	ErrMissingError = errors.New("invoice_error missing error field")
+
+	// ErrEmptyError is returned when an invoice_error carries a zero-length
+	// error field.
+	ErrEmptyError = errors.New(
+		"invoice_error error field is empty",
+	)
+
+	// ErrSuggestedWithoutField is returned when suggested_value is set
+	// without erroneous_field.
+	ErrSuggestedWithoutField = errors.New(
+		"suggested_value set without erroneous_field",
 	)
 )
 
@@ -171,7 +258,96 @@ const (
 	invreqPathsType      tlv.Type = 90
 	invreqBip353NameType tlv.Type = 91
 	signatureTLVType     tlv.Type = 240
+
+	// Invoice TLV types.
+	invoicePathsType          tlv.Type = 160
+	invoiceBlindedPayType     tlv.Type = 162
+	invoiceCreatedAtType      tlv.Type = 164
+	invoiceRelativeExpiryType tlv.Type = 166
+	invoicePaymentHashType    tlv.Type = 168
+	invoiceAmountType         tlv.Type = 170
+	invoiceFallbacksType      tlv.Type = 172
+	invoiceFeaturesType       tlv.Type = 174
+	invoiceNodeIDType         tlv.Type = 176
+
+	// InvoiceError TLV types.
+	invoiceErrorErroneousFieldType tlv.Type = 1
+	invoiceErrorSuggestedValueType tlv.Type = 3
+	invoiceErrorErrorType          tlv.Type = 5
 )
+
+// validateInvoiceErrorWrite validates an invoice_error per the BOLT 12 writer
+// requirements. The checks follow the spec's writer section in order. The
+// caller must check that the suggested value, if present, contains a valid
+// type.
+func validateInvoiceErrorWrite(ie *InvoiceError) error {
+	// - MUST set error to an explanatory string.
+	if !ie.Error.IsSome() {
+		return ErrMissingError
+	}
+
+	// The spec's "explanatory string" is a type-5 UTF-8 message, so an
+	// empty or non-UTF-8 blob carries no explanation and fails the
+	// requirement even though IsSome passes. checkUTF8 mirrors the
+	// treatment every other BOLT 12 UTF-8 field receives.
+	if len(ie.Error.ValOpt().UnwrapOr(nil)) == 0 {
+		return ErrEmptyError
+	}
+	if err := checkUTF8(ie.Error, "error"); err != nil {
+		return err
+	}
+
+	// - MAY set erroneous_field to a specific field number in the invoice
+	//   or invoice_request which had a problem.
+	// No presence check: erroneous_field is optional for the writer.
+	hasErrField := ie.ErroneousField.IsSome()
+
+	// - if it sets erroneous_field:
+	//   - MAY set suggested_value.
+	// - otherwise:
+	//   - MUST NOT set suggested_value.
+	if ie.SuggestedValue.IsSome() && !hasErrField {
+		return ErrSuggestedWithoutField
+	}
+
+	//   - if it sets suggested_value:
+	//     - MUST set suggested_value to a valid field for that
+	//       tlv_fieldnum.
+	// TODO(bitromortac): enforce this once we send invoice_error. It needs
+	// a field-number to type table for the invoice_request and invoice
+	// fields, so a tu64 field rejects a non-minimal value, type 80
+	// requires 32 bytes and type 88 a compressed point.
+
+	return nil
+}
+
+// isKnownInvoiceErrorTLVType reports whether typ is a defined invoice_error
+// TLV type (1, 3, 5).
+func isKnownInvoiceErrorTLVType(typ tlv.Type) bool {
+	switch typ {
+	case invoiceErrorErroneousFieldType,
+		invoiceErrorSuggestedValueType,
+		invoiceErrorErrorType:
+
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateInvoiceErrorRead applies the BOLT 1 must-understand rule to a decoded
+// invoice_error: reject unknown even TLV types, tolerate unknown odd ones. It
+// is the only read-side check, since BOLT 12 leaves the semantic reader
+// requirements undefined (FIXME).
+func ValidateInvoiceErrorRead(ie *InvoiceError) error {
+	for _, t := range sortedTypes(ie.decodedTLVs) {
+		if !isKnownInvoiceErrorTLVType(t) && t%2 == 0 {
+			return fmt.Errorf("%w: type %d", ErrUnknownEvenType, t)
+		}
+	}
+
+	return nil
+}
 
 // isKnownInvreqTLVType determines if a TLV type is defined in the
 // invoice_request specification.
@@ -195,14 +371,14 @@ func isKnownInvreqTLVType(typ tlv.Type) bool {
 	}
 }
 
-// ValidateInvoiceRequestWrite ensures an invoice request adheres to the BOLT 12
+// validateInvoiceRequestWrite ensures an invoice request adheres to the BOLT 12
 // writer requirements.
 //
 // Note: This writer validation assumes that for requests responding to an
 // offer, the caller/constructor has already mirrored the offer's fields exactly
 // by using the NewInvoiceRequestFromOffer constructor, as an invoice request
 // can also be created without an offer.
-func ValidateInvoiceRequestWrite(ir *InvoiceRequest) error {
+func validateInvoiceRequestWrite(ir *InvoiceRequest) error {
 	// A present-but-nil pubkey passes IsSome but would panic the codec on
 	// encode, so reject both pubkey fields.
 	if err := checkPubKeyNotNil(
@@ -239,9 +415,11 @@ func ValidateInvoiceRequestWrite(ir *InvoiceRequest) error {
 		}
 
 		// - MUST set signature.sig using the invreq_payer_id.
-		// NOT CHECKED HERE: signing happens after this validator runs;
-		// the string encoder rejects an unsigned request and the reader
-		// verifies signature correctness.
+		// NOT CHECKED HERE: signing reads the struct, not the encoded
+		// bytes, so encode does not require a signature and an
+		// unsigned request passes it and this validator. EncodeSigned
+		// is the exported gate: it requires the signature and
+		// verifies it. The reader verifies correctness too.
 
 		// - MUST set invreq_payer_id to a transient public key.
 		// NOT CHECKED HERE: only presence is checked below; the caller
@@ -358,11 +536,8 @@ func ValidateInvoiceRequestWrite(ir *InvoiceRequest) error {
 
 	// - if it supports bolt12 invoice request features:
 	//   - MUST set invreq_features.features to the bitmap of features.
-	// We only reject unknown even bits here; advertising a feature is the
-	// caller's decision.
-	if err := checkFeatures(ir.InvreqFeatures); err != nil {
-		return err
-	}
+	// NOT CHECKED HERE: the bits are the caller's own, and the reader
+	// rejects unknown even bits using the known bits passed to it.
 
 	// check UTF-8 constraints and BIP 353
 	err := checkUTF8(ir.InvreqPayerNote, "invreq_payer_note")
@@ -455,13 +630,11 @@ func getInvreqChain(ir *InvoiceRequest) [32]byte {
 // Stateful or contextual checks (offer matching, path verification, unit-price
 // calculations) must be handled externally by the caller.
 //
-// Signature verification is NOT performed yet: the reader MUST also reject a
-// request whose Schnorr signature does not verify against invreq_payer_id, but
-// that check is deferred until the merkle/signing primitives land with the
-// Invoice message (see the TODO at the end of this function). Until then, a
-// caller wiring this into a handler MUST verify the signature itself.
+// The final check is cryptographic: the reader rejects a request whose
+// BIP-340 Schnorr signature does not verify against invreq_payer_id.
 func ValidateInvoiceRequestRead(ir *InvoiceRequest,
-	activeChain [32]byte) error {
+	activeChain [32]byte,
+	knownFeatures map[lnwire.FeatureBit]string) error {
 
 	// A present-but-nil pubkey passes IsSome but would panic the codec on
 	// encode, so reject both pubkey fields.
@@ -506,7 +679,7 @@ func ValidateInvoiceRequestRead(ir *InvoiceRequest,
 
 	// - if invreq_features contains unknown *even* bits that are non-zero:
 	//   - MUST reject the invoice request.
-	if err := checkFeatures(ir.InvreqFeatures); err != nil {
+	if err := checkFeatures(ir.InvreqFeatures, knownFeatures); err != nil {
 		return err
 	}
 
@@ -612,12 +785,7 @@ func ValidateInvoiceRequestRead(ir *InvoiceRequest,
 
 	// - MUST reject the invoice request if signature is not correct as
 	//   detailed in Signature Calculation using the invreq_payer_id.
-	// TODO(bolt12): implement signature verification.
-	if !ir.Signature.IsSome() {
-		return ErrMissingSignature
-	}
-
-	return nil
+	return verifyInvoiceRequest(ir)
 }
 
 // getInvoiceRequestOfferChains returns the chains an invoice request's mirrored
@@ -792,23 +960,21 @@ func isKnownOfferTLVType(typ tlv.Type) bool {
 	}
 }
 
-// ValidateOfferRead validates an offer per the BOLT 12 offer reader
+// validateOfferRead validates an offer per the BOLT 12 offer reader
 // requirements. The now parameter is used for expiry checks and can be
 // overridden in tests. activeChain is required: per spec, absent offer_chains
 // defaults to Bitcoin mainnet, and the reader must reject offers that do not
 // list a chain it operates on. Pass the genesis hash of the chain the receiver
 // is willing to settle on.
-func ValidateOfferRead(o *Offer, now time.Time, activeChain [32]byte) error {
-	// A present-but-nil offer_issuer_id passes IsSome but would panic the
-	// codec on encode, so reject it here.
-	if err := checkPubKeyNotNil(
-		o.OfferIssuerID, "offer_issuer_id",
-	); err != nil {
-		return err
-	}
+func validateOfferRead(o *Offer, now time.Time, activeChain [32]byte,
+	knownFeatures map[lnwire.FeatureBit]string) error {
 
-	// Check TLV types are in allowed range and that unknown even types are
-	// rejected (even = must-understand).
+	// - if the offer contains any TLV fields outside the inclusive ranges:
+	//   1 to 79 and 1000000000 to 1999999999:
+	//   - MUST NOT respond to the offer.
+	//
+	// BOLT 1 adds that an unknown even type is must-understand. An offer
+	// carries no signature, so no range is exempt from either rule.
 	for _, t := range sortedTypes(o.decodedTLVs) {
 		if !offerAllowedRange(t) {
 			return fmt.Errorf("%w: type %d", ErrOutOfRangeType, t)
@@ -819,12 +985,28 @@ func ValidateOfferRead(o *Offer, now time.Time, activeChain [32]byte) error {
 		}
 	}
 
-	// Check for unknown even feature bits.
-	if err := checkFeatures(o.OfferFeatures); err != nil {
+	// - if offer_features contains unknown odd bits that are non-zero:
+	//   - MUST ignore the bit.
+	// - if offer_features contains unknown even bits that are non-zero:
+	//   - MUST NOT respond to the offer.
+	//   - SHOULD indicate the unknown bit to the user.
+	// NOT CHECKED HERE: surfacing the bit to a user is the caller's, and
+	// the error names the offending bit for it.
+	if err := checkFeatures(o.OfferFeatures, knownFeatures); err != nil {
 		return err
 	}
 
-	// offer_chains present but empty.
+	// - if offer_chains is not set:
+	//   - if the node does not accept bitcoin invoices:
+	//     - MUST NOT respond to the offer
+	// - otherwise (offer_chains is set):
+	//   - if the node does not accept invoices for at least one of the
+	//     chains:
+	//     - MUST NOT respond to the offer
+	//
+	// A present-but-empty offer_chains lists no chain the node could
+	// accept, so it is rejected before the comparison. getOfferChains
+	// normalises an absent field to Bitcoin mainnet.
 	var chainsEmpty bool
 	o.OfferChains.WhenSome(
 		func(r tlv.RecordT[tlv.TlvType2, ChainsRecord]) {
@@ -837,44 +1019,63 @@ func ValidateOfferRead(o *Offer, now time.Time, activeChain [32]byte) error {
 		return ErrEmptyChains
 	}
 
-	// Validate the offer's chain against the active chain. An absent
-	// offer_chains TLV means "Bitcoin mainnet" per spec, normalised by
-	// getOfferChains.
-	offerChains := getOfferChains(o)
-	found := slices.Contains(offerChains, activeChain)
-	if !found {
+	if !slices.Contains(getOfferChains(o), activeChain) {
 		return ErrUnsupportedChain
 	}
 
-	// offer_amount set requires offer_description.
+	// - if offer_amount is set and offer_description is not set:
+	//   - MUST NOT respond to the offer.
+	// - if offer_amount is set and is not greater than zero:
+	//   - MUST NOT respond to the offer.
+	// - if offer_currency is set and offer_amount is not set:
+	//   - MUST NOT respond to the offer.
 	hasAmount := o.OfferAmount.IsSome()
 	if hasAmount && !o.OfferDescription.IsSome() {
 		return ErrMissingDescription
 	}
 
-	// offer_amount, if set, must be strictly greater than zero.
 	if err := checkAmountPositive(o.OfferAmount); err != nil {
 		return err
 	}
 
-	// offer_currency requires offer_amount.
 	if o.OfferCurrency.IsSome() && !hasAmount {
 		return ErrCurrencyWithoutAmount
 	}
 
-	// Must have either offer_issuer_id or offer_paths.
+	// - if neither offer_issuer_id nor offer_paths are set:
+	//   - MUST NOT respond to the offer.
+	//
+	// A present-but-nil key passes IsSome but would panic the codec when
+	// used, so reject it before the presence rule.
+	if err := checkPubKeyNotNil(
+		o.OfferIssuerID, "offer_issuer_id",
+	); err != nil {
+		return err
+	}
+
 	if !o.OfferIssuerID.IsSome() && !o.OfferPaths.IsSome() {
 		return ErrNoIssuerIdentity
 	}
 
-	// Check blinded paths have at least one hop.
+	// - if num_hops is 0 in any blinded_path in offer_paths:
+	//   - MUST NOT respond to the offer.
 	if err := checkBlindedPaths(o.OfferPaths); err != nil {
 		return err
 	}
 
-	// Expiry check. A present-but-zero offer_absolute_expiry is as a valid
-	// timestamp in the past, it doesn't have the special meaning of "no
-	// expiry".
+	// - if it uses offer_amount to provide the user with a cost estimate:
+	//   - MUST take into account the currency units for offer_amount.
+	//   - MUST warn the user if the received invoice_amount differs
+	//     significantly from that estimate.
+	// NOT CHECKED HERE: the estimate and the warning belong to the caller,
+	// and a non-bitcoin currency needs an exchange rate the codec has no
+	// source for.
+
+	// - if the current time is after offer_absolute_expiry:
+	//   - MUST NOT respond to the offer.
+	//
+	// A present-but-zero offer_absolute_expiry is a valid timestamp in the
+	// past. It has no special "never expires" meaning.
 	var (
 		expiry    uint64
 		hasExpiry bool
@@ -889,7 +1090,14 @@ func ValidateOfferRead(o *Offer, now time.Time, activeChain [32]byte) error {
 		return ErrOfferExpired
 	}
 
-	// Validate UTF-8 fields.
+	// - if it chooses to send an invoice request, it sends an onion
+	//   message via offer_paths when set, otherwise to offer_issuer_id.
+	// NOT CHECKED HERE: sending is the caller's, and the path it used is
+	// the binding the payer later checks against invoice_node_id.
+
+	// The spec states no encoding rule for the text fields, but a field
+	// that is not valid UTF-8 cannot be shown to a user or compared, and
+	// offer_currency has to parse as an ISO 4217 code to mean anything.
 	if err := checkUTF8(o.OfferCurrency, "offer_currency"); err != nil {
 		return err
 	}
@@ -930,51 +1138,35 @@ func getOfferChains(o *Offer) [][32]byte {
 	return chains
 }
 
-// ValidateOfferWrite validates an offer per the BOLT 12 offer writer
-// requirements.
-func ValidateOfferWrite(o *Offer) error {
-	// A present-but-nil offer_issuer_id passes IsSome but would panic the
-	// codec on encode, so reject it here.
-	if err := checkPubKeyNotNil(
-		o.OfferIssuerID, "offer_issuer_id",
-	); err != nil {
-		return err
-	}
-
-	// Writer MUST NOT set TLV fields outside allowed ranges. This check
-	// catches a decoded-then-mutated offer: a freshly-built struct has no
-	// decodedTLVs (Decode is the only writer of that field). The typed
-	// field set already excludes out-of-range types by construction, so a
-	// freshly-built offer cannot violate the range rule in the first place.
+// validateOfferWrite validates an offer per the BOLT 12 offer writer
+// requirements, in the order the spec states them.
+func validateOfferWrite(o *Offer) error {
+	// - MUST NOT set any TLV fields outside the inclusive ranges: 1 to 79
+	//   and 1000000000 to 1999999999.
+	//
+	// BOLT 1 adds that an unknown even type is must-understand. Both
+	// checks catch a decoded-then-mutated offer: a freshly-built struct
+	// has no decodedTLVs (Decode is the only writer of that field), and
+	// the typed field set cannot express an out-of-range or unknown type.
+	// The reader applies the same two rules in this order.
 	for _, t := range sortedTypes(o.decodedTLVs) {
 		if !offerAllowedRange(t) {
 			return fmt.Errorf("%w: type %d",
 				ErrOutOfRangeType, t)
 		}
+
+		if !isKnownOfferTLVType(t) && t%2 == 0 {
+			return fmt.Errorf("%w: type %d", ErrUnknownEvenType, t)
+		}
 	}
 
-	// offer_amount requires offer_description.
-	if o.OfferAmount.IsSome() && !o.OfferDescription.IsSome() {
-		return ErrMissingDescription
-	}
-
-	// offer_amount, if set, must be strictly greater than zero.
-	if err := checkAmountPositive(o.OfferAmount); err != nil {
-		return err
-	}
-
-	// offer_currency requires offer_amount.
-	if o.OfferCurrency.IsSome() && !o.OfferAmount.IsSome() {
-		return ErrCurrencyWithoutAmount
-	}
-
-	// Without offer_paths, MUST set offer_issuer_id.
-	if !o.OfferPaths.IsSome() && !o.OfferIssuerID.IsSome() {
-		return ErrNoIssuerIdentity
-	}
-
-	// Defense in depth: writer-side mirrors of reader rejections for
-	// present-but-empty offer_chains and offer_paths.
+	// - if the chain for the invoice is not solely bitcoin:
+	//   - MUST specify offer_chains the offer is valid for.
+	// - otherwise:
+	//   - SHOULD omit offer_chains, implying that bitcoin is only chain.
+	// NOT CHECKED HERE: which chain the writer settles on is caller
+	// context. A present-but-empty offer_chains says nothing, so mirror
+	// the reader and reject it.
 	var chainsEmpty bool
 	o.OfferChains.WhenSome(
 		func(r tlv.RecordT[tlv.TlvType2, ChainsRecord]) {
@@ -987,12 +1179,96 @@ func ValidateOfferWrite(o *Offer) error {
 		return ErrEmptyChains
 	}
 
+	// - if a specific minimum offer_amount is required for successful
+	//   payment:
+	//   - MUST set offer_amount to the amount expected (per item).
+	//   - MUST set offer_amount greater than zero.
+	//   - if the currency for offer_amount is that of all entries in
+	//     chains:
+	//     - MUST specify offer_amount in multiples of the minimum
+	//       lightning-payable unit.
+	//   - otherwise:
+	//     - MUST specify offer_currency iso4217 as an ISO 4217
+	//       three-letter code.
+	//     - MUST specify offer_amount in the currency unit adjusted by the
+	//       ISO 4217 exponent.
+	//   - MUST set offer_description to a complete description of the
+	//     purpose of the payment.
+	// - otherwise:
+	//   - MUST NOT set offer_amount
+	//   - MUST NOT set offer_currency
+	//   - MAY set offer_description
+	// NOT CHECKED HERE: the unit of a bitcoin amount is trivially
+	// satisfied in msat, and the ISO 4217 exponent needs the currency's
+	// own scale.
+	if err := checkAmountPositive(o.OfferAmount); err != nil {
+		return err
+	}
+
+	if o.OfferAmount.IsSome() && !o.OfferDescription.IsSome() {
+		return ErrMissingDescription
+	}
+
+	if o.OfferCurrency.IsSome() && !o.OfferAmount.IsSome() {
+		return ErrCurrencyWithoutAmount
+	}
+
+	if err := checkISO4217(o.OfferCurrency); err != nil {
+		return err
+	}
+
+	// - MAY set offer_metadata for its own use.
+	// - if it supports bolt12 offer features:
+	//   - MUST set offer_features.features to the bitmap of bolt12
+	//     features.
+	// - if the offer expires:
+	//   - MUST set offer_absolute_expiry seconds_from_epoch.
+	// NOT CHECKED HERE: all three are the writer's own decisions, with no
+	// state the codec could contradict.
+
+	// - if it is connected only by private channels:
+	//   - MUST include offer_paths containing one or more paths to the
+	//     node from publicly reachable nodes.
+	// - otherwise:
+	//   - MAY include offer_paths.
+	// NOT CHECKED HERE: connectivity is caller context. A path with no
+	// hops cannot carry a message, so mirror the reader and reject it.
 	if err := checkBlindedPaths(o.OfferPaths); err != nil {
 		return err
 	}
 
-	// Defense in depth: writer-side mirrors of the reader UTF-8 checks
-	// for offer_currency, offer_description, and offer_issuer.
+	// - if it includes offer_paths:
+	//   - MAY set offer_issuer_id.
+	// - otherwise:
+	//   - MUST set offer_issuer_id to the node's public key to request the
+	//     invoice from.
+	//
+	// A present-but-nil key passes IsSome but would panic the codec on
+	// encode, so reject it before the presence rule.
+	if err := checkPubKeyNotNil(
+		o.OfferIssuerID, "offer_issuer_id",
+	); err != nil {
+		return err
+	}
+
+	if !o.OfferPaths.IsSome() && !o.OfferIssuerID.IsSome() {
+		return ErrNoIssuerIdentity
+	}
+
+	// - if it sets offer_issuer:
+	//   - SHOULD set it to identify the issuer of the invoice clearly.
+	// - if it can supply more than one item for a single invoice:
+	//   - MUST set offer_quantity_max, and MUST NOT set it to 0 when the
+	//     maximum is known.
+	// - otherwise:
+	//   - MUST NOT set offer_quantity_max.
+	// NOT CHECKED HERE: both describe the writer's own inventory and
+	// naming, which the codec cannot see. offer_quantity_max carries a
+	// three-state meaning (absent, zero for unlimited, a bound), so no
+	// value of it is invalid on its own.
+
+	// Defense in depth: the reader rejects a non-UTF-8 text field, so the
+	// writer does not emit one.
 	if err := checkUTF8(o.OfferCurrency, "offer_currency"); err != nil {
 		return err
 	}
@@ -1004,10 +1280,6 @@ func ValidateOfferWrite(o *Offer) error {
 	}
 
 	if err := checkUTF8(o.OfferIssuer, "offer_issuer"); err != nil {
-		return err
-	}
-
-	if err := checkISO4217(o.OfferCurrency); err != nil {
 		return err
 	}
 
@@ -1029,15 +1301,13 @@ func checkISO4217[T tlv.TlvType](opt tlv.OptionalRecordT[T, tlv.Blob]) error {
 
 // checkFeatures rejects any unknown even (must-understand) feature bit.
 func checkFeatures[T tlv.TlvType](
-	opt tlv.OptionalRecordT[T, lnwire.RawFeatureVector]) error {
+	opt tlv.OptionalRecordT[T, lnwire.RawFeatureVector],
+	knownFeatures map[lnwire.FeatureBit]string) error {
 
 	return fn.MapOptionZ(
 		opt.ValOpt(),
 		func(fv lnwire.RawFeatureVector) error {
-			// nil catalogue: BOLT 12 defines no feature bits yet,
-			// so every set even bit is "unknown". Swap in a
-			// Bolt12Features map once the spec assigns bits.
-			wrapped := lnwire.NewFeatureVector(&fv, nil)
+			wrapped := lnwire.NewFeatureVector(&fv, knownFeatures)
 			unknown := wrapped.UnknownRequiredFeatures()
 			if len(unknown) == 0 {
 				return nil
@@ -1113,4 +1383,641 @@ func checkPubKeyNotNil[T tlv.TlvType](
 
 		return nil
 	})
+}
+
+// checkInvoiceNodeID enforces the spec rule that, when offer_issuer_id is
+// present, invoice_node_id MUST equal it. Both fields live on the invoice, so
+// this is verifiable without the originating offer. The offer_paths branch
+// (invoice_node_id equals the final blinded_node_id the payer sent the invoice
+// request to) needs caller context and is not checked here. A present-but-nil
+// offer_issuer_id or invoice_node_id is rejected separately as
+// ErrNilPublicKey, so a nil here is treated as absent.
+func checkInvoiceNodeID(inv *Invoice) error {
+	// A present-but-nil offer_issuer_id is rejected separately as
+	// ErrNilPublicKey, so a nil here means absent and there is nothing to
+	// check.
+	issuerID := inv.OfferIssuerID.ValOpt().UnwrapOr(nil)
+	if issuerID == nil {
+		return nil
+	}
+
+	// invoice_node_id is likewise guarded against present-but-nil by
+	// checkPubKeyNotNil, so a nil here means absent; its required presence
+	// is enforced separately as ErrMissingNodeID.
+	nodeID := inv.InvoiceNodeID.ValOpt().UnwrapOr(nil)
+	if nodeID == nil || !nodeID.IsEqual(issuerID) {
+		return ErrInvoiceNodeIDMismatch
+	}
+
+	return nil
+}
+
+// validateInvoiceWrite validates an invoice per the BOLT 12 invoice writer
+// requirements. The checks follow the spec's writer section in order.
+// Requirements that depend on context this codec layer does not have
+// (signing, the payment preimage, the offer or path the request arrived on)
+// are noted inline as deferred to the caller or to a paired validator.
+func validateInvoiceWrite(inv *Invoice) error {
+	// - MUST set invoice_created_at to the number of seconds since Midnight
+	//   1 January 1970, UTC when the invoice was created.
+	if !inv.InvoiceCreatedAt.IsSome() {
+		return ErrMissingCreatedAt
+	}
+
+	// - MUST set invoice_amount to the minimum amount it will accept, in
+	//   units of the minimal lightning-payable unit (e.g. milli-satoshis
+	//   for bitcoin) for invreq_chain.
+	if !inv.InvoiceAmount.IsSome() {
+		return ErrMissingAmount
+	}
+
+	// Policy extension: reject zero invoice_amount. The spec permits it
+	// ("minimum amount it will accept"), but a zero-amount HTLC cannot
+	// settle past the channel-layer dust limit. The typed
+	// ErrZeroInvoiceAmount lets a spec-strict caller distinguish this from
+	// a missing-field violation. Symmetric with validateInvoiceRead.
+	if inv.InvoiceAmount.ValOpt().UnwrapOr(0) == 0 {
+		return ErrZeroInvoiceAmount
+	}
+
+	// - if the invoice is in response to an invoice_request:
+	//   - MUST copy all non-signature fields from the invoice request
+	//     (including unknown fields).
+	//   - if invreq_amount is present: MUST set invoice_amount to
+	//     invreq_amount.
+	//   - otherwise: MUST set invoice_amount to the expected amount.
+	// NOT CHECKED HERE: the copy is performed by NewInvoiceFromRequest and
+	// this validator runs on the assembled struct. The invoice_amount ==
+	// invreq_amount equality and the byte-for-byte field mirror are
+	// enforced when the invoice is paired with its request in
+	// validateInvoiceAgainstRequest. The offer_currency "expected amount"
+	// needs a live exchange rate the codec cannot compute.
+
+	// - MUST set invoice_payment_hash to the SHA256 hash of the
+	//   payment_preimage that will be given in return for payment.
+	// NOT CHECKED HERE beyond presence: relating the hash to the preimage
+	// needs the preimage, which lives with the caller's logic.
+	if !inv.InvoicePaymentHash.IsSome() {
+		return ErrMissingPaymentHash
+	}
+
+	// - if offer_issuer_id is present: MUST set invoice_node_id to
+	//   offer_issuer_id.
+	// - otherwise, if offer_paths is present: MUST set invoice_node_id to
+	//   the final blinded_node_id on the path the request arrived on.
+	// The offer_issuer_id case is enforced by checkInvoiceNodeID since both
+	// fields live on the invoice. The offer_paths case needs the blinded
+	// arrival path, which is caller context, so only presence is checked
+	// for it.
+	//
+	// A present-but-nil pubkey passes IsSome but would panic the codec on
+	// encode, so reject it before the presence check.
+	if err := checkPubKeyNotNil(
+		inv.InvoiceNodeID, "invoice_node_id",
+	); err != nil {
+		return err
+	}
+	if !inv.InvoiceNodeID.IsSome() {
+		return ErrMissingNodeID
+	}
+	if err := checkInvoiceNodeID(inv); err != nil {
+		return err
+	}
+
+	// - MUST specify exactly one signature TLV element: signature.
+	//   - MUST set sig to the signature using invoice_node_id as described
+	//     in Signature Calculation.
+	// NOT CHECKED HERE: signing reads the struct, not the encoded bytes,
+	// so encode does not require a signature and an unsigned invoice
+	// passes it and this validator. EncodeSigned is the exported gate:
+	// it requires the signature and verifies it, mirroring
+	// validateInvoiceRequestWrite. The reader verifies correctness too.
+
+	// - if the expiry for accepting payment is not 7200 seconds after
+	//   invoice_created_at: MUST set invoice_relative_expiry.
+	//   seconds_from_creation to the number of seconds after
+	//   invoice_created_at that payment should not be attempted.
+	// NOT CHECKED HERE: the writer chooses the expiry, so there is no rule
+	// to enforce on the encoded value. The time comparison needs a clock
+	// (see validateInvoiceExpiry).
+
+	// - if it accepts onchain payments:
+	//   - MAY specify invoice_fallbacks.
+	//   - SHOULD specify invoice_fallbacks in order of most-preferred to
+	//     least-preferred if it has a preference.
+	//   - for the bitcoin chain, it MUST set each fallback_address with
+	//     version as a valid witness version and address as a valid witness
+	//     program.
+	// NOT CHECKED HERE: the codec stays permissive so callers can inspect
+	// raw fallbacks. The spec's ignore semantics are applied on the read
+	// side by usableFallbackAddresses.
+
+	// - MUST include invoice_paths containing one or more paths to the
+	//   node.
+	//   - MUST specify invoice_paths in order of most-preferred to
+	//     least-preferred if it has a preference.
+	if !inv.InvoicePaths.IsSome() {
+		return ErrMissingPaths
+	}
+
+	// Writer mirror of the reader rule rejecting a blinded_path with zero
+	// hops.
+	if err := checkBlindedPaths(inv.InvoicePaths); err != nil {
+		return err
+	}
+
+	// - MUST include invoice_blindedpay with exactly one blinded_payinfo
+	//   for each blinded_path in paths, in order.
+	// - MUST set features in each blinded_payinfo to match
+	//   encrypted_data_tlv.allowed_features (or empty, if no
+	//   allowed_features).
+	// NOT CHECKED HERE: matching each payinfo.features to its path's
+	// encrypted_data_tlv allowed_features needs the decrypted path, which
+	// is caller context. Only the 1:1 count is enforced below.
+	bp, err := inv.InvoiceBlindedPay.ValOpt().UnwrapOrErr(
+		ErrMissingBlindedPay,
+	)
+	if err != nil {
+		return err
+	}
+
+	// invoice_paths presence is enforced above, so the default is never the
+	// value used; UnwrapOr just avoids a second WhenSome.
+	paths := inv.InvoicePaths.ValOpt().UnwrapOr(lnwire.BlindedPaths{})
+	if len(paths.Paths) != len(bp.Infos) {
+		return ErrBlindedPayMismatch
+	}
+
+	// A present-but-nil pubkey passes IsSome but would panic the codec on
+	// encode, so reject the mirrored pubkey fields. Symmetric with
+	// validateInvoiceRequestWrite.
+	if err := fn.MapOptionZ(inv.InvreqPayerID.ValOpt(),
+		func(pk *btcec.PublicKey) error {
+			if pk == nil {
+				return fmt.Errorf("%w: invreq_payer_id",
+					ErrNilPublicKey)
+			}
+
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := fn.MapOptionZ(inv.OfferIssuerID.ValOpt(),
+		func(pk *btcec.PublicKey) error {
+			if pk == nil {
+				return fmt.Errorf("%w: offer_issuer_id",
+					ErrNilPublicKey)
+			}
+
+			return nil
+		}); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// defaultInvoiceRelativeExpiry is the spec-defined fallback when an invoice
+// omits invoice_relative_expiry: two hours from creation.
+const defaultInvoiceRelativeExpiry uint32 = 7200
+
+// validateInvoiceExpiry rejects an invoice whose effective expiry is strictly
+// before now. The effective expiry is invoice_created_at +
+// invoice_relative_expiry, falling back to a 7200-second default per spec when
+// relative expiry is absent. Per the BOLT 12 reader the invoice is rejected
+// only when the current time is greater than the expiry, so the boundary second
+// itself is still valid; this matches the strict comparison validateOfferRead
+// uses for offer_absolute_expiry. validateInvoiceRead cannot make the check,
+// because the time comparison needs a clock the codec does not supply, so the
+// exported entry points fold this in: DecodeInvoiceString for the string form
+// and ValidateInvoiceForPayment for an invoice answering a request.
+func validateInvoiceExpiry(inv *Invoice, now time.Time) error {
+	createdAt, err := inv.InvoiceCreatedAt.ValOpt().UnwrapOrErr(
+		ErrMissingCreatedAt,
+	)
+	if err != nil {
+		return err
+	}
+
+	relExpiry := inv.InvoiceRelativeExp.ValOpt().UnwrapOr(
+		TUint32(defaultInvoiceRelativeExpiry),
+	)
+
+	// invoice_created_at + the relative expiry can overflow uint64 for an
+	// absurd timestamp. The true sum then exceeds any real clock, so the
+	// invoice is not expired: detect the carry rather than wrapping to a
+	// small value that would spuriously read as expired.
+	expiry, carry := bits.Add64(uint64(createdAt), uint64(relExpiry), 0)
+	if carry == 0 && uint64(now.Unix()) > expiry {
+		return ErrInvoiceExpired
+	}
+
+	return nil
+}
+
+// validateInvoiceNodeID rejects an invoice that was not signed by the node the
+// payer expected to answer. Which node that is comes from the payer's own
+// state: offer_issuer_id, or the final blinded_node_id of the path it chose.
+// None of that is derivable from the invoice, so validateInvoiceRead cannot
+// make the comparison. ValidateInvoiceForPayment folds it in, as it does for
+// validateInvoiceExpiry.
+//
+// Skipping it is not cosmetic for a response to an offer. Every node on the
+// blinded path can answer with its own correctly signed invoice, and the
+// reader accepts it, because the signature only has to agree with whatever
+// invoice_node_id the invoice itself carries.
+func validateInvoiceNodeID(inv *Invoice, req *InvoiceRequest,
+	expectedNodeID *btcec.PublicKey) error {
+
+	// - otherwise (invoice_request without an offer):
+	//   - MAY reject the invoice if it cannot confirm that invoice_node_id
+	//     is correct, out-of-band.
+	//
+	// The payer published the invoice request and never addressed the
+	// payee, so it has a key to compare against only if it learned one out
+	// of band. Without one it passes nil.
+	isOfferResponse := req.OfferIssuerID.IsSome() || req.OfferPaths.IsSome()
+	if expectedNodeID == nil && !isOfferResponse {
+		return nil
+	}
+
+	if expectedNodeID == nil {
+		return fmt.Errorf("%w: expected invoice_node_id",
+			ErrNilPublicKey)
+	}
+
+	// A present-but-nil invoice_node_id is rejected as ErrNilPublicKey by
+	// the readers, so a nil here means the field is absent.
+	nodeID := inv.InvoiceNodeID.ValOpt().UnwrapOr(nil)
+	if nodeID == nil {
+		return ErrMissingNodeID
+	}
+
+	if !nodeID.IsEqual(expectedNodeID) {
+		return ErrUnexpectedInvoiceNodeID
+	}
+
+	return nil
+}
+
+// mirroredRecordBytes encodes the records in the invreq mirror range to their
+// canonical per-record bytes, keyed by TLV type. This is the view the
+// byte-for-byte invreq->invoice comparison operates on.
+func mirroredRecordBytes(records []tlv.Record) (map[tlv.Type][]byte, error) {
+	out := make(map[tlv.Type][]byte)
+	for i := range records {
+		r := records[i]
+		if !invreqAllowedRange(r.Type()) {
+			continue
+		}
+		buf, err := lnwire.EncodeRecords([]tlv.Record{r})
+		if err != nil {
+			return nil, fmt.Errorf(
+				"encode record (type %d): %w", r.Type(), err,
+			)
+		}
+		out[r.Type()] = buf
+	}
+
+	return out, nil
+}
+
+// validateInvoiceAgainstRequest performs a byte-for-byte comparison of the
+// fields in ranges 0-159 and 1000000000-2999999999 between an invoice and its
+// original request, as required by the BOLT 12 invoice reader specification.
+// Callers must invoke this after pairing the invoice with its originating
+// request. The codec library cannot reach across that pairing on its own.
+//
+// The comparison runs against the canonical per-record encoding from each
+// side's AllRecords output. Two structs that decode to the same typed fields
+// and the same ExtraSignedFields entries produce byte-identical encodings for
+// any matching type. That is the byte-mirror invariant the spec demands.
+//
+// The amount cross-check enforces the spec's authorized-range rule: when
+// invreq_amount is present, invoice_amount MUST equal it; otherwise the payer
+// relied on the offer's fixed amount, so invoice_amount MUST be at least
+// offer_amount * invreq_quantity for the native (bitcoin) case. The
+// offer_currency case needs a caller-supplied exchange rate and is delegated to
+// the caller.
+func validateInvoiceAgainstRequest(inv *Invoice, req *InvoiceRequest) error {
+	reqFields, err := mirroredRecordBytes(req.AllRecords())
+	if err != nil {
+		return fmt.Errorf("encode request fields: %w", err)
+	}
+
+	invFields, err := mirroredRecordBytes(inv.AllRecords())
+	if err != nil {
+		return fmt.Errorf("encode invoice fields: %w", err)
+	}
+
+	for typ, invBytes := range invFields {
+		reqBytes, ok := reqFields[typ]
+		if !ok {
+			return fmt.Errorf("%w: invoice contains unexpected "+
+				"field %d", ErrInvoiceMismatch, typ)
+		}
+		if !bytes.Equal(invBytes, reqBytes) {
+			return fmt.Errorf("%w: field %d data mismatch",
+				ErrInvoiceMismatch, typ)
+		}
+		delete(reqFields, typ)
+	}
+
+	if len(reqFields) > 0 {
+		return fmt.Errorf("%w: invoice is missing %d fields from "+
+			"request", ErrInvoiceMismatch, len(reqFields))
+	}
+
+	// Spec MUST: if invreq_amount (type 82) is present, invoice_amount
+	// (type 170) must equal it. The byte-mirror loop cannot relate fields
+	// with differing type numbers, so this cross-type equality is checked
+	// explicitly.
+	if req.InvreqAmount.IsSome() {
+		invreqAmt := req.InvreqAmount.ValOpt().UnwrapOr(0)
+		invAmt := inv.InvoiceAmount.ValOpt().UnwrapOr(0)
+		if invAmt != invreqAmt {
+			return fmt.Errorf("%w: invoice_amount %d != "+
+				"invreq_amount %d", ErrInvoiceMismatch, invAmt,
+				invreqAmt)
+		}
+
+		return nil
+	}
+
+	// Spec SHOULD: with invreq_amount absent the payer relied on the
+	// offer's fixed amount, so confirm invoice_amount is within the
+	// authorized range. For the native (non-offer_currency) case that range
+	// is bounded below by offer_amount * invreq_quantity, computable here
+	// from the mirrored offer fields. The offer_currency case is delegated
+	// to the caller (see checkInvoiceAmountMeetsOffer).
+	return checkInvoiceAmountMeetsOffer(inv)
+}
+
+// checkInvoiceAmountMeetsOffer confirms invoice_amount is at least the offer's
+// authorized amount for the native (bitcoin) case, where the expected amount is
+// offer_amount * invreq_quantity. It is a no-op when offer_amount is absent
+// (there is nothing to bound against) or when offer_currency is present (the
+// conversion into the invreq_chain currency needs a caller-supplied exchange
+// rate, so the bound is delegated). This mirrors the request-side
+// checkInvreqAmountMeetsOffer and is only meaningful when invreq_amount is
+// absent, since a present invreq_amount pins invoice_amount by exact equality.
+func checkInvoiceAmountMeetsOffer(inv *Invoice) error {
+	if !inv.OfferAmount.IsSome() {
+		return nil
+	}
+
+	// NOT CHECKED HERE: the offer_currency (non-bitcoin) case. Caller MUST
+	// convert offer_amount to the invreq_chain currency and compare.
+	if inv.OfferCurrency.IsSome() {
+		return nil
+	}
+
+	offerAmt := uint64(inv.OfferAmount.ValOpt().UnwrapOr(0))
+	qty := uint64(inv.InvreqQuantity.ValOpt().UnwrapOr(1))
+	invAmt := uint64(inv.InvoiceAmount.ValOpt().UnwrapOr(0))
+
+	// Guard against overflow of offer_amount * quantity.
+	hi, expectedAmt := bits.Mul64(offerAmt, qty)
+	if hi != 0 {
+		return fmt.Errorf("%w: offer_amount %d * quantity %d "+
+			"overflows uint64", ErrAmountBelowExpected, offerAmt,
+			qty)
+	}
+	if invAmt < expectedAmt {
+		return fmt.Errorf("%w: invoice_amount %d below expected %d",
+			ErrAmountBelowExpected, invAmt, expectedAmt)
+	}
+
+	return nil
+}
+
+// isKnownInvoiceTLVType returns true for TLV types that are defined in the
+// invoice spec.
+func isKnownInvoiceTLVType(typ tlv.Type) bool {
+	if isKnownInvreqTLVType(typ) {
+		return true
+	}
+
+	switch typ {
+	case invoicePathsType, invoiceBlindedPayType, invoiceCreatedAtType,
+		invoiceRelativeExpiryType, invoicePaymentHashType,
+		invoiceAmountType, invoiceFallbacksType, invoiceFeaturesType,
+		invoiceNodeIDType:
+
+		return true
+
+	default:
+		return false
+	}
+}
+
+// InvoiceKnownFeatures names the two sets of known feature bits the invoice
+// reader validates against. They are grouped in a struct rather than passed as
+// two positional map[lnwire.FeatureBit]string arguments because the identical
+// types would otherwise let a caller transpose them silently: validating
+// invoice_features against the blinded-path bits and vice versa compiles
+// cleanly but misvalidates. Named fields make the swap impossible.
+type InvoiceKnownFeatures struct {
+	// Invoice names the feature bits the reader understands for the
+	// top-level invoice_features field.
+	Invoice map[lnwire.FeatureBit]string
+
+	// Blinded names the feature bits the reader understands for each
+	// blinded_payinfo.features field carried in invoice_blindedpay.
+	Blinded map[lnwire.FeatureBit]string
+}
+
+// validateInvoiceRead validates an invoice against the BOLT 12 reader
+// requirements, running the stateless structural checks against activeChain
+// (the chain the reader supports). The final check is cryptographic: the
+// reader rejects an invoice whose BIP-340 Schnorr signature does not verify
+// against invoice_node_id.
+//
+// Note: while it verifies that at least one usable path is present,
+// downstream callers must re-apply the same features.Blinded filter at path
+// selection time (via Invoice.UsablePaths) to avoid selecting paths with
+// unknown required features.
+func validateInvoiceRead(inv *Invoice, activeChain [32]byte,
+	features InvoiceKnownFeatures) error {
+	// - MUST reject the invoice if invoice_amount is not present.
+	if !inv.InvoiceAmount.IsSome() {
+		return ErrMissingAmount
+	}
+
+	// Policy extension. See validateInvoiceWrite.
+	if inv.InvoiceAmount.ValOpt().UnwrapOr(0) == 0 {
+		return ErrZeroInvoiceAmount
+	}
+
+	// - MUST reject the invoice if invoice_created_at is not present.
+	if !inv.InvoiceCreatedAt.IsSome() {
+		return ErrMissingCreatedAt
+	}
+
+	// - MUST reject the invoice if invoice_payment_hash is not present.
+	if !inv.InvoicePaymentHash.IsSome() {
+		return ErrMissingPaymentHash
+	}
+
+	// - MUST reject the invoice if invoice_node_id is not present. A
+	//   present-but-nil pubkey passes IsSome but would panic the codec, so
+	//   reject it before the presence check.
+	if err := checkPubKeyNotNil(
+		inv.InvoiceNodeID, "invoice_node_id",
+	); err != nil {
+		return err
+	}
+	if !inv.InvoiceNodeID.IsSome() {
+		return ErrMissingNodeID
+	}
+
+	// - if invreq_chain is not present:
+	//   - MUST reject the invoice if bitcoin is not a supported chain.
+	// - otherwise:
+	//   - MUST reject the invoice if invreq_chain.chain is not a supported
+	//     chain.
+	// invreq_chain defaults to bitcoin mainnet when absent. activeChain is
+	// the chain the reader supports.
+	chain := inv.InvreqChain.ValOpt().UnwrapOr(bitcoinMainnetGenesisHash)
+	if chain != activeChain {
+		return ErrUnsupportedChain
+	}
+
+	// - if invoice_features contains unknown odd bits that are non-zero:
+	//   - MUST ignore the bit.
+	// - if invoice_features contains unknown even bits that are non-zero:
+	//   - MUST reject the invoice.
+	// checkFeatures enforces those invoice_features bit rules below.
+	//
+	// Separately, BOLT 1 makes unknown even TLV types must-understand.
+	// The invoice reader defines no out-of-range rule, so an unknown odd
+	// type is ignored at any value and an unknown even type is rejected at
+	// any value, the signature range (240-1000) included.
+	for _, t := range sortedTypes(inv.decodedTLVs) {
+		if !isKnownInvoiceTLVType(t) && t%2 == 0 {
+			return fmt.Errorf("%w: type %d", ErrUnknownEvenType, t)
+		}
+	}
+	err := checkFeatures(inv.InvoiceFeatures, features.Invoice)
+	if err != nil {
+		return err
+	}
+
+	// - if invoice_relative_expiry is present:
+	//   - MUST reject the invoice if the current time since 1970-01-01 UTC
+	//     is greater than invoice_created_at plus seconds_from_creation.
+	// - otherwise:
+	//   - MUST reject the invoice if the current time since 1970-01-01 UTC
+	//     is greater than invoice_created_at plus 7200.
+	// NOT CHECKED HERE: the comparison needs a clock the codec doesn't
+	// supply. DecodeInvoiceString and ValidateInvoiceForPayment fold in
+	// validateInvoiceExpiry, which makes the check.
+
+	// - MUST reject the invoice if invoice_paths is not present or is
+	//   empty.
+	if !inv.InvoicePaths.IsSome() {
+		return ErrMissingPaths
+	}
+
+	// - MUST reject the invoice if num_hops is 0 in any blinded_path in
+	//   invoice_paths (checkBlindedPaths also rejects an empty path list).
+	if err := checkBlindedPaths(inv.InvoicePaths); err != nil {
+		return err
+	}
+
+	// - MUST reject the invoice if invoice_blindedpay is not present.
+	bp, err := inv.InvoiceBlindedPay.ValOpt().UnwrapOrErr(
+		ErrMissingBlindedPay,
+	)
+	if err != nil {
+		return err
+	}
+
+	// - MUST reject the invoice if invoice_blindedpay does not contain
+	//   exactly one blinded_payinfo per invoice_paths.blinded_path.
+	paths := inv.InvoicePaths.ValOpt().UnwrapOr(lnwire.BlindedPaths{})
+	if len(paths.Paths) != len(bp.Infos) {
+		return ErrBlindedPayMismatch
+	}
+
+	// - For each invoice_blindedpay.payinfo:
+	//   - MUST NOT use the corresponding invoice_paths.path if
+	//     payinfo.features has any unknown even bits set.
+	//   - MUST reject the invoice if this leaves no usable paths.
+	// UsablePaths applies that filter; a caller selecting a path downstream
+	// should use it rather than the unfiltered invoice_paths.
+	if len(inv.UsablePaths(features.Blinded)) == 0 {
+		return ErrNoUsablePaths
+	}
+
+	// - if the invoice is a response to an invoice_request:
+	//   - MUST reject the invoice if all fields in ranges 0 to 159 and
+	//     1000000000 to 2999999999 (inclusive) do not exactly match the
+	//     invoice request.
+	//   - if offer_issuer_id is present: MUST reject the invoice if
+	//     invoice_node_id is not equal to offer_issuer_id.
+	//   - otherwise, if offer_paths is present: MUST reject the invoice if
+	//     invoice_node_id is not equal to the final blinded_node_id it sent
+	//     the invoice request to.
+	// The offer_issuer_id case is checked here by checkInvoiceNodeID (both
+	// fields live on the invoice). NOT CHECKED HERE: the byte-for-byte
+	// field mirror and the invreq_amount == invoice_amount rule are
+	// enforced by validateInvoiceAgainstRequest once the invoice is paired
+	// with its request; the offer_paths blinded_node_id case needs the path
+	// the payer sent the request to and stays with the caller.
+	if err := checkInvoiceNodeID(inv); err != nil {
+		return err
+	}
+
+	// - SHOULD prefer to use earlier invoice_paths over later ones if it
+	//   has no other reason for preference.
+	// - if invoice_features contains the MPP/compulsory bit: MUST pay
+	//   via multiple separate blinded paths; the MPP/optional bit MAY,
+	//   otherwise MUST NOT use multiple parts.
+	// - if invreq_amount is present: MUST reject the invoice if
+	//   invoice_amount is not equal to invreq_amount (otherwise SHOULD
+	//   confirm invoice_amount.msat is within the authorized range).
+	// - for the bitcoin chain, if the invoice specifies invoice_fallbacks:
+	//   - MUST ignore any fallback_address with version greater than 16,
+	//   address shorter than 2 or longer than 40 bytes, or an address that
+	//   does not meet known requirements for the given version.
+	// - the invreq_paths / blinded-path / reply_path arrival rules.
+	// NOT CHECKED HERE: these are payment-time or transport concerns
+	// handled outside this codec. invreq_amount equality is enforced by
+	// validateInvoiceAgainstRequest; the fallback ignore rules by
+	// usableFallbackAddresses.
+
+	// - MUST reject the invoice if signature is not a valid signature using
+	//   invoice_node_id as described in Signature Calculation.
+	return verifyInvoice(inv)
+}
+
+// ValidateInvoiceForPayment runs the full set of payer-side invoice checks in
+// one call against an invoice and its originating request.
+//
+// expectedNodeID is the node the payer expects to have signed the invoice, and
+// is compared against invoice_node_id. It is offer_issuer_id for an offer that
+// carried one, and the final blinded_node_id on the path the payer chose for an
+// offer that carried offer_paths. For a request that answers no offer it is a
+// key the payer confirmed out of band, or nil when it has none. Only that case
+// accepts nil. For a response to an offer a nil expectedNodeID returns
+// ErrNilPublicKey.
+func ValidateInvoiceForPayment(inv *Invoice, req *InvoiceRequest,
+	now time.Time, activeChain [32]byte,
+	features InvoiceKnownFeatures,
+	expectedNodeID *btcec.PublicKey) error {
+
+	if err := validateInvoiceRead(inv, activeChain, features); err != nil {
+		return err
+	}
+
+	if err := validateInvoiceExpiry(inv, now); err != nil {
+		return err
+	}
+
+	if err := validateInvoiceAgainstRequest(inv, req); err != nil {
+		return err
+	}
+
+	return validateInvoiceNodeID(inv, req, expectedNodeID)
 }

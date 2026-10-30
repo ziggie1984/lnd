@@ -1,11 +1,13 @@
 package htlcswitch
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	mrand "math/rand"
 	"reflect"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/lightningnetwork/lnd/actor"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/contractcourt"
@@ -1988,6 +1991,139 @@ func TestCircularForwards(t *testing.T) {
 	}
 }
 
+// TestNodeIDNonStrictRouting ensures that when a blinded route identifies the
+// next hop by node ID, non-strict forwarding deterministically selects a valid
+// outgoing channel to that peer and never fails the HTLC by landing on the
+// incoming channel.
+func TestNodeIDNonStrictRouting(t *testing.T) {
+	t.Parallel()
+
+	// bob is both the source of the incoming HTLC and the next hop
+	// identified by node ID, so we have two channels with bob: the channel
+	// the HTLC arrives on and a second, valid outgoing channel.
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err, "unable to create bob server")
+
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
+	require.NoError(t, s.Start(), "unable to start switch")
+	defer func() { _ = s.Stop() }()
+
+	// Disallow circular routes so that forwarding back over the incoming
+	// channel is rejected.
+	s.cfg.AllowCircularRoute = false
+
+	incomingChanID, incomingScid := genID()
+	outgoingChanID, outgoingScid := genID()
+
+	incomingLink := newMockChannelLink(
+		s, incomingChanID, incomingScid, emptyScid, bobPeer,
+		true, false, false, false,
+	)
+	outgoingLink := newMockChannelLink(
+		s, outgoingChanID, outgoingScid, emptyScid, bobPeer,
+		true, false, false, false,
+	)
+	require.NoError(t, s.AddLink(incomingLink), "unable to add incoming")
+	require.NoError(t, s.AddLink(outgoingLink), "unable to add outgoing")
+
+	// Forward many HTLCs so that random selection would almost certainly
+	// land on the incoming channel, which will be sorted out by the switch.
+	const numHTLCs = 20
+	for i := range numHTLCs {
+		var hash [sha256.Size]byte
+		hash[0] = byte(i)
+
+		packet := &htlcPacket{
+			incomingChanID: incomingLink.ShortChanID(),
+			incomingHTLCID: uint64(i),
+			outgoingHop:    hop.NewNodeNextHop(bobPeer.PubKey()),
+			htlc: &lnwire.UpdateAddHTLC{
+				PaymentHash: hash,
+				Amount:      1,
+			},
+			obfuscator: NewMockObfuscator(),
+		}
+
+		require.NoError(t, s.ForwardPackets(nil, packet))
+
+		select {
+		case p := <-outgoingLink.packets:
+			require.Nil(t, p.linkFailure, "unexpected link failure")
+			require.Equal(
+				t, outgoingLink.ShortChanID(),
+				p.outgoingChanID,
+				"forwarded over wrong channel",
+			)
+
+		case <-incomingLink.packets:
+			t.Fatal("HTLC forwarded over incoming (circular) " +
+				"channel")
+
+		case <-time.After(time.Second):
+			t.Fatal("no timely reply from switch")
+		}
+	}
+}
+
+// TestNodeIDNonStrictRoutingAllLinksCircular ensures that when a blinded route
+// identifies the next hop by node ID, and the only channel we have with that
+// peer is the incoming channel (forming a circular route), the switch fails the
+// HTLC early upfront.
+func TestNodeIDNonStrictRoutingAllLinksCircular(t *testing.T) {
+	t.Parallel()
+
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err, "unable to create bob server")
+
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
+	require.NoError(t, s.Start(), "unable to start switch")
+	defer func() { _ = s.Stop() }()
+
+	// Disallow circular routes.
+	s.cfg.AllowCircularRoute = false
+
+	incomingChanID, incomingScid := genID()
+	incomingLink := newMockChannelLink(
+		s, incomingChanID, incomingScid, emptyScid, bobPeer,
+		true, false, false, false,
+	)
+	require.NoError(t, s.AddLink(incomingLink), "unable to add incoming")
+
+	packet := &htlcPacket{
+		incomingChanID: incomingLink.ShortChanID(),
+		incomingHTLCID: 1,
+		outgoingHop:    hop.NewNodeNextHop(bobPeer.PubKey()),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: [32]byte{1},
+			Amount:      1,
+		},
+		obfuscator: NewMockObfuscator(),
+	}
+
+	err = s.ForwardPackets(nil, packet)
+	require.NoError(t, err, "unable to forward packets")
+
+	select {
+	case p := <-incomingLink.packets:
+		require.NotNil(t, p.linkFailure, "expected early link failure")
+		wireErr := p.linkFailure.WireMessage()
+		var unknownNextPeer *lnwire.FailUnknownNextPeer
+		require.ErrorAs(
+			t, wireErr, &unknownNextPeer,
+			"expected FailUnknownNextPeer",
+		)
+
+	case <-time.After(time.Second):
+		t.Fatal("no timely reply from switch")
+	}
+}
+
 // TestCheckCircularForward tests the error returned by checkCircularForward
 // in cases where we allow and disallow same channel circular forwards.
 func TestCheckCircularForward(t *testing.T) {
@@ -3755,16 +3891,42 @@ func assertOutgoingLinkReceive(t *testing.T, targetLink *mockChannelLink,
 }
 
 func assertOutgoingLinkReceiveIntercepted(t *testing.T,
-	targetLink *mockChannelLink) {
+	targetLink *mockChannelLink) *htlcPacket {
 
 	t.Helper()
 
 	select {
-	case <-targetLink.packets:
+	case packet := <-targetLink.packets:
+		return packet
+
 	case <-time.After(time.Second):
 		t.Fatal("request was not propagated to destination")
 	}
+
+	return nil
 }
+
+// commitBlockingCircuitMap blocks circuit commits until the test releases the
+// barrier.
+type commitBlockingCircuitMap struct {
+	CircuitMap
+
+	commitStarted chan struct{}
+	commitRelease chan struct{}
+}
+
+// CommitCircuits signals that a commit has started, then waits for the test to
+// release it.
+func (c *commitBlockingCircuitMap) CommitCircuits(
+	circuits ...*PaymentCircuit) (*CircuitFwdActions, error) {
+
+	close(c.commitStarted)
+	<-c.commitRelease
+
+	return c.CircuitMap.CommitCircuits(circuits...)
+}
+
+var _ CircuitMap = (*commitBlockingCircuitMap)(nil)
 
 type interceptableSwitchTestContext struct {
 	t *testing.T
@@ -4169,6 +4331,255 @@ func TestSwitchHoldForward(t *testing.T) {
 	}
 }
 
+// TestInterceptableSwitchReplayAfterResume verifies that an incoming link
+// replay is reconciled by the switch after the interceptor has resumed the
+// original forward and the outgoing circuit has been opened.
+func TestInterceptableSwitchReplayAfterResume(t *testing.T) {
+	t.Parallel()
+
+	c := newInterceptableSwitchTestContext(t)
+	defer c.finish()
+
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch, 1),
+	}
+	notifier.EpochChan <- &chainntnfs.BlockEpoch{
+		Height: testStartingHeight,
+	}
+
+	interceptSwitch, err := NewInterceptableSwitch(
+		&InterceptableSwitchConfig{
+			Switch:             c.s,
+			CltvRejectDelta:    c.cltvRejectDelta,
+			CltvInterceptDelta: c.cltvInterceptDelta,
+			Notifier:           notifier,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, interceptSwitch.Start())
+	defer func() {
+		require.NoError(t, interceptSwitch.Stop())
+	}()
+
+	c.forwardInterceptor.interceptedChan = make(chan InterceptedPacket, 1)
+	interceptSwitch.SetInterceptor(
+		c.forwardInterceptor.InterceptForwardHtlc,
+	)
+
+	linkQuit := make(chan struct{})
+	packet := c.createTestPacket()
+
+	// Retain the incoming-link packet for replay after the outgoing link
+	// assigns its circuit key.
+	replay := *packet
+	add, isAdd := packet.htlc.(*lnwire.UpdateAddHTLC)
+	require.True(t, isAdd)
+	htlc := *add
+	replay.htlc = &htlc
+
+	require.NoError(t, interceptSwitch.ForwardPackets(
+		linkQuit, false, packet,
+	))
+
+	intercepted := c.forwardInterceptor.getIntercepted()
+	require.NoError(t, interceptSwitch.Resolve(&FwdResolution{
+		Key:    intercepted.IncomingCircuit,
+		Action: FwdActionResume,
+	}))
+
+	outgoing := assertOutgoingLinkReceive(t, c.bobChannelLink, true)
+	assertNumCircuits(t, c.s, 1, 1)
+
+	// Block the switch at circuit commit to verify that the incoming link
+	// remains paused across replay lookup and reconciliation.
+	commitStarted := make(chan struct{})
+	commitRelease := make(chan struct{})
+	c.s.circuits = &commitBlockingCircuitMap{
+		CircuitMap:    c.s.circuits,
+		commitStarted: commitStarted,
+		commitRelease: commitRelease,
+	}
+
+	// Replay the incoming add as processRemoteAdds does when the incoming
+	// link restarts before the return packet has been committed. The replay
+	// must not be offered to the interceptor again.
+	replayErr := make(chan error, 1)
+	go func() {
+		replayErr <- interceptSwitch.ForwardPackets(
+			linkQuit, true, &replay,
+		)
+	}()
+
+	select {
+	case <-commitStarted:
+	case <-time.After(time.Second):
+		close(commitRelease)
+		t.Fatal("replay did not reach circuit commit")
+	}
+
+	var (
+		forwardErr    error
+		returnedEarly bool
+	)
+	select {
+	case forwardErr = <-replayErr:
+		returnedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(commitRelease)
+	if !returnedEarly {
+		forwardErr = <-replayErr
+	}
+	require.NoError(t, forwardErr)
+	require.False(t, returnedEarly, "replay returned before circuit commit")
+
+	// Wait for the replay to finish processing by sending a request through
+	// the same event loop.
+	err = interceptSwitch.Resolve(&FwdResolution{
+		Key: models.CircuitKey{
+			ChanID: c.aliceChannelLink.ShortChanID(),
+			HtlcID: c.incomingHtlcID + 1,
+		},
+		Action: FwdActionResume,
+	})
+	require.ErrorIs(t, err, ErrFwdNotExists)
+
+	select {
+	case <-c.forwardInterceptor.interceptedChan:
+		require.Fail(t, "replay was offered to the interceptor")
+
+	default:
+	}
+
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertNumCircuits(t, c.s, 1, 1)
+
+	// The outgoing settle must still traverse the original circuit and
+	// resolve the incoming HTLC.
+	require.NoError(t, interceptSwitch.ForwardPackets(
+		linkQuit, false,
+		c.createSettlePacket(outgoing.outgoingHTLCID),
+	))
+
+	settle := assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	_, ok := settle.htlc.(*lnwire.UpdateFulfillHTLC)
+	require.True(t, ok)
+	assertNumCircuits(t, c.s, 0, 0)
+}
+
+// TestInterceptableSwitchHeldReplayNearExpiry verifies that a replay of a held
+// forward cannot fail upstream as the HTLC enters the interception cutoff.
+func TestInterceptableSwitchHeldReplayNearExpiry(t *testing.T) {
+	t.Parallel()
+
+	c := newInterceptableSwitchTestContext(t)
+	defer c.finish()
+
+	epochs := make(chan *chainntnfs.BlockEpoch)
+	notifier := &mock.ChainNotifier{
+		EpochChan: epochs,
+	}
+
+	interceptSwitch, err := NewInterceptableSwitch(
+		&InterceptableSwitchConfig{
+			Switch:             c.s,
+			CltvRejectDelta:    c.cltvRejectDelta,
+			CltvInterceptDelta: c.cltvInterceptDelta,
+			Notifier:           notifier,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, interceptSwitch.Start())
+	defer func() {
+		require.NoError(t, interceptSwitch.Stop())
+	}()
+
+	initialEpochSent := make(chan struct{})
+	go func() {
+		epochs <- &chainntnfs.BlockEpoch{Height: testStartingHeight}
+		close(initialEpochSent)
+	}()
+	<-initialEpochSent
+
+	c.forwardInterceptor.interceptedChan = make(chan InterceptedPacket, 1)
+	interceptSwitch.SetInterceptor(
+		c.forwardInterceptor.InterceptForwardHtlc,
+	)
+
+	linkQuit := make(chan struct{})
+	packet := c.createTestPacket()
+	packet.incomingTimeout = testStartingHeight + c.cltvInterceptDelta
+
+	// Retain the incoming-link form for replay after the block height moves
+	// inside the interception cutoff.
+	replay := *packet
+	add, isAdd := packet.htlc.(*lnwire.UpdateAddHTLC)
+	require.True(t, isAdd)
+	htlc := *add
+	replay.htlc = &htlc
+
+	require.NoError(t, interceptSwitch.ForwardPackets(
+		linkQuit, false, packet,
+	))
+	intercepted := c.forwardInterceptor.getIntercepted()
+
+	// Move one block forward. This is inside the interception cutoff but
+	// still two blocks before the original held forward's auto-fail height.
+	epochs <- &chainntnfs.BlockEpoch{Height: testStartingHeight + 1}
+	err = interceptSwitch.Resolve(&FwdResolution{
+		Key: models.CircuitKey{
+			ChanID: c.aliceChannelLink.ShortChanID(),
+			HtlcID: c.incomingHtlcID + 1,
+		},
+		Action: FwdActionResume,
+	})
+	require.ErrorIs(t, err, ErrFwdNotExists)
+
+	require.NoError(t, interceptSwitch.ForwardPackets(
+		linkQuit, true, &replay,
+	))
+
+	// Synchronize with the event loop after it handles the replay.
+	err = interceptSwitch.Resolve(&FwdResolution{
+		Key: models.CircuitKey{
+			ChanID: c.aliceChannelLink.ShortChanID(),
+			HtlcID: c.incomingHtlcID + 2,
+		},
+		Action: FwdActionResume,
+	})
+	require.ErrorIs(t, err, ErrFwdNotExists)
+
+	select {
+	case <-c.forwardInterceptor.interceptedChan:
+		t.Fatal("held replay was offered to the interceptor")
+	default:
+	}
+
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, false)
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// The original resolution handle must remain usable and open exactly
+	// one outgoing circuit.
+	require.NoError(t, interceptSwitch.Resolve(&FwdResolution{
+		Key:    intercepted.IncomingCircuit,
+		Action: FwdActionResume,
+	}))
+	outgoing := assertOutgoingLinkReceive(t, c.bobChannelLink, true)
+	assertNumCircuits(t, c.s, 1, 1)
+
+	require.NoError(t, interceptSwitch.ForwardPackets(
+		linkQuit, false,
+		c.createSettlePacket(outgoing.outgoingHTLCID),
+	))
+
+	settle := assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	_, ok := settle.htlc.(*lnwire.UpdateFulfillHTLC)
+	require.True(t, ok)
+	assertNumCircuits(t, c.s, 0, 0)
+}
+
 func TestInterceptableSwitchWatchDog(t *testing.T) {
 	t.Parallel()
 
@@ -4228,6 +4639,70 @@ func TestInterceptableSwitchWatchDog(t *testing.T) {
 		Key:      intercepted.IncomingCircuit,
 		Preimage: c.preimage,
 	}))
+}
+
+// TestInterceptableSwitchExpiryTooFar asserts that an intercepted forward with
+// an incoming expiry outside the supported auto-fail height range is failed
+// back and that subsequent forwards can still be intercepted.
+func TestInterceptableSwitchExpiryTooFar(t *testing.T) {
+	t.Parallel()
+
+	c := newInterceptableSwitchTestContext(t)
+	defer c.finish()
+
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch, 1),
+	}
+	notifier.EpochChan <- &chainntnfs.BlockEpoch{Height: testStartingHeight}
+
+	switchForwardInterceptor, err := NewInterceptableSwitch(
+		&InterceptableSwitchConfig{
+			Switch:             c.s,
+			CltvRejectDelta:    c.cltvRejectDelta,
+			CltvInterceptDelta: c.cltvInterceptDelta,
+			Notifier:           notifier,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, switchForwardInterceptor.Start())
+
+	switchForwardInterceptor.SetInterceptor(
+		c.forwardInterceptor.InterceptForwardHtlc,
+	)
+	linkQuit := make(chan struct{})
+
+	packet := c.createTestPacket()
+	packet.incomingTimeout = math.MaxUint32
+
+	err = switchForwardInterceptor.ForwardPackets(linkQuit, false, packet)
+	require.NoError(t, err, "can't forward htlc packet")
+
+	// The forward is failed back rather than being intercepted or sent to
+	// the outgoing link.
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	failPacket := assertOutgoingLinkReceiveIntercepted(
+		t, c.aliceChannelLink,
+	)
+	failHtlc, ok := failPacket.htlc.(*lnwire.UpdateFailHTLC)
+	require.True(t, ok)
+
+	fwdErr, err := newMockDeobfuscator().DecryptError(failHtlc.Reason)
+	require.NoError(t, err)
+	require.IsType(t, &lnwire.FailExpiryTooFar{}, fwdErr.WireMessage())
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// A later forward with a representable auto-fail height is intercepted
+	// normally.
+	require.NoError(t, switchForwardInterceptor.ForwardPackets(
+		linkQuit, false, c.createTestPacket(),
+	))
+
+	intercepted := c.forwardInterceptor.getIntercepted()
+	require.Equal(t,
+		int32(testStartingHeight+c.cltvInterceptDelta+1-
+			c.cltvRejectDelta),
+		intercepted.AutoFailHeight(),
+	)
 }
 
 // TestSwitchDustForwarding tests that the switch properly fails HTLC's which
@@ -5543,4 +6018,120 @@ func testSwitchAliasInterceptFail(t *testing.T, zeroConf bool) {
 	}
 
 	require.NoError(t, interceptSwitch.Stop())
+}
+
+// TestChanCloseErrChan checks the channel a close request offers to callers
+// that wait on channels: it carries an error when the close ends with one, it
+// carries the caller's cancellation when the caller goes away, and it stays
+// silent when the close ends without an error, because a successful close
+// reports through its updates instead.
+func TestChanCloseErrChan(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 5 * time.Second
+	const shortTimeout = 250 * time.Millisecond
+
+	var errResolved = errors.New("close resolved with an error")
+
+	t.Run("resolution is delivered", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		req := &ChanClose{Err: actor.NewPromise[error]()}
+		errChan := req.ErrChan(ctx)
+
+		req.CompleteErr(errResolved)
+
+		select {
+		case err := <-errChan:
+			require.ErrorIs(t, err, errResolved)
+
+		case <-time.After(timeout):
+			t.Fatal("resolution was not delivered")
+		}
+	})
+
+	// A close that succeeds reports through its updates, so resolving the
+	// request without an error must produce nothing here. A caller that
+	// read an error would treat a successful close as a failed one.
+	t.Run("a close that succeeds stays silent", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		req := &ChanClose{Err: actor.NewPromise[error]()}
+		errChan := req.ErrChan(ctx)
+
+		req.CompleteErr(nil)
+
+		select {
+		case err := <-errChan:
+			t.Fatalf("successful close reported %v", err)
+
+		case <-time.After(shortTimeout):
+		}
+	})
+
+	// A caller that goes away has to end its own wait, so that a caller
+	// blocked on this channel returns instead of parking until the whole
+	// daemon stops.
+	t.Run("cancellation ends the wait", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		req := &ChanClose{Err: actor.NewPromise[error]()}
+		errChan := req.ErrChan(ctx)
+
+		cancel()
+
+		select {
+		case err := <-errChan:
+			require.ErrorIs(t, err, context.Canceled)
+
+		case <-time.After(timeout):
+			t.Fatal("cancellation did not end the wait")
+		}
+	})
+
+	// Only the first resolution counts, so a second one cannot hand the
+	// caller an outcome that contradicts the one it already has.
+	t.Run("only the first resolution counts", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		req := &ChanClose{Err: actor.NewPromise[error]()}
+		errChan := req.ErrChan(ctx)
+
+		require.True(t, req.Err.Complete(fn.Ok[error](errResolved)))
+		require.False(t, req.Err.Complete(fn.Ok[error](nil)))
+
+		select {
+		case err := <-errChan:
+			require.ErrorIs(t, err, errResolved)
+
+		case <-time.After(timeout):
+			t.Fatal("resolution was not delivered")
+		}
+	})
+
+	// A request without a promise is still safe to derive from, since it
+	// is built that way in tests and in paths that have no caller.
+	t.Run("a request without a promise is silent", func(t *testing.T) {
+		t.Parallel()
+
+		req := &ChanClose{}
+		errChan := req.ErrChan(t.Context())
+
+		select {
+		case err := <-errChan:
+			t.Fatalf("empty request reported %v", err)
+
+		case <-time.After(shortTimeout):
+		}
+	})
 }

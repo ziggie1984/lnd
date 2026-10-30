@@ -29,8 +29,10 @@ import (
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/rand"
+	"pgregory.net/rapid"
 )
 
 var (
@@ -2781,7 +2783,7 @@ func testNodeUpdatesWithBatchSize(t *testing.T, ctx context.Context,
 	startTime := time.Unix(1234567890, 0)
 	var nodeAnns []models.Node
 
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		nodeAnn := createTestVertex(t, lnwire.GossipVersion1)
 		nodeAnn.LastUpdate = startTime.Add(
 			time.Duration(i) * time.Hour,
@@ -2953,7 +2955,7 @@ func TestNodeUpdatesInHorizonEarlyTermination(t *testing.T) {
 	// We'll start by creating 100 nodes, each with an update time spaced
 	// one hour apart.
 	startTime := time.Unix(1234567890, 0)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		nodeAnn := createTestVertex(t, lnwire.GossipVersion1)
 		nodeAnn.LastUpdate = startTime.Add(time.Duration(i) * time.Hour)
 		require.NoError(t, graph.AddNode(ctx, nodeAnn))
@@ -2977,7 +2979,9 @@ func TestNodeUpdatesInHorizonEarlyTermination(t *testing.T) {
 			// Collect only up to stopAt nodes, breaking afterwards.
 			var collected []*models.Node
 			count := 0
-			for node := range iter {
+			for node, err := range iter {
+				require.NoError(t, err)
+
 				if count >= stopAt {
 					break
 				}
@@ -3020,7 +3024,7 @@ func TestChanUpdatesInHorizonBoundaryConditions(t *testing.T) {
 			startTime := time.Unix(1234567890, 0)
 			const numChans = 25
 
-			for i := 0; i < numChans; i++ {
+			for i := range numChans {
 				updateTime := startTime.Add(
 					time.Duration(i) * time.Hour,
 				)
@@ -3193,7 +3197,7 @@ func TestNodeUpdatesInHorizonV2(t *testing.T) {
 	const heightStep uint32 = 10
 
 	nodeAnns := make([]models.Node, 0, numNodes)
-	for i := 0; i < numNodes; i++ {
+	for i := range numNodes {
 		node := createTestVertex(t, lnwire.GossipVersion2)
 		node.LastBlockHeight = startHeight + uint32(i)*heightStep
 		nodeAnns = append(nodeAnns, *node)
@@ -3432,7 +3436,7 @@ func TestChanUpdatesInHorizonV2(t *testing.T) {
 	const startHeight uint32 = 100
 	const heightStep uint32 = 10
 
-	for i := 0; i < numChans; i++ {
+	for i := range numChans {
 		height := startHeight + uint32(i)*heightStep
 
 		channel, chanID := createEdge(
@@ -3755,7 +3759,7 @@ func testFilterKnownChanIDs(t *testing.T, v lnwire.GossipVersion) {
 	// block height 10 blocks after the previous.
 	const numChans = 5
 	chanIDs := make([]ChannelUpdateInfo, 0, numChans)
-	for i := 0; i < numChans; i++ {
+	for i := range numChans {
 		channel, chanID := createEdge(
 			v, uint32(i*10), 0, 0, 0, node1, node2,
 		)
@@ -3766,7 +3770,7 @@ func testFilterKnownChanIDs(t *testing.T, v lnwire.GossipVersion) {
 
 	const numZombies = 5
 	zombieIDs := make([]ChannelUpdateInfo, 0, numZombies)
-	for i := 0; i < numZombies; i++ {
+	for i := range numZombies {
 		channel, chanID := createEdge(
 			v, uint32(i*10+1), 0, 0, 0, node1, node2,
 		)
@@ -4493,7 +4497,7 @@ func testFetchChanInfos(t *testing.T, v lnwire.GossipVersion) {
 	require.NoError(t, err, "unable to fetch chan edges")
 	require.Len(t, resp, len(edges))
 
-	for i := 0; i < len(resp); i++ {
+	for i := range resp {
 		compareEdgePolicies(t, resp[i].Policy1, edges[i].Policy1)
 		compareEdgePolicies(t, resp[i].Policy2, edges[i].Policy2)
 		assertEdgeInfoEqual(t, resp[i].Info, edges[i].Info)
@@ -4521,7 +4525,7 @@ func testChannelView(t *testing.T, v lnwire.GossipVersion) {
 
 	const numChans = 3
 	edgePoints := make([]EdgePoint, 0, numChans)
-	for i := 0; i < numChans; i++ {
+	for i := range numChans {
 		edge, _ := createEdge(
 			v, uint32(i+1), 0, 0, uint32(i), node1, node2,
 		)
@@ -5356,6 +5360,192 @@ func TestEdgePolicyMissingMaxHTLC(t *testing.T) {
 	assertEdgeInfoEqual(t, dbEdgeInfo, edgeInfo)
 }
 
+// TestEdgeInfoFeatureRoundTrip asserts that the largest raw feature vector can
+// be read back after the edge-info serializer accepts it.
+func TestEdgeInfoFeatureRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	graph := MakeTestGraph(t)
+	node1 := createTestVertex(t, lnwire.GossipVersion1)
+	node2 := createTestVertex(t, lnwire.GossipVersion1)
+	require.NoError(t, graph.SetSourceNode(ctx, node1))
+	require.NoError(t, graph.AddNode(ctx, node2))
+
+	edgeInfo, _, _ := createChannelEdge(
+		node1, node2, lnwire.GossipVersion1,
+	)
+	rawFeatures := lnwire.NewRawFeatureVector(
+		lnwire.FeatureBit(math.MaxUint16),
+	)
+	edgeInfo.Features = lnwire.NewFeatureVector(
+		rawFeatures, lnwire.Features,
+	)
+	require.NoError(t, graph.AddChannelEdge(ctx, edgeInfo))
+
+	stored, _, _, err := graph.FetchChannelEdgesByID(
+		ctx, edgeInfo.ChannelID,
+	)
+	require.NoError(t, err)
+	require.True(t, stored.Features.Equals(rawFeatures))
+}
+
+// TestEdgePolicyOpaqueDataRoundTrip asserts that every extra opaque data size
+// accepted by the policy serializer can be read back when max_htlc is present.
+func TestEdgePolicyOpaqueDataRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	assertRoundTrip := func(t require.TestingT, payloadLen int) {
+		var (
+			extra   bytes.Buffer
+			scratch [8]byte
+		)
+		require.NoError(t, tlv.WriteVarInt(&extra, 1, &scratch))
+		require.NoError(t, tlv.WriteVarInt(
+			&extra, uint64(payloadLen), &scratch,
+		))
+		_, err := extra.Write(make([]byte, payloadLen))
+		require.NoError(t, err)
+		require.LessOrEqual(
+			t, extra.Len(), MaxAllowedExtraOpaqueBytes,
+		)
+
+		policy := randEdgePolicy(1)
+		policy.SigBytes = []byte{}
+		policy.ExtraOpaqueData = extra.Bytes()
+
+		var encoded bytes.Buffer
+		require.NoError(t, serializeChanEdgePolicy(
+			&encoded, policy, policy.ToNode[:],
+		))
+
+		decoded, err := deserializeChanEdgePolicy(&encoded)
+		require.NoError(t, err)
+		require.Equal(t, policy, decoded)
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		payloadLen := rapid.IntRange(0, 9996).Draw(t, "payload_len")
+		assertRoundTrip(t, payloadLen)
+	})
+
+	for _, payloadLen := range []int{0, 252, 253, 9996} {
+		t.Run(
+			fmt.Sprintf("payload_%d", payloadLen),
+			func(t *testing.T) {
+				assertRoundTrip(t, payloadLen)
+			},
+		)
+	}
+}
+
+// TestUnreadablePolicyPruning asserts that a policy read error cannot be
+// mistaken for a successfully deleted channel with a nil edge result.
+func TestUnreadablePolicyPruning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		prune func(*testing.T, *ChannelGraph,
+			*models.ChannelEdgeInfo) error
+	}{
+		{
+			name: "spend",
+			prune: func(t *testing.T, graph *ChannelGraph,
+				edge *models.ChannelEdgeInfo) error {
+
+				var blockHash chainhash.Hash
+				closed, err := graph.PruneGraph(
+					t.Context(), []*wire.OutPoint{
+						&edge.ChannelPoint,
+					}, &blockHash, 1,
+				)
+				require.Empty(t, closed)
+
+				return err
+			},
+		},
+		{
+			name: "disconnect",
+			prune: func(t *testing.T, graph *ChannelGraph,
+				edge *models.ChannelEdgeInfo) error {
+
+				height := lnwire.NewShortChanIDFromInt(
+					edge.ChannelID,
+				).BlockHeight
+				closed, err := graph.DisconnectBlockAtHeight(
+					t.Context(), height,
+				)
+				require.Empty(t, closed)
+
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			graph := MakeTestGraph(t)
+			boltStore, ok := graph.db.(*KVStore)
+			if !ok {
+				t.Skip("skipping KV graph DB test")
+			}
+
+			node1 := createTestVertex(t, lnwire.GossipVersion1)
+			node2 := createTestVertex(t, lnwire.GossipVersion1)
+			require.NoError(t, graph.SetSourceNode(
+				t.Context(), node1,
+			))
+			require.NoError(t, graph.AddNode(t.Context(), node2))
+
+			edgeInfo, edge1, edge2 := createChannelEdge(
+				node1, node2, lnwire.GossipVersion1,
+			)
+			require.NoError(t, graph.AddChannelEdge(
+				t.Context(), edgeInfo,
+			))
+			require.NoError(t, graph.UpdateEdgePolicy(
+				t.Context(), edge1,
+			))
+			require.NoError(t, graph.UpdateEdgePolicy(
+				t.Context(), edge2,
+			))
+
+			// Replace one policy with a value that cannot be
+			// decoded.
+			putSerializedPolicy(
+				t, boltStore.db, edge2.ToNode[:],
+				edgeInfo.ChannelID, []byte{1},
+			)
+
+			require.Error(t, test.prune(t, graph, edgeInfo))
+
+			_, _, err := graph.PruneTip(t.Context())
+			require.ErrorIs(t, err, ErrGraphNeverPruned)
+
+			err = kvdb.View(boltStore.db, func(tx kvdb.RTx) error {
+				edges := tx.ReadBucket(edgeBucket)
+				require.NotNil(t, edges)
+				edgeIndex := edges.NestedReadBucket(
+					edgeIndexBucket,
+				)
+				require.NotNil(t, edgeIndex)
+
+				var chanID [8]byte
+				byteOrder.PutUint64(
+					chanID[:], edgeInfo.ChannelID,
+				)
+				require.NotNil(t, edgeIndex.Get(chanID[:]))
+
+				return nil
+			}, func() {})
+			require.NoError(t, err)
+		})
+	}
+}
+
 // putSerializedPolicy is a helper function that writes a serialized
 // ChannelEdgePolicy to the edge bucket in the database.
 func putSerializedPolicy(t *testing.T, db kvdb.Backend, from []byte,
@@ -5755,7 +5945,7 @@ func testBatchedUpdateEdgePolicy(t *testing.T, v lnwire.GossipVersion) {
 	}
 	wg.Wait()
 
-	for i := 0; i < len(updates); i++ {
+	for range updates {
 		err := <-errChan
 		require.Nil(t, err)
 	}
@@ -5775,7 +5965,7 @@ func BenchmarkForEachChannel(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		var (
 			totalCapacity btcutil.Amount
 			maxHTLCs      lnwire.MilliSatoshi
@@ -6042,7 +6232,7 @@ func TestAsyncGraphCache(t *testing.T) {
 		wg      sync.WaitGroup
 		numRuns = 10
 	)
-	for i := 0; i < numRuns; i++ {
+	for range numRuns {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

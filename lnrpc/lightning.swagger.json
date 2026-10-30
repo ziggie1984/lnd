@@ -2665,7 +2665,7 @@
         "parameters": [
           {
             "name": "start_height",
-            "description": "The height from which to list transactions, inclusive. If this value is\ngreater than end_height, transactions will be read in reverse.",
+            "description": "The height from which to list transactions, inclusive. If this value is\ngreater than end_height, the wallet reads the blocks in reverse, so\npagination (index_offset/max_transactions) walks the result set starting\nfrom the newest transaction rather than the oldest. For this comparison\nan end_height of -1 counts as the chain tip, not as a negative height,\nso start_height=0 with end_height=-1 (or an omitted end_height) walks\nthe result set from the oldest transaction. The ordering of the\ntransactions within the response is governed by the reverse flag either\nway.",
             "in": "query",
             "required": false,
             "type": "integer",
@@ -2673,7 +2673,7 @@
           },
           {
             "name": "end_height",
-            "description": "The height until which to list transactions, inclusive. To include\nunconfirmed transactions, this value should be set to -1, which will\nreturn transactions from start_height until the current chain tip and\nunconfirmed transactions. If no end_height is provided, the call will\ndefault to this option.",
+            "description": "The height until which to list transactions, inclusive. To include\nunconfirmed transactions, this value should be set to -1, which will\nreturn transactions from start_height until the current chain tip and\nunconfirmed transactions. If no end_height is provided, the call will\ndefault to this option. A value of -1 is treated as the chain tip when\ndetermining the read direction described for start_height, so it never\ncauses the blocks to be read in reverse on its own.",
             "in": "query",
             "required": false,
             "type": "integer",
@@ -2701,6 +2701,13 @@
             "required": false,
             "type": "integer",
             "format": "int64"
+          },
+          {
+            "name": "reverse",
+            "description": "If set, the transactions will be returned in reverse order, with the\noldest transaction first and unconfirmed transactions last. Otherwise,\nthe default ordering is used, which lists unconfirmed transactions\nfirst, followed by the most recent confirmed transactions down to the\noldest. Transactions with the same number of confirmations (e.g. several\ntransactions in the same block, or several unconfirmed transactions)\nkeep the order produced by the wallet in both modes, so the reverse\nordering is not an exact mirror of the default one for such ties.\n\nThis flag does not affect which transactions are selected: pagination\n(index_offset/max_transactions) walks the result set starting from the\noldest transaction (or from the newest when start_height is greater\nthan end_height), regardless of this flag, so the same page is selected\neither way; only the order of the transactions within the response\nchanges. This flag only applies to GetTransactions and is ignored by\nSubscribeTransactions.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
           }
         ],
         "tags": [
@@ -2871,7 +2878,7 @@
         "parameters": [
           {
             "name": "start_height",
-            "description": "The height from which to list transactions, inclusive. If this value is\ngreater than end_height, transactions will be read in reverse.",
+            "description": "The height from which to list transactions, inclusive. If this value is\ngreater than end_height, the wallet reads the blocks in reverse, so\npagination (index_offset/max_transactions) walks the result set starting\nfrom the newest transaction rather than the oldest. For this comparison\nan end_height of -1 counts as the chain tip, not as a negative height,\nso start_height=0 with end_height=-1 (or an omitted end_height) walks\nthe result set from the oldest transaction. The ordering of the\ntransactions within the response is governed by the reverse flag either\nway.",
             "in": "query",
             "required": false,
             "type": "integer",
@@ -2879,7 +2886,7 @@
           },
           {
             "name": "end_height",
-            "description": "The height until which to list transactions, inclusive. To include\nunconfirmed transactions, this value should be set to -1, which will\nreturn transactions from start_height until the current chain tip and\nunconfirmed transactions. If no end_height is provided, the call will\ndefault to this option.",
+            "description": "The height until which to list transactions, inclusive. To include\nunconfirmed transactions, this value should be set to -1, which will\nreturn transactions from start_height until the current chain tip and\nunconfirmed transactions. If no end_height is provided, the call will\ndefault to this option. A value of -1 is treated as the chain tip when\ndetermining the read direction described for start_height, so it never\ncauses the blocks to be read in reverse on its own.",
             "in": "query",
             "required": false,
             "type": "integer",
@@ -2907,6 +2914,13 @@
             "required": false,
             "type": "integer",
             "format": "int64"
+          },
+          {
+            "name": "reverse",
+            "description": "If set, the transactions will be returned in reverse order, with the\noldest transaction first and unconfirmed transactions last. Otherwise,\nthe default ordering is used, which lists unconfirmed transactions\nfirst, followed by the most recent confirmed transactions down to the\noldest. Transactions with the same number of confirmations (e.g. several\ntransactions in the same block, or several unconfirmed transactions)\nkeep the order produced by the wallet in both modes, so the reverse\nordering is not an exact mirror of the default one for such ties.\n\nThis flag does not affect which transactions are selected: pagination\n(index_offset/max_transactions) walks the result set starting from the\noldest transaction (or from the newest when start_height is greater\nthan end_height), regardless of this flag, so the same page is selected\neither way; only the order of the transactions within the response\nchanges. This flag only applies to GetTransactions and is ignored by\nSubscribeTransactions.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
           }
         ],
         "tags": [
@@ -3571,7 +3585,7 @@
         },
         "commitment_type": {
           "$ref": "#/definitions/lnrpcCommitmentType",
-          "description": "The explicit commitment type to use. Note this field will only be used if\nthe remote peer supports explicit channel negotiation."
+          "description": "The commitment type to request. If UNKNOWN, lnd selects a default from\nboth peers' supported features; the selected type is always sent\nexplicitly.\n\nLEGACY is rejected: lnd no longer opens or accepts channels of that\ntype. Note that an empty channel type on the wire requests it too, so\nthere is no way to ask for it at all."
         },
         "remote_max_value_in_flight_msat": {
           "type": "string",
@@ -4812,7 +4826,7 @@
         "SIMPLE_TAPROOT_OVERLAY"
       ],
       "default": "UNKNOWN_COMMITMENT_TYPE",
-      "description": " - UNKNOWN_COMMITMENT_TYPE: Returned when the commitment type isn't known or unavailable.\n - LEGACY: A channel using the legacy commitment format having tweaked to_remote\nkeys.\n - STATIC_REMOTE_KEY: A channel that uses the modern commitment format where the key in the\noutput of the remote party does not change each state. This makes back\nup and recovery easier as when the channel is closed, the funds go\ndirectly to that key.\n - ANCHORS: A channel that uses a commitment format that has anchor outputs on the\ncommitments, allowing fee bumping after a force close transaction has\nbeen broadcast.\n - SCRIPT_ENFORCED_LEASE: A channel that uses a commitment type that builds upon the anchors\ncommitment format, but in addition requires a CLTV clause to spend outputs\npaying to the channel initiator. This is intended for use on leased channels\nto guarantee that the channel initiator has no incentives to close a leased\nchannel before its maturity date.\n - TAPROOT: The production taproot channel type that uses musig2 for the funding\noutput and the new tapscript features, with final scripts and feature\nbits 80/81. This is the recommended taproot variant; new integrations\nshould select this enum value.\n - SIMPLE_TAPROOT_FINAL: Deprecated alias for TAPROOT, preserved so existing clients that select\nthe production taproot channel type by its historic name continue to\ncompile and serialize against the same wire value.\n - SIMPLE_TAPROOT: A legacy taproot channel type that uses musig2 for the funding output and\nthe new tapscript features, but with development scripts and the staging\nfeature bits. Retained for compatibility with peers that have not upgraded\nto TAPROOT; new integrations should prefer TAPROOT.\n - SIMPLE_TAPROOT_OVERLAY: Identical to the SIMPLE_TAPROOT channel type, but with extra functionality.\nThis channel type also commits to additional meta data in the tapscript\nleaves for the scripts in a channel."
+      "description": " - UNKNOWN_COMMITMENT_TYPE: Returned when the commitment type isn't known or unavailable.\n - LEGACY: A channel using the legacy commitment format having tweaked to_remote\nkeys.\n\nThis value is only reported for channels that already exist. It is\nrejected as an input when opening a channel, since lnd no longer opens\nor accepts channels of this type.\n - STATIC_REMOTE_KEY: A channel that uses the modern commitment format where the key in the\noutput of the remote party does not change each state. This makes back\nup and recovery easier as when the channel is closed, the funds go\ndirectly to that key.\n - ANCHORS: A channel that uses a commitment format that has anchor outputs on the\ncommitments, allowing fee bumping after a force close transaction has\nbeen broadcast.\n - SCRIPT_ENFORCED_LEASE: A channel that uses a commitment type that builds upon the anchors\ncommitment format, but in addition requires a CLTV clause to spend outputs\npaying to the channel initiator. This is intended for use on leased channels\nto guarantee that the channel initiator has no incentives to close a leased\nchannel before its maturity date.\n - TAPROOT: The production taproot channel type that uses musig2 for the funding\noutput and the new tapscript features, with final scripts and feature\nbits 80/81. This is the recommended taproot variant; new integrations\nshould select this enum value.\n - SIMPLE_TAPROOT_FINAL: Deprecated alias for TAPROOT, preserved so existing clients that select\nthe production taproot channel type by its historic name continue to\ncompile and serialize against the same wire value.\n - SIMPLE_TAPROOT: A legacy taproot channel type that uses musig2 for the funding output and\nthe new tapscript features, but with development scripts and the staging\nfeature bits. Retained for compatibility with peers that have not upgraded\nto TAPROOT; new integrations should prefer TAPROOT.\n - SIMPLE_TAPROOT_OVERLAY: Identical to the SIMPLE_TAPROOT channel type, but with extra functionality.\nThis channel type also commits to additional meta data in the tapscript\nleaves for the scripts in a channel."
     },
     "lnrpcConnectPeerRequest": {
       "type": "object",
@@ -6608,7 +6622,7 @@
         },
         "commitment_type": {
           "$ref": "#/definitions/lnrpcCommitmentType",
-          "description": "The explicit commitment type to use. Note this field will only be used if\nthe remote peer supports explicit channel negotiation."
+          "description": "The commitment type to request. If UNKNOWN, lnd selects a default from\nboth peers' supported features; the selected type is always sent\nexplicitly.\n\nLEGACY is rejected: lnd no longer opens or accepts channels of that\ntype. Note that an empty channel type on the wire requests it too, so\nthere is no way to ask for it at all."
         },
         "zero_conf": {
           "type": "boolean",
@@ -6751,63 +6765,77 @@
       "type": "object",
       "properties": {
         "destination": {
-          "type": "string"
+          "type": "string",
+          "description": "The hex-encoded compressed public key of the payment request signer. For\nnon-blinded payment requests, this is the payee's node public key."
         },
         "payment_hash": {
-          "type": "string"
+          "type": "string",
+          "description": "The hex-encoded payment hash (BOLT-11 `p` field)."
         },
         "num_satoshis": {
           "type": "string",
-          "format": "int64"
+          "format": "int64",
+          "description": "The amount in satoshis. 0 if the payment request does not specify an\namount. Any millisatoshi remainder is truncated; see `num_msat` for the\nexact value."
         },
         "timestamp": {
           "type": "string",
-          "format": "int64"
+          "format": "int64",
+          "description": "The creation time of the payment request as a Unix timestamp (seconds)."
         },
         "expiry": {
           "type": "string",
-          "format": "int64"
+          "format": "int64",
+          "description": "The expiry duration in seconds relative to the `timestamp` field. If\nthe payment request omits the BOLT-11 `x` expiry field, the BOLT-11\ndefault of 3600 seconds is returned."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "The description (memo) of the payment (BOLT-11 `d` field). Empty if the\npayment request carries a description hash instead."
         },
         "description_hash": {
-          "type": "string"
+          "type": "string",
+          "description": "The hex-encoded SHA-256 hash of the payment description (BOLT-11 `h`\nfield). Empty if not present."
         },
         "fallback_addr": {
-          "type": "string"
+          "type": "string",
+          "description": "The on-chain fallback address (BOLT-11 `f` field), encoded for the active\nnetwork. Empty if not present."
         },
         "cltv_expiry": {
           "type": "string",
-          "format": "int64"
+          "format": "int64",
+          "description": "The minimum CLTV expiry delta for the final hop (BOLT-11 `c` field). If\nthe payment request omits it, `zpay32.DefaultAssumedFinalCLTVDelta` is\nreturned. This field is ignored for blinded payment paths."
         },
         "route_hints": {
           "type": "array",
           "items": {
             "type": "object",
             "$ref": "#/definitions/lnrpcRouteHint"
-          }
+          },
+          "description": "Route hints that can each be individually used to assist in reaching the\npayment request's destination (BOLT-11 `r` field)."
         },
         "payment_addr": {
           "type": "string",
-          "format": "byte"
+          "format": "byte",
+          "description": "The payment address, also known as the payment secret (BOLT-11 `s`\nfield). This value is used in MPP payments and required by newer payment\nrequests. It is 32 zero bytes if not present. When using REST, this field\nis base64 encoded."
         },
         "num_msat": {
           "type": "string",
-          "format": "int64"
+          "format": "int64",
+          "description": "The amount in millisatoshis. 0 if the payment request does not specify an\namount."
         },
         "features": {
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/lnrpcFeature"
-          }
+          },
+          "description": "The feature bits advertised in the payment request (BOLT-11 `9` field)."
         },
         "blinded_paths": {
           "type": "array",
           "items": {
             "type": "object",
             "$ref": "#/definitions/lnrpcBlindedPaymentPath"
-          }
+          },
+          "description": "The blinded payment paths included in the payment request, if any."
         }
       }
     },

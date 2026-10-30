@@ -132,18 +132,25 @@ var _ TestMessage = (*AnnounceSignatures2)(nil)
 // This is part of the TestMessage interface.
 func (a *AnnounceSignatures2) RandTestMessage(t *rapid.T) Message {
 	var (
-		chanID = RandChannelID(t)
-		scid   = RandShortChannelID(t)
-		pSig   = RandPartialSig(t)
+		chanID      = RandChannelID(t)
+		scid        = RandShortChannelID(t)
+		nodeSig     = RandPartialSig(t)
+		bitcoinSig  = RandPartialSig(t)
+		fundingTxID = RandChainHash(t)
 	)
+
+	sigs := NewAnnouncementSigPair(nodeSig.Sig, bitcoinSig.Sig)
 
 	msg := &AnnounceSignatures2{
 		ChannelID: tlv.NewRecordT[tlv.TlvType0, ChannelID](
 			chanID,
 		),
 		ShortChannelID: tlv.NewRecordT[tlv.TlvType2](scid),
-		PartialSignature: tlv.NewRecordT[tlv.TlvType4, PartialSig](
-			*pSig,
+		PartialSignatures: tlv.NewRecordT[
+			tlv.TlvType4, AnnouncementSigPair,
+		](sigs),
+		FundingTxID: tlv.NewPrimitiveRecord[tlv.TlvType6](
+			fundingTxID,
 		),
 		ExtraSignedFields: make(map[uint64][]byte),
 	}
@@ -232,11 +239,10 @@ func (c *ChannelAnnouncement2) RandTestMessage(t *rapid.T) Message {
 	copy(chainHashObj[:], chainHash[:])
 
 	msg := &ChannelAnnouncement2{
-		ChainHash: tlv.NewPrimitiveRecord[tlv.TlvType0, chainhash.Hash](
-			chainHashObj,
-		),
-		Features: tlv.NewRecordT[tlv.TlvType2, RawFeatureVector](
-			*features,
+		ChainHash: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType0, chainhash.Hash](
+				chainHashObj,
+			),
 		),
 		ShortChannelID: tlv.NewRecordT[tlv.TlvType4, ShortChannelID](
 			shortChanID,
@@ -262,6 +268,14 @@ func (c *ChannelAnnouncement2) RandTestMessage(t *rapid.T) Message {
 	}
 
 	// Randomly include optional fields
+	if rapid.Bool().Draw(t, "includeFeatures") {
+		msg.Features = tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType2, RawFeatureVector](
+				*features,
+			),
+		)
+	}
+
 	if rapid.Bool().Draw(t, "includeBitcoinKey1") {
 		var bitcoinKey1 [33]byte
 		copy(bitcoinKey1[:], RandPubKey(t).SerializeCompressed())
@@ -391,7 +405,7 @@ func (a *ChannelReestablish) RandTestMessage(t *rapid.T) Message {
 	if includeLocalNonces {
 		numNonces := rapid.IntRange(0, 3).Draw(t, "numLocalNonces")
 		nonces := make(map[chainhash.Hash]Musig2Nonce)
-		for i := 0; i < numNonces; i++ {
+		for range numNonces {
 			txid := RandChainHash(t)
 
 			// Ensure unique txids for the map.
@@ -520,7 +534,8 @@ func (a *ChannelUpdate1) RandTestMessage(t *rapid.T) Message {
 		),
 		HtlcMaximumMsat: maxHtlc,
 		InboundFee:      inboundFee,
-		ExtraOpaqueData: extraBytes,
+		// Match Decode's empty shape for stable round-trip equality.
+		ExtraOpaqueData: append(ExtraOpaqueData{}, extraBytes...),
 	}
 }
 
@@ -563,58 +578,77 @@ func (c *ChannelUpdate2) RandTestMessage(t *rapid.T) Message {
 	var chainHashObj chainhash.Hash
 	copy(chainHashObj[:], chainHash[:])
 
-	//nolint:ll
+	var direction byte
+	if rapid.Bool().Draw(t, "isSecondPeer") {
+		direction = 1
+	}
+	sciddir, err := NewSciddirIntroFromSCID(direction, shortChanID)
+	if err != nil {
+		t.Fatalf("unable to build sciddir: %v", err)
+	}
+	scidRecord := tlv.ZeroRecordT[tlv.TlvType2, SciddirIntro]()
+	scidRecord.Val = sciddir
+
 	msg := &ChannelUpdate2{
-		ChainHash: tlv.NewPrimitiveRecord[tlv.TlvType0, chainhash.Hash](
-			chainHashObj,
+		ChainHash: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType0, chainhash.Hash](
+				chainHashObj,
+			),
 		),
-		ShortChannelID: tlv.NewRecordT[tlv.TlvType2, ShortChannelID](
-			shortChanID,
-		),
+		ShortChannelID: scidRecord,
 		BlockHeight: tlv.NewPrimitiveRecord[tlv.TlvType4, uint32](
 			blockHeight,
 		),
-		DisabledFlags: tlv.NewPrimitiveRecord[tlv.TlvType6, ChanUpdateDisableFlags]( //nolint:ll
-			disabledFlags,
+		DisabledFlags: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType6, ChanUpdateDisableFlags]( //nolint:ll
+				disabledFlags,
+			),
 		),
-		CLTVExpiryDelta: tlv.NewPrimitiveRecord[tlv.TlvType10, uint16](
-			cltvExpiryDelta,
+		CLTVExpiryDelta: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType10, uint16](
+				cltvExpiryDelta,
+			),
 		),
-		HTLCMinimumMsat: tlv.NewPrimitiveRecord[tlv.TlvType12, MilliSatoshi](
-			htlcMinMsat,
+		HTLCMinimumMsat: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType12, MilliSatoshi](
+				htlcMinMsat,
+			),
 		),
-		HTLCMaximumMsat: tlv.NewPrimitiveRecord[tlv.TlvType14, MilliSatoshi](
-			htlcMaxMsat,
+		HTLCMaximumMsat: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType14, MilliSatoshi](
+				htlcMaxMsat,
+			),
 		),
-		FeeBaseMsat: tlv.NewPrimitiveRecord[tlv.TlvType16, uint32](
-			feeBaseMsat,
+		FeeBaseMsat: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType16, uint32](
+				feeBaseMsat,
+			),
 		),
-		FeeProportionalMillionths: tlv.NewPrimitiveRecord[tlv.TlvType18, uint32](
-			feeProportionalMillionths,
+		FeeProportionalMillionths: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType18, uint32](
+				feeProportionalMillionths,
+			),
 		),
 		ExtraSignedFields: make(map[uint64][]byte),
 	}
 
 	if rapid.Bool().Draw(t, "includeInboundFee") {
-		base := rapid.IntRange(-1000, 1000).Draw(t, "inFeeBase")
-		rate := rapid.IntRange(-1000, 1000).Draw(t, "inFeeProp")
-		fee := Fee{
-			BaseFee: int32(base),
-			FeeRate: int32(rate),
-		}
-		msg.InboundFee = tlv.SomeRecordT(
-			tlv.NewRecordT[tlv.TlvType55555](fee),
+		base := uint32(
+			rapid.IntRange(1, 0x7FFFFFFF).Draw(t, "inFeeBase"),
+		)
+		rate := uint32(
+			rapid.IntRange(1, 0x7FFFFFFF).Draw(t, "inFeeProp"),
+		)
+		msg.InboundFeeBaseMsat = tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType20](base),
+		)
+		msg.InboundFeeProportionalMillionths = tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType22](rate),
 		)
 	}
 
 	msg.Signature.Val = RandSignature(t)
 	msg.Signature.Val.ForceSchnorr()
-
-	if rapid.Bool().Draw(t, "isSecondPeer") {
-		msg.SecondPeer = tlv.SomeRecordT(
-			tlv.RecordT[tlv.TlvType8, TrueBoolean]{},
-		)
-	}
 
 	return msg
 }
@@ -882,7 +916,7 @@ func (c *CommitSig) RandTestMessage(t *rapid.T) Message {
 
 	numHtlcSigs := rapid.IntRange(0, 20).Draw(t, "numHtlcSigs")
 	htlcSigs := make([]Sig, numHtlcSigs)
-	for i := 0; i < numHtlcSigs; i++ {
+	for i := range numHtlcSigs {
 		htlcSigs[i] = RandSignature(t)
 	}
 
@@ -1077,7 +1111,7 @@ func (dr *DynReject) RandTestMessage(t *rapid.T) Message {
 	featureVec := NewRawFeatureVector()
 
 	numFeatures := rapid.IntRange(0, 8).Draw(t, "numRejections")
-	for i := 0; i < numFeatures; i++ {
+	for i := range numFeatures {
 		bit := FeatureBit(
 			rapid.IntRange(0, 31).Draw(
 				t, fmt.Sprintf("rejectionBit-%d", i),
@@ -1283,22 +1317,20 @@ func (g *GossipTimestampRange) RandTestMessage(t *rapid.T) Message {
 		ExtraData:      RandExtraOpaqueData(t, nil),
 	}
 
-	includeFirstBlockHeight := rapid.Bool().Draw(
-		t, "includeFirstBlockHeight",
+	includeBlockHeightRange := rapid.Bool().Draw(
+		t, "includeBlockHeightRange",
 	)
-	includeBlockRange := rapid.Bool().Draw(t, "includeBlockRange")
 
-	if includeFirstBlockHeight {
+	if includeBlockHeightRange {
 		height := rapid.Uint32().Draw(t, "firstBlockHeight")
-		msg.FirstBlockHeight = tlv.SomeRecordT(
-			tlv.RecordT[tlv.TlvType2, uint32]{Val: height},
-		)
-	}
-
-	if includeBlockRange {
-		blockRange := rapid.Uint32().Draw(t, "blockRange")
-		msg.BlockRange = tlv.SomeRecordT(
-			tlv.RecordT[tlv.TlvType4, uint32]{Val: blockRange},
+		numBlocks := rapid.Uint32().Draw(t, "numBlocks")
+		msg.BlockHeightRange = tlv.SomeRecordT(
+			tlv.RecordT[tlv.TlvType2, BlockHeightRange]{
+				Val: BlockHeightRange{
+					FirstBlockHeight: height,
+					NumBlocks:        numBlocks,
+				},
+			},
 		)
 	}
 
@@ -1314,7 +1346,7 @@ func (msg *Init) RandTestMessage(t *rapid.T) Message {
 	local := NewRawFeatureVector()
 
 	numGlobalFeatures := rapid.IntRange(0, 20).Draw(t, "numGlobalFeatures")
-	for i := 0; i < numGlobalFeatures; i++ {
+	for i := range numGlobalFeatures {
 		bit := FeatureBit(
 			rapid.IntRange(0, 100).Draw(
 				t, fmt.Sprintf("globalFeatureBit%d", i),
@@ -1324,7 +1356,7 @@ func (msg *Init) RandTestMessage(t *rapid.T) Message {
 	}
 
 	numLocalFeatures := rapid.IntRange(0, 20).Draw(t, "numLocalFeatures")
-	for i := 0; i < numLocalFeatures; i++ {
+	for i := range numLocalFeatures {
 		bit := FeatureBit(
 			rapid.IntRange(0, 100).Draw(
 				t, fmt.Sprintf("localFeatureBit%d", i),
@@ -1440,16 +1472,29 @@ func (n *NodeAnnouncement2) RandTestMessage(t *rapid.T) Message {
 	}
 
 	if rapid.Bool().Draw(t, "includeIPV4Addrs") {
-		ipv4Addrs := make(IPV4Addrs, 1)
-		ip := make(net.IP, 4)
-		ip[0] = uint8(rapid.IntRange(1, 223).Draw(t, "ip4_0"))
-		ip[1] = uint8(rapid.IntRange(0, 255).Draw(t, "ip4_1"))
-		ip[2] = uint8(rapid.IntRange(0, 255).Draw(t, "ip4_2"))
-		ip[3] = uint8(rapid.IntRange(1, 254).Draw(t, "ip4_3"))
+		numIPV4 := rapid.IntRange(1, 3).Draw(t, "numIPV4Addrs")
+		ipv4Addrs := make(IPV4Addrs, numIPV4)
+		for i := range numIPV4 {
+			ip := make(net.IP, 4)
+			ip[0] = uint8(rapid.IntRange(1, 223).Draw(
+				t, fmt.Sprintf("ip4_%d_0", i),
+			))
+			ip[1] = uint8(rapid.IntRange(0, 255).Draw(
+				t, fmt.Sprintf("ip4_%d_1", i),
+			))
+			ip[2] = uint8(rapid.IntRange(0, 255).Draw(
+				t, fmt.Sprintf("ip4_%d_2", i),
+			))
+			ip[3] = uint8(rapid.IntRange(1, 254).Draw(
+				t, fmt.Sprintf("ip4_%d_3", i),
+			))
 
-		ipv4Addrs[0] = &net.TCPAddr{
-			IP:   ip,
-			Port: rapid.IntRange(1, 65535).Draw(t, "port4"),
+			ipv4Addrs[i] = &net.TCPAddr{
+				IP: ip,
+				Port: rapid.IntRange(1, 65535).Draw(
+					t, fmt.Sprintf("port4_%d", i),
+				),
+			}
 		}
 
 		ipv4Record := tlv.ZeroRecordT[tlv.TlvType5, IPV4Addrs]()
@@ -1458,18 +1503,22 @@ func (n *NodeAnnouncement2) RandTestMessage(t *rapid.T) Message {
 	}
 
 	if rapid.Bool().Draw(t, "includeIPV6Addrs") {
-		ipv6Addrs := make(IPV6Addrs, 1)
-		ip := make(net.IP, 16)
-		// Generate random IPv6 address.
-		for j := 0; j < 16; j++ {
-			ip[j] = uint8(rapid.IntRange(0, 255).Draw(
-				t, fmt.Sprintf("ip6_%d", j)),
-			)
-		}
+		numIPV6 := rapid.IntRange(1, 3).Draw(t, "numIPV6Addrs")
+		ipv6Addrs := make(IPV6Addrs, numIPV6)
+		for i := range numIPV6 {
+			ip := make(net.IP, 16)
+			for j := range 16 {
+				ip[j] = uint8(rapid.IntRange(0, 255).Draw(
+					t, fmt.Sprintf("ip6_%d_%d", i, j),
+				))
+			}
 
-		ipv6Addrs[0] = &net.TCPAddr{
-			IP:   ip,
-			Port: rapid.IntRange(1, 65535).Draw(t, "port6"),
+			ipv6Addrs[i] = &net.TCPAddr{
+				IP: ip,
+				Port: rapid.IntRange(1, 65535).Draw(
+					t, fmt.Sprintf("port6_%d", i),
+				),
+			}
 		}
 
 		ipv6Record := tlv.ZeroRecordT[tlv.TlvType7, IPV6Addrs]()
@@ -1478,18 +1527,22 @@ func (n *NodeAnnouncement2) RandTestMessage(t *rapid.T) Message {
 	}
 
 	if rapid.Bool().Draw(t, "includeTorV3Addrs") {
-		torV3Addrs := make(TorV3Addrs, 1)
-		onionBytes := rapid.SliceOfN(rapid.Byte(), 35, 35).Draw(
-			t, "onion",
-		)
-		onionService := tor.Base32Encoding.EncodeToString(onionBytes) +
-			tor.OnionSuffix
+		numTorV3 := rapid.IntRange(1, 3).Draw(t, "numTorV3Addrs")
+		torV3Addrs := make(TorV3Addrs, numTorV3)
+		for i := range numTorV3 {
+			onionBytes := rapid.SliceOfN(rapid.Byte(), 35, 35).Draw(
+				t, fmt.Sprintf("onion_%d", i),
+			)
+			onionService := tor.Base32Encoding.EncodeToString(
+				onionBytes,
+			) + tor.OnionSuffix
 
-		torV3Addrs[0] = &tor.OnionAddr{
-			OnionService: onionService,
-			Port: rapid.IntRange(1, 65535).Draw(
-				t, "torPort",
-			),
+			torV3Addrs[i] = &tor.OnionAddr{
+				OnionService: onionService,
+				Port: rapid.IntRange(1, 65535).Draw(
+					t, fmt.Sprintf("torPort_%d", i),
+				),
+			}
 		}
 
 		torV3Record := tlv.ZeroRecordT[tlv.TlvType9, TorV3Addrs]()
@@ -1497,19 +1550,21 @@ func (n *NodeAnnouncement2) RandTestMessage(t *rapid.T) Message {
 		msg.TorV3Addrs = tlv.SomeRecordT(torV3Record)
 	}
 
-	if rapid.Bool().Draw(t, "includeDNSHostName") {
-		// Generate a valid DNS hostname.
-		hostname := genValidHostname(t)
-		port := rapid.Uint16Range(1, 65535).Draw(t, "dnsPort")
-
-		dnsAddr := DNSAddress{
-			Hostname: hostname,
-			Port:     port,
+	if rapid.Bool().Draw(t, "includeDNSHostNames") {
+		numAddrs := rapid.IntRange(1, 3).Draw(t, "numDNSAddrs")
+		dnsAddrs := make(DNSAddrs, 0, numAddrs)
+		for range numAddrs {
+			dnsAddrs = append(dnsAddrs, &DNSAddress{
+				Hostname: genValidHostname(t),
+				Port: rapid.Uint16Range(1, 65535).Draw(
+					t, "dnsPort",
+				),
+			})
 		}
 
-		dnsRecord := tlv.ZeroRecordT[tlv.TlvType11, DNSAddress]()
-		dnsRecord.Val = dnsAddr
-		msg.DNSHostName = tlv.SomeRecordT(dnsRecord)
+		dnsRecord := tlv.ZeroRecordT[tlv.TlvType11, DNSAddrs]()
+		dnsRecord.Val = dnsAddrs
+		msg.DNSHostNames = tlv.SomeRecordT(dnsRecord)
 	}
 
 	randRecs, _ := RandSignedRangeRecords(t)
@@ -1635,7 +1690,7 @@ func (p *Ping) RandTestMessage(t *rapid.T) Message {
 	padding := make(PingPayload, paddingLen)
 
 	// Fill padding with random bytes
-	for i := 0; i < paddingLen; i++ {
+	for i := range paddingLen {
 		padding[i] = byte(rapid.IntRange(0, 255).Draw(
 			t, fmt.Sprintf("paddingByte%d", i)),
 		)
@@ -1730,7 +1785,7 @@ func (q *QueryShortChanIDs) RandTestMessage(t *rapid.T) Message {
 
 	// Generate sorted short channel IDs.
 	shortChanIDs := make([]ShortChannelID, numIDs)
-	for i := 0; i < numIDs; i++ {
+	for i := range numIDs {
 		shortChanIDs[i] = RandShortChannelID(t)
 
 		// Ensure they're properly sorted.
@@ -1781,7 +1836,7 @@ func (c *ReplyChannelRange) RandTestMessage(t *rapid.T) Message {
 
 	scidSet := fn.NewSet[ShortChannelID]()
 	scids := make([]ShortChannelID, numShortChanIDs)
-	for i := 0; i < numShortChanIDs; i++ {
+	for i := range numShortChanIDs {
 		scid := RandShortChannelID(t)
 		for scidSet.Contains(scid) {
 			scid = RandShortChannelID(t)
@@ -1797,7 +1852,7 @@ func (c *ReplyChannelRange) RandTestMessage(t *rapid.T) Message {
 
 	if rapid.Bool().Draw(t, "includeTimestamps") && numShortChanIDs > 0 {
 		msg.Timestamps = make(Timestamps, numShortChanIDs)
-		for i := 0; i < numShortChanIDs; i++ {
+		for i := range numShortChanIDs {
 			msg.Timestamps[i] = ChanUpdateTimestamps{
 				Timestamp1: uint32(rapid.IntRange(0, math.MaxInt32).Draw(t, fmt.Sprintf("timestamp-1-%d", i))), //nolint:ll
 				Timestamp2: uint32(rapid.IntRange(0, math.MaxInt32).Draw(t, fmt.Sprintf("timestamp-2-%d", i))), //nolint:ll
@@ -1857,7 +1912,7 @@ func (c *RevokeAndAck) RandTestMessage(t *rapid.T) Message {
 	if rapid.Bool().Draw(t, "includeLocalNonces") {
 		numNonces := rapid.IntRange(0, 3).Draw(t, "numLocalNonces")
 		nonces := make(map[chainhash.Hash]Musig2Nonce)
-		for i := 0; i < numNonces; i++ {
+		for range numNonces {
 			txid := RandChainHash(t)
 
 			// Ensure unique txids for the map.
@@ -2091,7 +2146,7 @@ func (c *Warning) RandTestMessage(t *rapid.T) Message {
 	if useASCII {
 		length := rapid.IntRange(1, 100).Draw(t, "warningDataLength")
 		data := make([]byte, length)
-		for i := 0; i < length; i++ {
+		for i := range length {
 			data[i] = byte(
 				rapid.IntRange(32, 126).Draw(
 					t, fmt.Sprintf("warningDataByte-%d", i),
@@ -2126,7 +2181,7 @@ func (c *Error) RandTestMessage(t *rapid.T) Message {
 	if useASCII {
 		length := rapid.IntRange(1, 100).Draw(t, "errorDataLength")
 		data := make([]byte, length)
-		for i := 0; i < length; i++ {
+		for i := range length {
 			data[i] = byte(
 				rapid.IntRange(32, 126).Draw(
 					t, fmt.Sprintf("errorDataByte-%d", i),
@@ -2156,7 +2211,7 @@ func genValidHostname(t *rapid.T) string {
 	length := rapid.IntRange(1, 255).Draw(t, "hostname_length")
 
 	hostname := make([]byte, length)
-	for i := 0; i < length; i++ {
+	for i := range length {
 		charIndex := rapid.IntRange(0, len(validChars)-1).Draw(
 			t, fmt.Sprintf("char_%d", i),
 		)

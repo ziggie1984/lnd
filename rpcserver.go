@@ -186,6 +186,10 @@ var (
 			Entity: "macaroon",
 			Action: "write",
 		},
+		{
+			Entity: "remotesigner",
+			Action: "generate",
+		},
 	}
 
 	// invoicePermissions is a slice of all the entities that allows a user
@@ -220,7 +224,7 @@ var (
 	// implemented.
 	validActions  = []string{"read", "write", "generate"}
 	validEntities = []string{
-		"onchain", "offchain", "address", "message",
+		"onchain", "offchain", "address", "message", "remotesigner",
 		"peers", "info", "invoices", "signer", "macaroon",
 		macaroons.PermissionEntityCustomURI,
 	}
@@ -2314,9 +2318,11 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 			return nil, fmt.Errorf("use anchors for zero-conf")
 		}
 
+	// The legacy commitment type is no longer opened at all. Reject it here
+	// so the caller gets a clear error before we touch the wallet or the
+	// peer, rather than one from deep inside the funding flow.
 	case lnrpc.CommitmentType_LEGACY:
-		channelType = new(lnwire.ChannelType)
-		*channelType = lnwire.ChannelType(*lnwire.NewRawFeatureVector())
+		return nil, funding.ErrDeprecatedChanType
 
 	case lnrpc.CommitmentType_STATIC_REMOTE_KEY:
 		channelType = new(lnwire.ChannelType)
@@ -2864,7 +2870,16 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		numConfs := uint32(1)
 
 		go peer.WaitForChanToClose(
-			uint32(bestHeight), notifier, errChan, chanPoint,
+			uint32(bestHeight), notifier, func(err error) {
+				// Deliver without waiting, so that a reader
+				// that has already gone cannot hold up the
+				// notification.
+				select {
+				case errChan <- err:
+
+				default:
+				}
+			}, chanPoint,
 			&closingTxid, closingTx.TxOut[0].PkScript, numConfs,
 			func() {
 				// Respond to the local subsystem which
@@ -3026,7 +3041,9 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 			}
 
 			updateChan = closeUpdates.UpdateChan
-			errChan = closeUpdates.ErrChan
+			errChan = closeUpdates.ErrChan(
+				updateStream.Context(),
+			)
 		} else {
 			maxFee := chainfee.SatPerKVByte(
 				in.MaxFeePerVbyte * 1000,
@@ -4201,16 +4218,15 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 				historical.ChanType,
 			)
 
-			// Get the number of forwarding packages from the
-			// historical channel.
-			fwdPkgs, err := historical.LoadFwdPkgs()
+			numFwdPkgs, err := historical.CountFwdPkgs()
 			if err != nil {
-				rpcsLog.Errorf("unable to load forwarding "+
+				rpcsLog.Errorf("unable to count forwarding "+
 					"packages for channel:%s, %v",
 					historical.ShortChannelID, err)
+
 				return nil, 0, err
 			}
-			channel.NumForwardingPackages = int64(len(fwdPkgs))
+			channel.NumForwardingPackages = int64(numFwdPkgs)
 
 			channel.RemoteBalance = int64(
 				historical.LocalCommitment.RemoteBalance.ToSatoshis(),
@@ -4400,11 +4416,12 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 			)
 		}
 
-		fwdPkgs, err := waitingClose.LoadFwdPkgs()
+		numForwardingPackages, err := waitingClose.CountFwdPkgs()
 		if err != nil {
-			rpcsLog.Errorf("unable to load forwarding packages "+
+			rpcsLog.Errorf("unable to count forwarding packages "+
 				"for channel:%s, %v",
 				waitingClose.ShortChannelID, err)
+
 			return nil, 0, err
 		}
 
@@ -4449,7 +4466,7 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 			CommitmentType: rpcCommitmentType(
 				waitingClose.ChanType,
 			),
-			NumForwardingPackages: int64(len(fwdPkgs)),
+			NumForwardingPackages: int64(numForwardingPackages),
 			ChanStatusFlags:       chanStatus.String(),
 			Private:               isPrivate(waitingClose),
 			Memo:                  string(waitingClose.Memo),
@@ -6195,7 +6212,9 @@ func (r *rpcServer) GetTransactions(ctx context.Context,
 		return nil, err
 	}
 
-	return lnrpc.RPCTransactionDetails(txns, firstIdx, lastIdx), nil
+	return lnrpc.RPCTransactionDetails(
+		txns, firstIdx, lastIdx, req.Reverse,
+	), nil
 }
 
 // DescribeGraph returns a description of the latest graph state from the PoV
@@ -6681,11 +6700,10 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 			// channel encountered.
 			outDegree++
 
-			// If we've already seen this channel, then we'll
-			// return early to ensure that we don't double-count
-			// stats.
+			// If we've already seen this channel, skip it to
+			// ensure that we don't double-count stats.
 			if _, ok := seenChans[edge.ChannelID]; ok {
-				return nil
+				continue
 			}
 
 			// Compare the capacity of this channel against the
@@ -6787,19 +6805,28 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 func (r *rpcServer) StopDaemon(_ context.Context,
 	_ *lnrpc.StopRequest) (*lnrpc.StopResponse, error) {
 
-	// Before we even consider a shutdown, are we currently in recovery
-	// mode? We don't want to allow shutting down during recovery because
-	// that would mean the user would have to manually continue the rescan
-	// process next time by using `lncli unlock --recovery_window X`
-	// otherwise some funds wouldn't be picked up.
-	isRecoveryMode, progress, err := r.server.cc.Wallet.GetRecoveryInfo()
-	if err != nil {
-		return nil, fmt.Errorf("unable to get wallet recovery info: %w",
-			err)
-	}
-	if isRecoveryMode && progress < 1 {
-		return nil, fmt.Errorf("wallet recovery in progress, cannot " +
-			"shut down, please wait until rescan finishes")
+	// StopDaemon is one of the few methods that can be called while the
+	// wallet is unlocked but the full RPC server is still starting. In
+	// that window addDeps has not yet populated r.server, so only perform
+	// the recovery-mode shutdown guard once those dependencies exist.
+	if r.server != nil && r.server.cc != nil && r.server.cc.Wallet != nil {
+		// Before we even consider a shutdown, are we currently in
+		// recovery mode? We don't want to allow shutting down during
+		// recovery because that would mean the user would have to
+		// manually continue the rescan process next time by using
+		// `lncli unlock --recovery_window X` otherwise some funds
+		// wouldn't be picked up.
+		isRecoveryMode, progress, err := r.server.cc.Wallet.
+			GetRecoveryInfo()
+		if err != nil {
+			return nil, fmt.Errorf("unable to get wallet recovery "+
+				"info: %w", err)
+		}
+		if isRecoveryMode && progress < 1 {
+			return nil, fmt.Errorf("wallet recovery in progress, " +
+				"cannot shut down, please wait until rescan " +
+				"finishes")
+		}
 	}
 
 	r.interceptor.RequestShutdown()

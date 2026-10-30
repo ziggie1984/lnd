@@ -1,18 +1,55 @@
 package btcwallet
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/wallet"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/lnmock"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// lockedOutpointWallet simulates an output held by btcwallet's memory locker.
+type lockedOutpointWallet struct {
+	wallet.Interface
+	leaseCalled bool
+}
+
+// LockedOutpoint reports that the test output is already locked in memory.
+func (w *lockedOutpointWallet) LockedOutpoint(wire.OutPoint) bool {
+	return true
+}
+
+// LeaseOutput records an unexpected attempt to lease the locked output.
+func (w *lockedOutpointWallet) LeaseOutput(wtxmgr.LockID, wire.OutPoint,
+	time.Duration) (time.Time, error) {
+
+	w.leaseCalled = true
+	return time.Time{}, nil
+}
+
+// TestLeaseOutputRejectsInMemoryLock verifies that the legacy lease path
+// preserves the in-memory double-lock guard.
+func TestLeaseOutputRejectsInMemoryLock(t *testing.T) {
+	t.Parallel()
+
+	backend := &lockedOutpointWallet{}
+	wallet := &BtcWallet{wallet: backend}
+
+	_, err := wallet.LeaseOutput(
+		wtxmgr.LockID{}, wire.OutPoint{}, time.Minute,
+	)
+	require.ErrorIs(t, err, wtxmgr.ErrOutputAlreadyLocked)
+	require.False(t, backend.leaseCalled)
+}
 
 type previousOutpointsTest struct {
 	name     string
@@ -134,6 +171,79 @@ func TestPreviousOutpoints(t *testing.T) {
 					respOutpoint.IsOurOutput,
 				)
 			}
+		})
+	}
+}
+
+// TestTransactionDetailsPage verifies the bounds returned for transaction
+// pagination, including requests that would overflow with uint32 addition.
+func TestTransactionDetailsPage(t *testing.T) {
+	t.Parallel()
+
+	txDetails := []*lnwallet.TransactionDetail{{}, {}, {}, {}}
+
+	testCases := []struct {
+		name          string
+		offset        uint32
+		limit         uint32
+		expectedPage  []*lnwallet.TransactionDetail
+		expectedFirst uint64
+		expectedLast  uint64
+	}{
+		{
+			name:          "zero limit returns remainder",
+			offset:        1,
+			expectedPage:  txDetails[1:],
+			expectedFirst: 1,
+			expectedLast:  3,
+		},
+		{
+			name:          "limit selects page",
+			offset:        1,
+			limit:         2,
+			expectedPage:  txDetails[1:3],
+			expectedFirst: 1,
+			expectedLast:  2,
+		},
+		{
+			name:          "limit exceeds remainder",
+			offset:        2,
+			limit:         10,
+			expectedPage:  txDetails[2:],
+			expectedFirst: 2,
+			expectedLast:  3,
+		},
+		{
+			name:          "offset plus limit exceeds uint32",
+			offset:        1,
+			limit:         math.MaxUint32,
+			expectedPage:  txDetails[1:],
+			expectedFirst: 1,
+			expectedLast:  3,
+		},
+		{
+			name:         "offset equals transaction count",
+			offset:       uint32(len(txDetails)),
+			limit:        1,
+			expectedPage: []*lnwallet.TransactionDetail{},
+		},
+		{
+			name:         "maximum offset",
+			offset:       math.MaxUint32,
+			limit:        1,
+			expectedPage: []*lnwallet.TransactionDetail{},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			page, first, last := transactionDetailsPage(
+				txDetails, testCase.offset, testCase.limit,
+			)
+
+			require.Equal(t, testCase.expectedPage, page)
+			require.Equal(t, testCase.expectedFirst, first)
+			require.Equal(t, testCase.expectedLast, last)
 		})
 	}
 }

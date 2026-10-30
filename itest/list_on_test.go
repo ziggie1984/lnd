@@ -11,6 +11,10 @@ import (
 
 var allTestCases = []*lntest.TestCase{
 	{
+		Name:     "local reputation log only",
+		TestFunc: testLocalReputationLogOnly,
+	},
+	{
 		Name:     "update channel status",
 		TestFunc: testUpdateChanStatus,
 	},
@@ -311,6 +315,10 @@ var allTestCases = []*lntest.TestCase{
 		TestFunc: testFundPsbtCustomLock,
 	},
 	{
+		Name:     "fund psbt confirmation lease",
+		TestFunc: testFundPsbtConfirmationLease,
+	},
+	{
 		Name:     "resolution handoff",
 		TestFunc: testResHandoff,
 	},
@@ -452,8 +460,12 @@ var allTestCases = []*lntest.TestCase{
 		TestFunc: testForwardInterceptorBasic,
 	},
 	{
-		Name:     "forward interceptor restart",
-		TestFunc: testForwardInterceptorRestart,
+		Name:     "forward interceptor restart before resume",
+		TestFunc: testForwardInterceptorRestartBeforeResume,
+	},
+	{
+		Name:     "forward interceptor restart after resume",
+		TestFunc: testForwardInterceptorRestartAfterResume,
 	},
 	{
 		Name:     "forward interceptor on chain settle after restart",
@@ -552,6 +564,10 @@ var allTestCases = []*lntest.TestCase{
 		TestFunc: testAsyncPayments,
 	},
 	{
+		Name:     "outbound remote signer macaroon enforcement",
+		TestFunc: testOutboundRSMacaroonEnforcement,
+	},
+	{
 		Name:     "taproot coop close",
 		TestFunc: testTaprootCoopClose,
 	},
@@ -630,6 +646,18 @@ var allTestCases = []*lntest.TestCase{
 	{
 		Name:     "blinded payment htlc re-forward",
 		TestFunc: testBlindedPaymentHTLCReForward,
+	},
+	{
+		Name:     "blinded route next node id",
+		TestFunc: testBlindedRouteNextNodeID,
+	},
+	{
+		Name:     "blinded route next node id private channel",
+		TestFunc: testBlindedRouteNextNodeIDPrivateChannel,
+	},
+	{
+		Name:     "blinded route next node id restart",
+		TestFunc: testBlindedRouteNextNodeIDRestart,
 	},
 	{
 		Name:     "query blinded route",

@@ -2,61 +2,155 @@ package bolt12
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
-// TestInvoiceRequestRoundTrip pins encode→decode→re-encode for an
-// InvoiceRequest with a representative subset of optional fields.
+// TestInvoiceRequestRoundTrip pins encode, decode and re-encode for an
+// InvoiceRequest with every field set, plus an unknown odd TLV. Comparing the
+// decoded struct against the fixture catches a field that is wired into the
+// encode path but not into the decode path, which byte identity alone cannot
+// see.
 func TestInvoiceRequestRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	_, bobPub := bobKey()
+	priv, bobPub := bobKey()
+	_, intro := aliceKey()
+	_, blinding := bobKey()
+	_, hopPub := aliceKey()
 
-	metadata := tlv.Blob("payer-metadata")
+	introNode, err := lnwire.NewPubkeyIntro(intro)
+	require.NoError(t, err)
+
+	paths := lnwire.BlindedPaths{
+		Paths: []lnwire.BlindedPath{
+			{
+				IntroductionNode: introNode,
+				BlindingPoint:    blinding,
+				Hops: []lnwire.BlindedHop{
+					{
+						BlindedNodeID: hopPub,
+						EncryptedData: []byte{1, 2},
+					},
+				},
+			},
+		},
+	}
+
+	// name_len, name, domain_len, domain.
+	bip353 := append(
+		[]byte{3, 'b', 'o', 'b', 6}, []byte("ex.com")...,
+	)
 
 	ir := &InvoiceRequest{
+		OfferChains: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType2](ChainsRecord{
+				Chains: [][32]byte{bitcoinMainnetGenesisHash},
+			}),
+		),
+		OfferMetadata: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType4](
+				tlv.Blob("opaque"),
+			),
+		),
+		OfferCurrency: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType6](tlv.Blob("USD")),
+		),
+		OfferAmount: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType8](TUint64(1500)),
+		),
 		OfferDescription: tlv.SomeRecordT(
 			tlv.NewPrimitiveRecord[tlv.TlvType10](
-				tlv.Blob("description"),
+				tlv.Blob("coffee"),
 			),
+		),
+		OfferFeatures: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType12](
+				*lnwire.NewRawFeatureVector(lnwire.MPPOptional),
+			),
+		),
+		OfferAbsoluteExpiry: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType14](TUint64(1 << 32)),
+		),
+		OfferPaths: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType16](paths),
+		),
+		OfferIssuer: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType18](
+				tlv.Blob("alice"),
+			),
+		),
+		OfferQuantityMax: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType20](TUint64(5)),
+		),
+		OfferIssuerID: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType22](bobPub),
+		),
+		InvreqMetadata: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType0](
+				tlv.Blob("payer-metadata"),
+			),
+		),
+		InvreqChain: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType80](
+				bitcoinMainnetGenesisHash,
+			),
+		),
+		InvreqAmount: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType82](TUint64(3000)),
+		),
+		InvreqFeatures: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType84](
+				*lnwire.NewRawFeatureVector(lnwire.MPPOptional),
+			),
+		),
+		InvreqQuantity: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType86](TUint64(2)),
 		),
 		InvreqPayerID: tlv.SomeRecordT(
 			tlv.NewPrimitiveRecord[tlv.TlvType88](bobPub),
 		),
-		InvreqMetadata: tlv.SomeRecordT(
-			tlv.NewPrimitiveRecord[tlv.TlvType0](metadata),
+		InvreqPayerNote: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType89](tlv.Blob("tip")),
 		),
-		InvreqAmount: tlv.SomeRecordT(
-			tlv.NewRecordT[tlv.TlvType82, TUint64](1000),
+		InvreqPaths: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType90](paths),
 		),
-		Signature: tlv.SomeRecordT(
-			tlv.NewPrimitiveRecord[tlv.TlvType240](
-				[64]byte{0x01},
-			),
+		InvreqBip353Name: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType91](bip353),
 		),
+
+		// An unknown odd type in the signed range must survive the
+		// round trip byte for byte.
+		decodedTLVs: tlv.TypeMap{93: []byte{0xde, 0xad}},
 	}
 
-	encoded, err := ir.Encode()
+	sig, err := SignInvoiceRequest(ir, priv)
+	require.NoError(t, err)
+	ir.Signature = tlv.SomeRecordT(
+		tlv.NewPrimitiveRecord[tlv.TlvType240](sig),
+	)
+
+	encoded, err := ir.encode()
 	require.NoError(t, err)
 	require.NotEmpty(t, encoded)
 
 	decoded, err := DecodeInvoiceRequest(encoded)
 	require.NoError(t, err)
 
-	require.Equal(
-		t, bobPub.SerializeCompressed(),
-		decoded.InvreqPayerID.UnwrapOrFailV(t).SerializeCompressed(),
-	)
-	require.Equal(t, metadata, decoded.InvreqMetadata.UnwrapOrFailV(t))
-	require.Equal(
-		t, TUint64(1000), decoded.InvreqAmount.UnwrapOrFailV(t),
-	)
+	// The sidecar names every type seen on the wire, whereas the fixture
+	// carries only the unknown one. Adopt the decoded view so the
+	// comparison below covers the typed fields.
+	require.Equal(t, []byte{0xde, 0xad}, decoded.decodedTLVs[93])
+	ir.decodedTLVs = decoded.decodedTLVs
+	require.Equal(t, ir, decoded)
 
-	reencoded, err := decoded.Encode()
+	reencoded, err := decoded.encode()
 	require.NoError(t, err)
 	require.Equal(t, encoded, reencoded)
 }
@@ -134,7 +228,7 @@ func TestNewInvoiceRequestFromOfferMirrorsUnknownFields(t *testing.T) {
 			tlv.NewPrimitiveRecord[tlv.TlvType22](pub),
 		),
 	}
-	encoded, err := offer.Encode()
+	encoded, err := offer.encode()
 	require.NoError(t, err)
 
 	const unknownType = 33
@@ -168,4 +262,136 @@ func TestNewInvoiceRequestFromOfferMirrorsUnknownFields(t *testing.T) {
 		}
 	}
 	require.True(t, found, "unknown offer TLV not mirrored into request")
+}
+
+// TestDecodeInvoiceRequestString decodes the signature-test.json
+// invoice_request string through the bech32 wrapper, reader gates included,
+// and verifies key fields.
+func TestDecodeInvoiceRequestString(t *testing.T) {
+	t.Parallel()
+
+	// From upstream lightning/bolts signature-test.json: the
+	// invoice_request bolt12 string.
+	lnrStr := "lnr1qqyqqqqqqqqqqqqqqcp4256ypqqkgzshgysy6ct5d" +
+		"pjk6ct5d93kzmpq23ex2ct5d9ek293pqthvwfzadd7jej" +
+		"es8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpjkppqvj" +
+		"x204vgdzgsqpvcp4mldl3plscny0rt707gvpdh6ndydfac" +
+		"z43euzqhrurageg3n7kafgsek6gz3e9w52parv8gs2hlxz" +
+		"k95tzeswywffxlkeyhml0hh46kndmwf4m6xma3tkq2lu0" +
+		"4qz3slje2rfthc89vss"
+
+	ir, err := DecodeInvoiceRequestString(lnrStr, bitcoinMainnetGenesisHash)
+	require.NoError(t, err)
+
+	// Verify invreq_metadata is set (8 zero bytes).
+	var metadata []byte
+	ir.InvreqMetadata.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType0, tlv.Blob]) {
+			metadata = r.Val
+		},
+	)
+	require.Equal(t, make([]byte, 8), metadata)
+
+	// Verify offer_currency is "USD".
+	var currency []byte
+	ir.OfferCurrency.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType6, tlv.Blob]) {
+			currency = r.Val
+		},
+	)
+	require.Equal(t, "USD", string(currency))
+
+	// Verify offer_amount is 100.
+	var amount TUint64
+	ir.OfferAmount.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType8, TUint64]) {
+			amount = r.Val
+		},
+	)
+	require.Equal(t, TUint64(100), amount)
+
+	// Verify offer_description is "A Mathematical Treatise".
+	var desc []byte
+	ir.OfferDescription.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType10, tlv.Blob]) {
+			desc = r.Val
+		},
+	)
+	require.Equal(t, "A Mathematical Treatise", string(desc))
+}
+
+// TestEncodeSignedInvalid asserts EncodeSigned refuses to emit a request
+// that fails writer validation.
+func TestEncodeSignedInvalid(t *testing.T) {
+	t.Parallel()
+
+	ir := validInvoiceRequest(t)
+	ir.InvreqPayerID = tlv.OptionalRecordT[
+		tlv.TlvType88, *btcec.PublicKey,
+	]{}
+
+	encoded, err := ir.EncodeSigned()
+	require.ErrorIs(t, err, ErrMissingPayerID)
+	require.Empty(t, encoded)
+}
+
+// TestEncodeSignedUnsigned asserts EncodeSigned refuses to emit an unsigned
+// invoice request. An invoice request reaches a peer as raw TLV, so this is
+// the boundary that makes the writer-side signature MUST unavoidable.
+func TestEncodeSignedUnsigned(t *testing.T) {
+	t.Parallel()
+
+	ir := validInvoiceRequest(t)
+	ir.Signature = tlv.OptionalRecordT[tlv.TlvType240, [64]byte]{}
+
+	encoded, err := ir.EncodeSigned()
+	require.ErrorIs(t, err, ErrMissingSignature)
+	require.Empty(t, encoded)
+}
+
+// TestEncodeSignedInvalidSignature asserts EncodeSigned refuses to emit a
+// request whose signature does not verify against invreq_payer_id.
+func TestEncodeSignedInvalidSignature(t *testing.T) {
+	t.Parallel()
+
+	ir := validInvoiceRequest(t)
+
+	// The post-sign mutation leaves the signature stale: it covers a
+	// Merkle root this request no longer produces.
+	ir.InvreqAmount = tlv.SomeRecordT(
+		tlv.NewRecordT[tlv.TlvType82, TUint64](TUint64(2000)),
+	)
+
+	encoded, err := ir.EncodeSigned()
+	require.ErrorIs(t, err, ErrInvalidSignature)
+	require.Empty(t, encoded)
+}
+
+// TestEncodeInvoiceRequestString asserts that a signed request round-trips
+// through its lnr1 string, and that an unsigned one is refused, as it is in the
+// raw TLV form.
+func TestEncodeInvoiceRequestString(t *testing.T) {
+	t.Parallel()
+
+	ir := validInvoiceRequest(t)
+
+	lnr, err := EncodeInvoiceRequestString(ir)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(lnr, HRPInvoiceRequest+"1"))
+
+	decoded, err := DecodeInvoiceRequestString(
+		lnr, bitcoinMainnetGenesisHash,
+	)
+	require.NoError(t, err)
+
+	want, err := ir.EncodeSigned()
+	require.NoError(t, err)
+	got, err := decoded.EncodeSigned()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+
+	ir.Signature = tlv.OptionalRecordT[tlv.TlvType240, [64]byte]{}
+	lnr, err = EncodeInvoiceRequestString(ir)
+	require.ErrorIs(t, err, ErrMissingSignature)
+	require.Empty(t, lnr)
 }

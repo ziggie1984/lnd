@@ -41,6 +41,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnutils"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/onionmessage"
 	"github.com/lightningnetwork/lnd/routing"
@@ -263,6 +264,22 @@ const (
 	// response in time after we send a ping.
 	defaultNoDisconnectOnPongFailure = false
 )
+
+// clampMaxCommitFeeRateAnchors caps the configured max commitment fee rate of
+// anchor channels, in sat/vbyte, at the largest fee rate we ever use. Fee
+// estimates are already capped at that ceiling, so a larger value behaves the
+// same, but converting a huge value to sat/kw would overflow.
+func clampMaxCommitFeeRateAnchors(feeRate uint64) uint64 {
+	maxFeeRate := uint64(lncfg.MaxAllowedFeeRate)
+	if feeRate <= maxFeeRate {
+		return feeRate
+	}
+
+	ltndLog.Warnf("max-commit-fee-rate-anchors=%d exceeds maximum (%d), "+
+		"clamping to maximum", feeRate, maxFeeRate)
+
+	return maxFeeRate
+}
 
 // validateMaxOutgoingCltvExpiry validates the configured maximum outgoing CLTV
 // expiry against the node's default time lock delta.
@@ -504,7 +521,7 @@ type Config struct {
 
 	MaxChannelFeeAllocation float64 `long:"max-channel-fee-allocation" description:"The maximum percentage of total funds that can be allocated to a channel's commitment fee. This only applies for the initiator of the channel. Valid values are within [0.1, 1]."`
 
-	MaxCommitFeeRateAnchors uint64 `long:"max-commit-fee-rate-anchors" description:"The maximum fee rate in sat/vbyte that will be used for commitments of channels of the anchors type. Must be large enough to ensure transaction propagation"`
+	MaxCommitFeeRateAnchors uint64 `long:"max-commit-fee-rate-anchors" description:"The maximum fee rate in sat/vbyte that will be used for commitments of channels of the anchors type. If this is below the minimum commitment fee rate of 253 sat/kw, the minimum is used instead. Values above 10000 sat/vbyte are clamped to 10000."`
 
 	DryRunMigration bool `long:"dry-run-migration" description:"If true, lnd will abort committing a migration if it would otherwise have been successful. This leaves the database unmodified, and still compatible with the previously active version of lnd."`
 
@@ -556,7 +573,14 @@ type Config struct {
 
 	RPCMiddleware *lncfg.RPCMiddleware `group:"rpcmiddleware" namespace:"rpcmiddleware"`
 
+	// RemoteSigner defines how to connect to a remote signer node. If this
+	// is enabled, the node acts as a watch-only node in a remote signer
+	// setup.
 	RemoteSigner *lncfg.RemoteSigner `group:"remotesigner" namespace:"remotesigner"`
+
+	// WatchOnlyNode defines how to connect to a watch-only node. If this is
+	// enabled, the node acts as a remote signer in a remote signer setup.
+	WatchOnlyNode *lncfg.WatchOnlyNode `group:"watchonlynode" namespace:"watchonlynode"`
 
 	Sweeper *lncfg.Sweeper `group:"sweeper" namespace:"sweeper"`
 
@@ -864,10 +888,9 @@ func DefaultConfig() Config {
 		FwdHistoryDeleteBatchSize: defaultFwdHistoryDeleteBatchSize,
 		CoinSelectionStrategy:     defaultCoinSelectionStrategy,
 		KeepFailedPaymentAttempts: defaultKeepFailedPaymentAttempts,
-		RemoteSigner: &lncfg.RemoteSigner{
-			Timeout: lncfg.DefaultRemoteSignerRPCTimeout,
-		},
-		Sweeper: lncfg.DefaultSweeperConfig(),
+		RemoteSigner:              lncfg.DefaultRemoteSignerCfg(),
+		WatchOnlyNode:             lncfg.DefaultWatchOnlyNodeCfg(),
+		Sweeper:                   lncfg.DefaultSweeperConfig(),
 		Htlcswitch: &lncfg.Htlcswitch{
 			MailboxDeliveryTimeout: htlcswitch.DefaultMailboxDeliveryTimeout,
 			QuiescenceTimeout:      lncfg.DefaultQuiescenceTimeout,
@@ -1850,6 +1873,22 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.FwdHistoryDeleteBatchSize = channeldb.MaxResponseEvents
 	}
 
+	cfg.MaxCommitFeeRateAnchors = clampMaxCommitFeeRateAnchors(
+		cfg.MaxCommitFeeRateAnchors,
+	)
+
+	// The commitment fee floor takes precedence over a lower cap on the
+	// commitment fee rate of anchor channels, both when opening a channel
+	// and when updating its fee. Let the operator know if that's the case
+	// for their configured cap.
+	anchorsCap := chainfee.SatPerVByte(cfg.MaxCommitFeeRateAnchors)
+	if anchorsCap.FeePerKWeight() < chainfee.FeePerKwFloor {
+		ltndLog.Warnf("max-commit-fee-rate-anchors=%d (%v) is below "+
+			"the minimum commitment fee rate, using %v instead",
+			cfg.MaxCommitFeeRateAnchors, anchorsCap.FeePerKWeight(),
+			chainfee.FeePerKwFloor)
+	}
+
 	if err := cfg.Gossip.Parse(); err != nil {
 		return nil, mkErr("error parsing gossip syncer: %v", err)
 	}
@@ -1918,6 +1957,16 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		)
 	}
 
+	// Validate that the node isn't configured as both a remote signer and a
+	// watch-only node.
+	if cfg.RemoteSigner.Enable &&
+		cfg.WatchOnlyNode.ExperimentalEnable {
+
+		return nil, fmt.Errorf("cannot be configured as both a " +
+			"watchonly node and a remote signer node " +
+			"simultaneously")
+	}
+
 	// Validate the subconfigs for workers, caches, and the tower client.
 	err = lncfg.Validate(
 		cfg.Workers,
@@ -1928,6 +1977,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.HealthChecks,
 		cfg.RPCMiddleware,
 		cfg.RemoteSigner,
+		cfg.WatchOnlyNode,
 		cfg.Sweeper,
 		cfg.Htlcswitch,
 		cfg.Invoices,

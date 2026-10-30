@@ -79,6 +79,24 @@ func ExpectedFee(f models.ForwardingPolicy,
 	return f.BaseFee + (htlcAmt*f.FeeRate)/1000000
 }
 
+// TotalForwardingFee returns the total fee this node charges to forward
+// amtToForward: the outbound fee the outgoing link charges on the outgoing
+// amount, plus the inbound fee of the incoming link, which is charged on the
+// outgoing amount plus the outbound fee.
+//
+// The two components are calculated and rounded separately on purpose. An
+// aggregate fee applied to the outgoing amount may round slightly higher than
+// the sum of the separately rounded components, which would cause failed
+// forwards for senders. The result is signed because the inbound component may
+// be a discount.
+func TotalForwardingFee(amtToForward, outFee lnwire.MilliSatoshi,
+	inboundFee models.InboundFee) int64 {
+
+	inFee := inboundFee.CalcFee(amtToForward + outFee)
+
+	return inFee + int64(outFee)
+}
+
 // ChannelLinkConfig defines the configuration for the channel link. ALL
 // elements within the configuration MUST be non-nil for channel link to carry
 // out its duties.
@@ -363,6 +381,14 @@ type channelLink struct {
 	// forwarded sent by the switch.
 	mailBox MailBox
 
+	// mailBoxIngressMtx guards mailBoxIngressFailed and serializes peer
+	// message admission into the mailbox.
+	mailBoxIngressMtx sync.Mutex
+
+	// mailBoxIngressFailed is set after the first peer message admission
+	// failure so later messages cannot be processed across a gap.
+	mailBoxIngressFailed bool
+
 	// upstream is a channel that new messages sent from the remote peer to
 	// the local peer will be sent across.
 	upstream chan lnwire.Message
@@ -394,6 +420,11 @@ type channelLink struct {
 
 	// log is a link-specific logging instance.
 	log btclog.Logger
+
+	// warningLogged and unknownMessageLogged track whether each non-fatal
+	// message class has already been recorded for this link lifetime.
+	warningLogged        bool
+	unknownMessageLogged bool
 
 	// isOutgoingAddBlocked tracks whether the channelLink can send an
 	// UpdateAddHTLC.
@@ -721,7 +752,7 @@ func (l *channelLink) eligibleToForward() bool {
 //
 // NOTE: MUST be called from the main event loop.
 func (l *channelLink) eligibleToUpdate() bool {
-	return l.channel.RemoteNextRevocation() != nil &&
+	return l.channel.RemoteNextRevocation().IsSome() &&
 		l.channel.ShortChanID() != hop.Source &&
 		l.isReestablished() &&
 		l.quiescer.CanSendUpdates()
@@ -1862,14 +1893,20 @@ func (l *channelLink) handleUpstreamMsg(ctx context.Context,
 	// log it and move on. We choose not to disconnect from our peer,
 	// although we "MAY" do so according to the specification.
 	case *lnwire.Warning:
-		l.log.Warnf("received warning message from peer: %v",
-			msg.Warning())
+		if !l.warningLogged {
+			l.log.Warnf("received warning message from peer: %v",
+				msg.Warning())
+			l.warningLogged = true
+		}
 
 	case *lnwire.Error:
 		l.processRemoteError(msg)
 
 	default:
-		l.log.Warnf("received unknown message of type %T", msg)
+		if !l.unknownMessageLogged {
+			l.log.Warnf("received unknown message of type %T", msg)
+			l.unknownMessageLogged = true
+		}
 	}
 
 	if err != nil {
@@ -2482,6 +2519,20 @@ func (l *channelLink) UpdateForwardingPolicy(
 	l.cfg.FwrdingPolicy = newPolicy
 }
 
+// AdvertisedFee returns the fee this link's current forwarding policy charges
+// to forward the given outgoing amount (base fee plus the proportional fee).
+//
+// NOTE: Part of the ChannelLink interface.
+func (l *channelLink) AdvertisedFee(
+	amtToForward lnwire.MilliSatoshi) lnwire.MilliSatoshi {
+
+	l.RLock()
+	policy := l.cfg.FwrdingPolicy
+	l.RUnlock()
+
+	return ExpectedFee(policy, amtToForward)
+}
+
 // CheckHtlcForward should return a nil error if the passed HTLC details
 // satisfy the current forwarding policy fo the target link. Otherwise,
 // a LinkError with a valid protocol failure message should be returned
@@ -2501,20 +2552,9 @@ func (l *channelLink) CheckHtlcForward(payHash [32]byte, incomingHtlcAmt,
 
 	// Using the outgoing HTLC amount, we'll calculate the outgoing
 	// fee this incoming HTLC must carry in order to satisfy the constraints
-	// of the outgoing link.
+	// of the outgoing link, then add the inbound fee we charge on top.
 	outFee := ExpectedFee(policy, amtToForward)
-
-	// Then calculate the inbound fee that we charge based on the sum of
-	// outgoing HTLC amount and outgoing fee.
-	inFee := inboundFee.CalcFee(amtToForward + outFee)
-
-	// Add up both fee components. It is important to calculate both fees
-	// separately. An alternative way of calculating is to first determine
-	// an aggregate fee and apply that to the outgoing HTLC amount. However,
-	// rounding may cause the result to be slightly higher than in the case
-	// of separately rounded fee components. This potentially causes failed
-	// forwards for senders and is something to be avoided.
-	expectedFee := inFee + int64(outFee)
+	expectedFee := TotalForwardingFee(amtToForward, outFee, inboundFee)
 
 	// If the actual fee is less than our expected fee, then we'll reject
 	// this HTLC as it didn't provide a sufficient amount of fees, or the
@@ -2668,7 +2708,10 @@ func (l *channelLink) canSendHtlc(policy models.ForwardingPolicy,
 				htlcBlob = fn.Some(blob)
 			}
 
-			return l.AuxBandwidth(amt, originalScid, htlcBlob, ts)
+			// Check if this link can handle the traffic.
+			return l.AuxBandwidth(
+				amt, l.ShortChanID(), htlcBlob, ts,
+			)
 		},
 	).Unpack()
 	if externalErr != nil {
@@ -2801,10 +2844,23 @@ func (l *channelLink) HandleChannelUpdate(message lnwire.Message) {
 	default:
 	}
 
-	err := l.mailBox.AddMessage(message)
-	if err != nil {
-		l.log.Errorf("failed to add Message to mailbox: %v", err)
+	l.mailBoxIngressMtx.Lock()
+	if l.mailBoxIngressFailed {
+		l.mailBoxIngressMtx.Unlock()
+		return
 	}
+
+	err := l.mailBox.AddMessage(message)
+	if err == nil {
+		l.mailBoxIngressMtx.Unlock()
+		return
+	}
+
+	l.mailBoxIngressFailed = true
+	l.mailBoxIngressMtx.Unlock()
+
+	l.log.Errorf("failed to add Message to mailbox: %v", err)
+	go l.cfg.Peer.Disconnect(err)
 }
 
 // updateChannelFee updates the commitment fee-per-kw on this channel by
@@ -3186,8 +3242,8 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg) {
 			continue
 		}
 
-		switch fwdInfo.NextHop {
-		case hop.Exit:
+		switch {
+		case fwdInfo.IsExit():
 			err := l.processExitHop(
 				add, sourceRef, obfuscator, fwdInfo,
 				heightNow, pld,
@@ -3265,7 +3321,8 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg) {
 				updatePacket := &htlcPacket{
 					incomingChanID:       l.ShortChanID(),
 					incomingHTLCID:       add.ID,
-					outgoingChanID:       fwdInfo.NextHop,
+					outgoingChanID:       fwdInfo.NextHopChannel().UnwrapOr(hop.Exit),
+					outgoingHop:          fwdInfo.NextHop,
 					sourceRef:            &sourceRef,
 					incomingAmount:       add.Amount,
 					amount:               outgoingAdd.Amount,
@@ -3342,7 +3399,8 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg) {
 				updatePacket := &htlcPacket{
 					incomingChanID:       l.ShortChanID(),
 					incomingHTLCID:       add.ID,
-					outgoingChanID:       fwdInfo.NextHop,
+					outgoingChanID:       fwdInfo.NextHopChannel().UnwrapOr(hop.Exit),
+					outgoingHop:          fwdInfo.NextHop,
 					sourceRef:            &sourceRef,
 					incomingAmount:       add.Amount,
 					amount:               addMsg.Amount,
@@ -3907,7 +3965,14 @@ func (l *channelLink) handleUpdateFee(ctx context.Context) error {
 		return fmt.Errorf("unable to sample network fee: %w", err)
 	}
 
-	minRelayFee := l.cfg.FeeEstimator.RelayFeePerKW()
+	// The estimator's min relay fee can be below the floor that
+	// validateCommitmentSanity enforces, e.g. when the bitcoind and btcd
+	// estimators cap the median feefilter of our peers at a low estimate
+	// for the next block. The floor takes precedence, so we neither
+	// propose a fee rate below it nor keep one that's already below it.
+	minRelayFee := max(
+		l.cfg.FeeEstimator.RelayFeePerKW(), chainfee.FeePerKwFloor,
+	)
 
 	newCommitFee := l.channel.IdealCommitFeeRate(
 		netFee, minRelayFee,
@@ -4578,6 +4643,16 @@ func (l *channelLink) processRemoteRevokeAndAck(ctx context.Context,
 // processRemoteUpdateFee takes an `UpdateFee` msg sent from the remote and
 // processes it.
 func (l *channelLink) processRemoteUpdateFee(msg *lnwire.UpdateFee) error {
+	// BOLT 2 only permits the channel initiator to send fee updates.
+	// Validate the sender's role before applying message-specific
+	// calculations.
+	if l.channel.IsInitiator() {
+		err := fmt.Errorf("received fee update as initiator")
+		l.failf(LinkFailureError{code: ErrInvalidUpdate}, "%v", err)
+
+		return err
+	}
+
 	// Check and see if their proposed fee-rate would make us exceed the fee
 	// threshold.
 	fee := chainfee.SatPerKWeight(msg.FeePerKw)
@@ -4596,8 +4671,9 @@ func (l *channelLink) processRemoteUpdateFee(msg *lnwire.UpdateFee) error {
 
 	if isDust {
 		// The proposed fee-rate makes us exceed the fee threshold.
-		l.failf(LinkFailureError{code: ErrInternalError},
-			"fee threshold exceeded: %v", err)
+		err := fmt.Errorf("fee threshold exceeded")
+		l.failf(LinkFailureError{code: ErrInternalError}, "%v", err)
+
 		return err
 	}
 
@@ -4606,6 +4682,7 @@ func (l *channelLink) processRemoteUpdateFee(msg *lnwire.UpdateFee) error {
 	if err := l.channel.ReceiveUpdateFee(fee); err != nil {
 		l.failf(LinkFailureError{code: ErrInvalidUpdate},
 			"error receiving fee update: %v", err)
+
 		return err
 	}
 

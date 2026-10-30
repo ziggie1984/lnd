@@ -29,7 +29,7 @@ func TestValidationBarrierSemaphore(t *testing.T) {
 	currentScid := lnwire.ShortChannelID{}
 
 	// Saturate the semaphore with jobs.
-	for i := 0; i < numTasks; i++ {
+	for range numTasks {
 		scidMtx.Lock()
 		dummyUpdate := &lnwire.ChannelUpdate1{
 			ShortChannelID: currentScid,
@@ -43,7 +43,7 @@ func TestValidationBarrierSemaphore(t *testing.T) {
 
 	// Spawn additional tasks that will signal completion when added.
 	jobAdded := make(chan struct{})
-	for i := 0; i < numPendingTasks; i++ {
+	for range numPendingTasks {
 		go func() {
 			scidMtx.Lock()
 			dummyUpdate := &lnwire.ChannelUpdate1{
@@ -68,7 +68,7 @@ func TestValidationBarrierSemaphore(t *testing.T) {
 	}
 
 	// Complete jobs one at a time and verify that they get added.
-	for i := 0; i < numPendingTasks; i++ {
+	for range numPendingTasks {
 		barrier.CompleteJob()
 
 		select {
@@ -97,7 +97,7 @@ func TestValidationBarrierQuit(t *testing.T) {
 	// validation.
 	anns := make([]*lnwire.ChannelAnnouncement1, 0, numTasks)
 	parentJobIDs := make([]JobID, 0, numTasks)
-	for i := 0; i < numTasks; i++ {
+	for i := range numTasks {
 		anns = append(anns, &lnwire.ChannelAnnouncement1{
 			ShortChannelID: lnwire.NewShortChanIDFromInt(uint64(i)),
 			NodeID1:        nodeIDFromInt(uint64(2 * i)),
@@ -113,7 +113,7 @@ func TestValidationBarrierQuit(t *testing.T) {
 	// associated channel announcement has been verified.
 	chanUpds := make([]*lnwire.ChannelUpdate1, 0, numTasks)
 	childJobIDs := make([]JobID, 0, numTasks)
-	for i := 0; i < numTasks; i++ {
+	for i := range numTasks {
 		chanUpds = append(chanUpds, &lnwire.ChannelUpdate1{
 			ShortChannelID: lnwire.NewShortChanIDFromInt(uint64(i)),
 		})
@@ -128,7 +128,7 @@ func TestValidationBarrierQuit(t *testing.T) {
 	// iteratively queue the channel updates, which will send back the error
 	// returned from waiting.
 	jobErrs := make(chan error)
-	for i := 0; i < numTasks; i++ {
+	for i := range numTasks {
 		go func(ii int) {
 			jobErrs <- barrier.WaitForParents(
 				childJobIDs[ii], chanUpds[ii],
@@ -140,14 +140,14 @@ func TestValidationBarrierQuit(t *testing.T) {
 	select {
 	case <-time.After(timeout):
 		// Expected since no slots open.
-	case <-jobErrs:
-		t.Fatalf("job should not have been signaled")
+	case err := <-jobErrs:
+		t.Fatalf("job should not have been signaled: %v", err)
 	}
 
 	// Complete the first half of jobs, one at a time, verifying that they
 	// get signaled. Then, quit the barrier and check that all others exit
 	// with the correct error.
-	for i := 0; i < numTasks; i++ {
+	for i := range numTasks {
 		switch {
 		case i < numTasks/2:
 			err := barrier.SignalDependents(
@@ -244,7 +244,7 @@ func TestValidationBarrierParentJobsClear(t *testing.T) {
 	require.NoError(t, err)
 
 	run := func(vb *ValidationBarrier, childJobID JobID, job interface{},
-		resp chan error, start chan error) {
+		resp chan error, start chan struct{}) {
 
 		close(start)
 
@@ -254,8 +254,8 @@ func TestValidationBarrierParentJobsClear(t *testing.T) {
 
 	errChan := make(chan error, 2)
 
-	startChan1 := make(chan error, 1)
-	startChan2 := make(chan error, 1)
+	startChan1 := make(chan struct{})
+	startChan2 := make(chan struct{})
 
 	go run(barrier, childID1, upd1, errChan, startChan1)
 	go run(barrier, childID2, node1, errChan, startChan2)
@@ -295,13 +295,15 @@ func TestValidationBarrierParentJobsClear(t *testing.T) {
 	require.NoError(t, err)
 
 	select {
-	case <-errChan:
+	case err := <-errChan:
+		require.NoError(t, err)
 	case <-time.After(timeout):
 		t.Fatal("unexpected timeout waiting for first error signal")
 	}
 
 	select {
-	case <-errChan:
+	case err := <-errChan:
+		require.NoError(t, err)
 	case <-time.After(timeout):
 		t.Fatal("unexpected timeout waiting for second error signal")
 	}

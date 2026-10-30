@@ -2,11 +2,16 @@ package lnd
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/tor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -117,6 +122,55 @@ func TestSupplyEnvValue(t *testing.T) {
 	}
 }
 
+// TestNormalizeRemoteSignerListenAddrs makes sure lnd preserves explicitly
+// configured dedicated inbound remote signer listener ports and applies the
+// dedicated default port when none is specified. We keep the default-port case
+// as a unit test because an itest would need to bind the real default port
+// 10019, which becomes flaky under the parallel CI tranche runner where
+// multiple test processes can contend for the same host port. The remote
+// signer itests also covers the end-to-end dedicated listener path, but they
+// do so with explicit dynamically assigned ports instead of the fixed default.
+func TestNormalizeRemoteSignerListenAddrs(t *testing.T) {
+	tests := []struct {
+		name     string
+		listener string
+		expected string
+	}{
+		{
+			name:     "default port",
+			listener: "localhost",
+			expected: "127.0.0.1:10019",
+		},
+		{
+			name:     "explicit port",
+			listener: "localhost:12019",
+			expected: "127.0.0.1:12019",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inboundCfg := lncfg.InboundWatchOnlyCfg{
+				ExperimentalRPCListeners: []string{
+					test.listener,
+				},
+			}
+
+			cfg := &Config{
+				RemoteSigner: &lncfg.RemoteSigner{
+					InboundWatchOnlyCfg: inboundCfg,
+				},
+				net: &tor.ClearNet{},
+			}
+
+			addrs, err := normalizeRemoteSignerListenAddrs(cfg)
+			require.NoError(t, err)
+			require.Len(t, addrs, 1)
+			require.Equal(t, test.expected, addrs[0].String())
+		})
+	}
+}
+
 // TestValidateConfigTrickleDelay tests that the TrickleDelay configuration
 // is properly validated and defaulted in ValidateConfig. This test directly
 // verifies the validation logic without going through the full ValidateConfig
@@ -168,6 +222,67 @@ func TestValidateConfigTrickleDelay(t *testing.T) {
 			require.Equal(
 				t, tc.expectedDelay, cfg.TrickleDelay,
 				"TrickleDelay mismatch",
+			)
+		})
+	}
+}
+
+// TestClampMaxCommitFeeRateAnchors asserts that max-commit-fee-rate-anchors
+// is capped at the fee rate ceiling, so that converting it to sat/kw can't
+// overflow.
+func TestClampMaxCommitFeeRateAnchors(t *testing.T) {
+	t.Parallel()
+
+	maxFeeRate := uint64(lncfg.MaxAllowedFeeRate)
+	defaultFeeRate := uint64(
+		lnwallet.DefaultAnchorsCommitMaxFeeRateSatPerVByte,
+	)
+
+	tests := []struct {
+		name     string
+		feeRate  uint64
+		expected uint64
+	}{
+		{
+			name:     "minimum unchanged",
+			feeRate:  1,
+			expected: 1,
+		},
+		{
+			name:     "default unchanged",
+			feeRate:  defaultFeeRate,
+			expected: defaultFeeRate,
+		},
+		{
+			name:     "maximum unchanged",
+			feeRate:  maxFeeRate,
+			expected: maxFeeRate,
+		},
+		{
+			name:     "above maximum clamped",
+			feeRate:  maxFeeRate + 1,
+			expected: maxFeeRate,
+		},
+		{
+			name:     "overflowing value clamped",
+			feeRate:  math.MaxUint64,
+			expected: maxFeeRate,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			feeRate := clampMaxCommitFeeRateAnchors(tc.feeRate)
+			require.Equal(t, tc.expected, feeRate)
+
+			// The clamped value must convert to a sat/kw fee rate
+			// within the ceiling.
+			feeRateKw := chainfee.SatPerVByte(
+				feeRate,
+			).FeePerKWeight()
+			require.Positive(t, feeRateKw)
+			require.LessOrEqual(
+				t, feeRateKw, chainfee.FeePerKwCeiling,
 			)
 		})
 	}

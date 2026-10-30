@@ -82,170 +82,212 @@ type WitnessType int32
 
 const (
 	WitnessType_UNKNOWN_WITNESS WitnessType = 0
-	// A witness that allows us to spend the output of a commitment transaction
-	// after a relative lock-time lockout.
+	//
+	//A witness that allows us to spend the output of a commitment transaction
+	//after a relative lock-time lockout.
 	WitnessType_COMMITMENT_TIME_LOCK WitnessType = 1
-	// A witness that allows us to spend a settled no-delay output immediately on a
-	// counterparty's commitment transaction.
+	//
+	//A witness that allows us to spend a settled no-delay output immediately on a
+	//counterparty's commitment transaction.
 	WitnessType_COMMITMENT_NO_DELAY WitnessType = 2
-	// A witness that allows us to sweep the settled output of a malicious
-	// counterparty's who broadcasts a revoked commitment transaction.
+	//
+	//A witness that allows us to sweep the settled output of a malicious
+	//counterparty's who broadcasts a revoked commitment transaction.
 	WitnessType_COMMITMENT_REVOKE WitnessType = 3
-	// A witness that allows us to sweep an HTLC which we offered to the remote
-	// party in the case that they broadcast a revoked commitment state.
+	//
+	//A witness that allows us to sweep an HTLC which we offered to the remote
+	//party in the case that they broadcast a revoked commitment state.
 	WitnessType_HTLC_OFFERED_REVOKE WitnessType = 4
-	// A witness that allows us to sweep an HTLC output sent to us in the case that
-	// the remote party broadcasts a revoked commitment state.
+	//
+	//A witness that allows us to sweep an HTLC output sent to us in the case that
+	//the remote party broadcasts a revoked commitment state.
 	WitnessType_HTLC_ACCEPTED_REVOKE WitnessType = 5
-	// A witness that allows us to sweep an HTLC output that we extended to a
-	// party, but was never fulfilled.  This HTLC output isn't directly on the
-	// commitment transaction, but is the result of a confirmed second-level HTLC
-	// transaction. As a result, we can only spend this after a CSV delay.
+	//
+	//A witness that allows us to sweep an HTLC output that we extended to a
+	//party, but was never fulfilled.  This HTLC output isn't directly on the
+	//commitment transaction, but is the result of a confirmed second-level HTLC
+	//transaction. As a result, we can only spend this after a CSV delay.
 	WitnessType_HTLC_OFFERED_TIMEOUT_SECOND_LEVEL WitnessType = 6
-	// A witness that allows us to sweep an HTLC output that was offered to us, and
-	// for which we have a payment preimage. This HTLC output isn't directly on our
-	// commitment transaction, but is the result of confirmed second-level HTLC
-	// transaction. As a result, we can only spend this after a CSV delay.
+	//
+	//A witness that allows us to sweep an HTLC output that was offered to us, and
+	//for which we have a payment preimage. This HTLC output isn't directly on our
+	//commitment transaction, but is the result of confirmed second-level HTLC
+	//transaction. As a result, we can only spend this after a CSV delay.
 	WitnessType_HTLC_ACCEPTED_SUCCESS_SECOND_LEVEL WitnessType = 7
-	// A witness that allows us to sweep an HTLC that we offered to the remote
-	// party which lies in the commitment transaction of the remote party. We can
-	// spend this output after the absolute CLTV timeout of the HTLC as passed.
+	//
+	//A witness that allows us to sweep an HTLC that we offered to the remote
+	//party which lies in the commitment transaction of the remote party. We can
+	//spend this output after the absolute CLTV timeout of the HTLC as passed.
 	WitnessType_HTLC_OFFERED_REMOTE_TIMEOUT WitnessType = 8
-	// A witness that allows us to sweep an HTLC that was offered to us by the
-	// remote party. We use this witness in the case that the remote party goes to
-	// chain, and we know the pre-image to the HTLC. We can sweep this without any
-	// additional timeout.
+	//
+	//A witness that allows us to sweep an HTLC that was offered to us by the
+	//remote party. We use this witness in the case that the remote party goes to
+	//chain, and we know the pre-image to the HTLC. We can sweep this without any
+	//additional timeout.
 	WitnessType_HTLC_ACCEPTED_REMOTE_SUCCESS WitnessType = 9
-	// A witness that allows us to sweep an HTLC from the remote party's commitment
-	// transaction in the case that the broadcast a revoked commitment, but then
-	// also immediately attempt to go to the second level to claim the HTLC.
+	//
+	//A witness that allows us to sweep an HTLC from the remote party's commitment
+	//transaction in the case that the broadcast a revoked commitment, but then
+	//also immediately attempt to go to the second level to claim the HTLC.
 	WitnessType_HTLC_SECOND_LEVEL_REVOKE WitnessType = 10
-	// A witness type that allows us to spend a regular p2wkh output that's sent to
-	// an output which is under complete control of the backing wallet.
+	//
+	//A witness type that allows us to spend a regular p2wkh output that's sent to
+	//an output which is under complete control of the backing wallet.
 	WitnessType_WITNESS_KEY_HASH WitnessType = 11
-	// A witness type that allows us to sweep an output that sends to a nested P2SH
-	// script that pays to a key solely under our control.
+	//
+	//A witness type that allows us to sweep an output that sends to a nested P2SH
+	//script that pays to a key solely under our control.
 	WitnessType_NESTED_WITNESS_KEY_HASH WitnessType = 12
-	// A witness type that allows us to spend our anchor on the commitment
-	// transaction.
+	//
+	//A witness type that allows us to spend our anchor on the commitment
+	//transaction.
 	WitnessType_COMMITMENT_ANCHOR WitnessType = 13
-	// A witness type that is similar to the COMMITMENT_NO_DELAY type,
-	// but it omits the tweak that randomizes the key we need to
-	// spend with a channel peer supplied set of randomness.
+	//
+	//A witness type that is similar to the COMMITMENT_NO_DELAY type,
+	//but it omits the tweak that randomizes the key we need to
+	//spend with a channel peer supplied set of randomness.
 	WitnessType_COMMITMENT_NO_DELAY_TWEAKLESS WitnessType = 14
-	// A witness type that allows us to spend our output on the counterparty's
-	// commitment transaction after a confirmation.
+	//
+	//A witness type that allows us to spend our output on the counterparty's
+	//commitment transaction after a confirmation.
 	WitnessType_COMMITMENT_TO_REMOTE_CONFIRMED WitnessType = 15
-	// A witness type that allows us to sweep an HTLC output that we extended
-	// to a party, but was never fulfilled. This _is_ the HTLC output directly
-	// on our commitment transaction, and the input to the second-level HTLC
-	// timeout transaction. It can only be spent after CLTV expiry, and
-	// commitment confirmation.
+	//
+	//A witness type that allows us to sweep an HTLC output that we extended
+	//to a party, but was never fulfilled. This _is_ the HTLC output directly
+	//on our commitment transaction, and the input to the second-level HTLC
+	//timeout transaction. It can only be spent after CLTV expiry, and
+	//commitment confirmation.
 	WitnessType_HTLC_OFFERED_TIMEOUT_SECOND_LEVEL_INPUT_CONFIRMED WitnessType = 16
-	// A witness type that allows us to sweep an HTLC output that was offered
-	// to us, and for which we have a payment preimage. This _is_ the HTLC
-	// output directly on our commitment transaction, and the input to the
-	// second-level HTLC success transaction. It can only be spent after the
-	// commitment has confirmed.
+	//
+	//A witness type that allows us to sweep an HTLC output that was offered
+	//to us, and for which we have a payment preimage. This _is_ the HTLC
+	//output directly on our commitment transaction, and the input to the
+	//second-level HTLC success transaction. It can only be spent after the
+	//commitment has confirmed.
 	WitnessType_HTLC_ACCEPTED_SUCCESS_SECOND_LEVEL_INPUT_CONFIRMED WitnessType = 17
-	// A witness type that allows us to spend our output on our local
-	// commitment transaction after a relative and absolute lock-time lockout as
-	// part of the script enforced lease commitment type.
+	//
+	//A witness type that allows us to spend our output on our local
+	//commitment transaction after a relative and absolute lock-time lockout as
+	//part of the script enforced lease commitment type.
 	WitnessType_LEASE_COMMITMENT_TIME_LOCK WitnessType = 18
-	// A witness type that allows us to spend our output on the counterparty's
-	// commitment transaction after a confirmation and absolute locktime as part
-	// of the script enforced lease commitment type.
+	//
+	//A witness type that allows us to spend our output on the counterparty's
+	//commitment transaction after a confirmation and absolute locktime as part
+	//of the script enforced lease commitment type.
 	WitnessType_LEASE_COMMITMENT_TO_REMOTE_CONFIRMED WitnessType = 19
-	// A witness type that allows us to sweep an HTLC output that we extended
-	// to a party, but was never fulfilled. This HTLC output isn't directly on
-	// the commitment transaction, but is the result of a confirmed second-level
-	// HTLC transaction. As a result, we can only spend this after a CSV delay
-	// and CLTV locktime as part of the script enforced lease commitment type.
+	//
+	//A witness type that allows us to sweep an HTLC output that we extended
+	//to a party, but was never fulfilled. This HTLC output isn't directly on
+	//the commitment transaction, but is the result of a confirmed second-level
+	//HTLC transaction. As a result, we can only spend this after a CSV delay
+	//and CLTV locktime as part of the script enforced lease commitment type.
 	WitnessType_LEASE_HTLC_OFFERED_TIMEOUT_SECOND_LEVEL WitnessType = 20
-	// A witness type that allows us to sweep an HTLC output that was offered
-	// to us, and for which we have a payment preimage. This HTLC output isn't
-	// directly on our commitment transaction, but is the result of confirmed
-	// second-level HTLC transaction. As a result, we can only spend this after
-	// a CSV delay and CLTV locktime as part of the script enforced lease
-	// commitment type.
+	//
+	//A witness type that allows us to sweep an HTLC output that was offered
+	//to us, and for which we have a payment preimage. This HTLC output isn't
+	//directly on our commitment transaction, but is the result of confirmed
+	//second-level HTLC transaction. As a result, we can only spend this after
+	//a CSV delay and CLTV locktime as part of the script enforced lease
+	//commitment type.
 	WitnessType_LEASE_HTLC_ACCEPTED_SUCCESS_SECOND_LEVEL WitnessType = 21
-	// A witness type that allows us to spend a regular p2tr output that's sent
-	// to an output which is under complete control of the backing wallet.
+	//
+	//A witness type that allows us to spend a regular p2tr output that's sent
+	//to an output which is under complete control of the backing wallet.
 	WitnessType_TAPROOT_PUB_KEY_SPEND WitnessType = 22
-	// A witness type that allows us to spend our settled local commitment after a
-	// CSV delay when we force close the channel.
+	//
+	//A witness type that allows us to spend our settled local commitment after a
+	//CSV delay when we force close the channel.
 	WitnessType_TAPROOT_LOCAL_COMMIT_SPEND WitnessType = 23
-	// A witness type that allows us to spend our settled local commitment after
-	// a CSV delay when the remote party has force closed the channel.
+	//
+	//A witness type that allows us to spend our settled local commitment after
+	//a CSV delay when the remote party has force closed the channel.
 	WitnessType_TAPROOT_REMOTE_COMMIT_SPEND WitnessType = 24
-	// A witness type that we'll use for spending our own anchor output.
+	//
+	//A witness type that we'll use for spending our own anchor output.
 	WitnessType_TAPROOT_ANCHOR_SWEEP_SPEND WitnessType = 25
-	// A witness that allows us to timeout an HTLC we offered to the remote party
-	// on our commitment transaction. We use this when we need to go on chain to
-	// time out an HTLC.
+	//
+	//A witness that allows us to timeout an HTLC we offered to the remote party
+	//on our commitment transaction. We use this when we need to go on chain to
+	//time out an HTLC.
 	WitnessType_TAPROOT_HTLC_OFFERED_TIMEOUT_SECOND_LEVEL WitnessType = 26
-	// A witness type that allows us to sweep an HTLC we accepted on our commitment
-	// transaction after we go to the second level on chain.
+	//
+	//A witness type that allows us to sweep an HTLC we accepted on our commitment
+	//transaction after we go to the second level on chain.
 	WitnessType_TAPROOT_HTLC_ACCEPTED_SUCCESS_SECOND_LEVEL WitnessType = 27
-	// A witness that allows us to sweep an HTLC on the revoked transaction of the
-	// remote party that goes to the second level.
+	//
+	//A witness that allows us to sweep an HTLC on the revoked transaction of the
+	//remote party that goes to the second level.
 	WitnessType_TAPROOT_HTLC_SECOND_LEVEL_REVOKE WitnessType = 28
-	// A witness that allows us to sweep an HTLC sent to us by the remote party
-	// in the event that they broadcast a revoked state.
+	//
+	//A witness that allows us to sweep an HTLC sent to us by the remote party
+	//in the event that they broadcast a revoked state.
 	WitnessType_TAPROOT_HTLC_ACCEPTED_REVOKE WitnessType = 29
-	// A witness that allows us to sweep an HTLC we offered to the remote party if
-	// they broadcast a revoked commitment.
+	//
+	//A witness that allows us to sweep an HTLC we offered to the remote party if
+	//they broadcast a revoked commitment.
 	WitnessType_TAPROOT_HTLC_OFFERED_REVOKE WitnessType = 30
-	// A witness that allows us to sweep an HTLC we offered to the remote party
-	// that lies on the commitment transaction for the remote party. We can spend
-	// this output after the absolute CLTV timeout of the HTLC as passed.
+	//
+	//A witness that allows us to sweep an HTLC we offered to the remote party
+	//that lies on the commitment transaction for the remote party. We can spend
+	//this output after the absolute CLTV timeout of the HTLC as passed.
 	WitnessType_TAPROOT_HTLC_OFFERED_REMOTE_TIMEOUT WitnessType = 31
-	// A witness type that allows us to sign the second level HTLC timeout
-	// transaction when spending from an HTLC residing on our local commitment
-	// transaction.
-	// This is used by the sweeper to re-sign inputs if it needs to aggregate
-	// several second level HTLCs.
+	//
+	//A witness type that allows us to sign the second level HTLC timeout
+	//transaction when spending from an HTLC residing on our local commitment
+	//transaction.
+	//This is used by the sweeper to re-sign inputs if it needs to aggregate
+	//several second level HTLCs.
 	WitnessType_TAPROOT_HTLC_LOCAL_OFFERED_TIMEOUT WitnessType = 32
-	// A witness that allows us to sweep an HTLC that was offered to us by the
-	// remote party for a taproot channels. We use this witness in the case that
-	// the remote party goes to chain, and we know the pre-image to the HTLC. We
-	// can sweep this without any additional timeout.
+	//
+	//A witness that allows us to sweep an HTLC that was offered to us by the
+	//remote party for a taproot channels. We use this witness in the case that
+	//the remote party goes to chain, and we know the pre-image to the HTLC. We
+	//can sweep this without any additional timeout.
 	WitnessType_TAPROOT_HTLC_ACCEPTED_REMOTE_SUCCESS WitnessType = 33
-	// A witness type that allows us to sweep the HTLC offered to us on our local
-	// commitment transaction. We'll use this when we need to go on chain to sweep
-	// the HTLC. In this case, this is the second level HTLC success transaction.
+	//
+	//A witness type that allows us to sweep the HTLC offered to us on our local
+	//commitment transaction. We'll use this when we need to go on chain to sweep
+	//the HTLC. In this case, this is the second level HTLC success transaction.
 	WitnessType_TAPROOT_HTLC_ACCEPTED_LOCAL_SUCCESS WitnessType = 34
-	// A witness that allows us to sweep the settled output of a malicious
-	// counterparty's who broadcasts a revoked taproot commitment transaction.
+	//
+	//A witness that allows us to sweep the settled output of a malicious
+	//counterparty's who broadcasts a revoked taproot commitment transaction.
 	WitnessType_TAPROOT_COMMITMENT_REVOKE WitnessType = 35
-	// A witness type that allows us to spend our settled local commitment after a
-	// CSV delay when we force close a production taproot channel.
+	//
+	//A witness type that allows us to spend our settled local commitment after a
+	//CSV delay when we force close a production taproot channel.
 	WitnessType_TAPROOT_LOCAL_COMMIT_SPEND_FINAL WitnessType = 36
-	// A witness type that allows us to spend our settled local commitment after
-	// a CSV delay when the remote party has force closed a production taproot
-	// channel.
+	//
+	//A witness type that allows us to spend our settled local commitment after
+	//a CSV delay when the remote party has force closed a production taproot
+	//channel.
 	WitnessType_TAPROOT_REMOTE_COMMIT_SPEND_FINAL WitnessType = 37
-	// A witness that allows us to timeout an HTLC we offered to the remote party
-	// on our production taproot commitment transaction. We use this when we need
-	// to go on chain to time out an HTLC.
+	//
+	//A witness that allows us to timeout an HTLC we offered to the remote party
+	//on our production taproot commitment transaction. We use this when we need
+	//to go on chain to time out an HTLC.
 	WitnessType_TAPROOT_HTLC_OFFERED_TIMEOUT_SECOND_LEVEL_FINAL WitnessType = 38
-	// A witness type that allows us to sweep an HTLC we accepted on our
-	// production taproot commitment transaction after we go to the second level
-	// on chain.
+	//
+	//A witness type that allows us to sweep an HTLC we accepted on our
+	//production taproot commitment transaction after we go to the second level
+	//on chain.
 	WitnessType_TAPROOT_HTLC_ACCEPTED_SUCCESS_SECOND_LEVEL_FINAL WitnessType = 39
-	// A witness that allows us to sweep an HTLC we offered to the remote party
-	// that lies on the production taproot commitment transaction for the remote
-	// party. We can spend this output after the absolute CLTV timeout of the
-	// HTLC as passed.
+	//
+	//A witness that allows us to sweep an HTLC we offered to the remote party
+	//that lies on the production taproot commitment transaction for the remote
+	//party. We can spend this output after the absolute CLTV timeout of the
+	//HTLC as passed.
 	WitnessType_TAPROOT_HTLC_OFFERED_REMOTE_TIMEOUT_FINAL WitnessType = 40
-	// A witness that allows us to sweep an HTLC that was offered to us by the
-	// remote party for a production taproot channel. We use this witness in the
-	// case that the remote party goes to chain, and we know the pre-image to the
-	// HTLC. We can sweep this without any additional timeout.
+	//
+	//A witness that allows us to sweep an HTLC that was offered to us by the
+	//remote party for a production taproot channel. We use this witness in the
+	//case that the remote party goes to chain, and we know the pre-image to the
+	//HTLC. We can sweep this without any additional timeout.
 	WitnessType_TAPROOT_HTLC_ACCEPTED_REMOTE_SUCCESS_FINAL WitnessType = 41
-	// A witness type that allows us to sweep the settled output of a malicious
-	// counterparty's who broadcasts a revoked production taproot commitment
-	// transaction.
+	//
+	//A witness type that allows us to sweep the settled output of a malicious
+	//counterparty's who broadcasts a revoked production taproot commitment
+	//transaction.
 	WitnessType_TAPROOT_COMMITMENT_REVOKE_FINAL WitnessType = 42
 )
 
@@ -435,10 +477,11 @@ type ListUnspentRequest struct {
 	MaxConfs int32 `protobuf:"varint,2,opt,name=max_confs,json=maxConfs,proto3" json:"max_confs,omitempty"`
 	// An optional filter to only include outputs belonging to an account.
 	Account string `protobuf:"bytes,3,opt,name=account,proto3" json:"account,omitempty"`
-	// When min_confs and max_confs are zero, setting false implicitly
-	// overrides max_confs to be MaxInt32, otherwise max_confs remains
-	// zero. An error is returned if the value is true and both min_confs
-	// and max_confs are non-zero. (default: false)
+	//
+	//When min_confs and max_confs are zero, setting false implicitly
+	//overrides max_confs to be MaxInt32, otherwise max_confs remains
+	//zero. An error is returned if the value is true and both min_confs
+	//and max_confs are non-zero. (default: false)
 	UnconfirmedOnly bool `protobuf:"varint,4,opt,name=unconfirmed_only,json=unconfirmedOnly,proto3" json:"unconfirmed_only,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -549,16 +592,24 @@ func (x *ListUnspentResponse) GetUtxos() []*lnrpc.Utxo {
 
 type LeaseOutputRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// An ID of 32 random bytes that must be unique for each distinct application
-	// using this RPC which will be used to bound the output lease to.
+	//
+	//An ID of 32 random bytes that must be unique for each distinct application
+	//using this RPC which will be used to bound the output lease to.
 	Id []byte `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// The identifying outpoint of the output being leased.
 	Outpoint *lnrpc.OutPoint `protobuf:"bytes,2,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	// The time in seconds before the lock expires. If set to zero, the default
-	// lock duration is used.
+	// The time in seconds before a time-controlled lock expires. If set to
+	// zero, the default lock duration is used. A non-zero
+	// release_after_spend_confs makes this deadline informational only.
 	ExpirationSeconds uint64 `protobuf:"varint,3,opt,name=expiration_seconds,json=expirationSeconds,proto3" json:"expiration_seconds,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Keep the lease until the transaction spending the output reaches this
+	// confirmation count or the owner explicitly releases it. A reorganization
+	// that disconnects the spending block resets maturity progress. A non-zero
+	// value ignores expiration_seconds; zero preserves the time-controlled
+	// lease behavior.
+	ReleaseAfterSpendConfs uint32 `protobuf:"varint,4,opt,name=release_after_spend_confs,json=releaseAfterSpendConfs,proto3" json:"release_after_spend_confs,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *LeaseOutputRequest) Reset() {
@@ -612,12 +663,27 @@ func (x *LeaseOutputRequest) GetExpirationSeconds() uint64 {
 	return 0
 }
 
+func (x *LeaseOutputRequest) GetReleaseAfterSpendConfs() uint32 {
+	if x != nil {
+		return x.ReleaseAfterSpendConfs
+	}
+	return 0
+}
+
 type LeaseOutputResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The absolute expiration of the output lease represented as a unix timestamp.
-	Expiration    uint64 `protobuf:"varint,1,opt,name=expiration,proto3" json:"expiration,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	//
+	//The absolute expiration of a time-controlled output lease represented as a
+	//unix timestamp. Confirmation-controlled leases return the stored value for
+	//compatibility but do not apply it.
+	Expiration uint64 `protobuf:"varint,1,opt,name=expiration,proto3" json:"expiration,omitempty"`
+	// The effective persisted spend maturity depth. A zero-depth renewal
+	// returns the retained non-zero depth of an existing
+	// confirmation-controlled lease. If that informational lookup fails after
+	// the lease succeeds, this field is zero and ListLeases can refresh it.
+	ReleaseAfterSpendConfs uint32 `protobuf:"varint,2,opt,name=release_after_spend_confs,json=releaseAfterSpendConfs,proto3" json:"release_after_spend_confs,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *LeaseOutputResponse) Reset() {
@@ -653,6 +719,13 @@ func (*LeaseOutputResponse) Descriptor() ([]byte, []int) {
 func (x *LeaseOutputResponse) GetExpiration() uint64 {
 	if x != nil {
 		return x.Expiration
+	}
+	return 0
+}
+
+func (x *LeaseOutputResponse) GetReleaseAfterSpendConfs() uint32 {
+	if x != nil {
+		return x.ReleaseAfterSpendConfs
 	}
 	return 0
 }
@@ -758,12 +831,14 @@ func (x *ReleaseOutputResponse) GetStatus() string {
 
 type KeyReq struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Is the key finger print of the root pubkey that this request is targeting.
-	// This allows the WalletKit to possibly serve out keys for multiple HD chains
-	// via public derivation.
+	//
+	//Is the key finger print of the root pubkey that this request is targeting.
+	//This allows the WalletKit to possibly serve out keys for multiple HD chains
+	//via public derivation.
 	KeyFingerPrint int32 `protobuf:"varint,1,opt,name=key_finger_print,json=keyFingerPrint,proto3" json:"key_finger_print,omitempty"`
-	// The target key family to derive a key from. In other contexts, this is
-	// known as the "account".
+	//
+	//The target key family to derive a key from. In other contexts, this is
+	//known as the "account".
 	KeyFamily     int32 `protobuf:"varint,2,opt,name=key_family,json=keyFamily,proto3" json:"key_family,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -815,12 +890,15 @@ func (x *KeyReq) GetKeyFamily() int32 {
 
 type AddrRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The name of the account to retrieve the next address of. If empty, the
-	// default wallet account is used.
+	//
+	//The name of the account to retrieve the next address of. If empty, the
+	//default wallet account is used.
 	Account string `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
-	// The type of address to derive.
+	//
+	//The type of address to derive.
 	Type AddressType `protobuf:"varint,2,opt,name=type,proto3,enum=walletrpc.AddressType" json:"type,omitempty"`
-	// Whether a change address should be derived.
+	//
+	//Whether a change address should be derived.
 	Change        bool `protobuf:"varint,3,opt,name=change,proto3" json:"change,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -879,7 +957,8 @@ func (x *AddrRequest) GetChange() bool {
 
 type AddrResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The address encoded using a bech32 format.
+	//
+	//The address encoded using a bech32 format.
 	Addr          string `protobuf:"bytes,1,opt,name=addr,proto3" json:"addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -928,26 +1007,31 @@ type Account struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// The type of addresses the account supports.
 	AddressType AddressType `protobuf:"varint,2,opt,name=address_type,json=addressType,proto3,enum=walletrpc.AddressType" json:"address_type,omitempty"`
-	// The public key backing the account that all keys are derived from
-	// represented as an extended key. This will always be empty for the default
-	// imported account in which single public keys are imported into.
+	//
+	//The public key backing the account that all keys are derived from
+	//represented as an extended key. This will always be empty for the default
+	//imported account in which single public keys are imported into.
 	ExtendedPublicKey string `protobuf:"bytes,3,opt,name=extended_public_key,json=extendedPublicKey,proto3" json:"extended_public_key,omitempty"`
-	// The fingerprint of the root key from which the account public key was
-	// derived from. This will always be zero for the default imported account in
-	// which single public keys are imported into. The bytes are in big-endian
-	// order.
+	//
+	//The fingerprint of the root key from which the account public key was
+	//derived from. This will always be zero for the default imported account in
+	//which single public keys are imported into. The bytes are in big-endian
+	//order.
 	MasterKeyFingerprint []byte `protobuf:"bytes,4,opt,name=master_key_fingerprint,json=masterKeyFingerprint,proto3" json:"master_key_fingerprint,omitempty"`
-	// The derivation path corresponding to the account public key. This will
-	// always be empty for the default imported account in which single public keys
-	// are imported into.
+	//
+	//The derivation path corresponding to the account public key. This will
+	//always be empty for the default imported account in which single public keys
+	//are imported into.
 	DerivationPath string `protobuf:"bytes,5,opt,name=derivation_path,json=derivationPath,proto3" json:"derivation_path,omitempty"`
-	// The number of keys derived from the external branch of the account public
-	// key. This will always be zero for the default imported account in which
-	// single public keys are imported into.
+	//
+	//The number of keys derived from the external branch of the account public
+	//key. This will always be zero for the default imported account in which
+	//single public keys are imported into.
 	ExternalKeyCount uint32 `protobuf:"varint,6,opt,name=external_key_count,json=externalKeyCount,proto3" json:"external_key_count,omitempty"`
-	// The number of keys derived from the internal branch of the account public
-	// key. This will always be zero for the default imported account in which
-	// single public keys are imported into.
+	//
+	//The number of keys derived from the internal branch of the account public
+	//key. This will always be zero for the default imported account in which
+	//single public keys are imported into.
 	InternalKeyCount uint32 `protobuf:"varint,7,opt,name=internal_key_count,json=internalKeyCount,proto3" json:"internal_key_count,omitempty"`
 	// Whether the wallet stores private keys for the account.
 	WatchOnly     bool `protobuf:"varint,8,opt,name=watch_only,json=watchOnly,proto3" json:"watch_only,omitempty"`
@@ -1043,14 +1127,15 @@ func (x *Account) GetWatchOnly() bool {
 
 type AddressProperty struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The address encoded using the appropriate format depending on the
-	// address type (base58, bech32, bech32m).
 	//
-	// Note that lnd's internal/custom keys for channels and other
-	// functionality are derived from the same scope. Since they
-	// aren't really used as addresses and will never have an
-	// on-chain balance, we'll show the public key instead (only if
-	// the show_custom_accounts flag is provided).
+	//The address encoded using the appropriate format depending on the
+	//address type (base58, bech32, bech32m).
+	//
+	//Note that lnd's internal/custom keys for channels and other
+	//functionality are derived from the same scope. Since they
+	//aren't really used as addresses and will never have an
+	//on-chain balance, we'll show the public key instead (only if
+	//the show_custom_accounts flag is provided).
 	Address string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
 	// Denotes if the address is a change address.
 	IsInternal bool `protobuf:"varint,2,opt,name=is_internal,json=isInternal,proto3" json:"is_internal,omitempty"`
@@ -1136,14 +1221,16 @@ type AccountWithAddresses struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// The type of addresses the account supports.
 	AddressType AddressType `protobuf:"varint,2,opt,name=address_type,json=addressType,proto3,enum=walletrpc.AddressType" json:"address_type,omitempty"`
-	// The derivation path corresponding to the account public key. This will
-	// always be empty for the default imported account in which single public keys
-	// are imported into.
+	//
+	//The derivation path corresponding to the account public key. This will
+	//always be empty for the default imported account in which single public keys
+	//are imported into.
 	DerivationPath string `protobuf:"bytes,3,opt,name=derivation_path,json=derivationPath,proto3" json:"derivation_path,omitempty"`
-	// List of address, its type internal/external & balance.
-	// Note that the order of addresses will be random and not according to the
-	// derivation index, since that information is not stored by the underlying
-	// wallet.
+	//
+	//List of address, its type internal/external & balance.
+	//Note that the order of addresses will be random and not according to the
+	//derivation index, since that information is not stored by the underlying
+	//wallet.
 	Addresses     []*AddressProperty `protobuf:"bytes,4,rep,name=addresses,proto3" json:"addresses,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1305,6 +1392,131 @@ func (x *ListAccountsResponse) GetAccounts() []*Account {
 	return nil
 }
 
+type XCreateAccountRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The name to identify the new account with. The name must not be empty and
+	// must not already be in use by another account, in any key scope. The
+	// names of the wallet's built-in accounts ("default" and "imported") are
+	// reserved and cannot be used.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The type of addresses the account should hold, which selects the BIP-0043
+	// key scope the account is created under. A custom account only ever exists
+	// within a single key scope, so this permanently fixes both the account's
+	// address type and the address type of its change outputs. If unset, an
+	// account holding taproot addresses is created.
+	//
+	// NESTED_WITNESS_PUBKEY_HASH is not accepted: a wallet-derived account
+	// carries no address schema of its own, so it would silently behave as
+	// HYBRID_NESTED_WITNESS_PUBKEY_HASH. Ask for that type explicitly if it
+	// is what you want.
+	AddressType AddressType `protobuf:"varint,2,opt,name=address_type,json=addressType,proto3,enum=walletrpc.AddressType" json:"address_type,omitempty"`
+	//
+	//Override the requirement for being in dev mode by setting this to true and
+	//confirming the user knows what they are doing: funds held in an account
+	//created here are not rediscovered by a seed-only restore, so recovering
+	//them requires having recorded the account's key scope and index and the
+	//number of addresses it issued.
+	IKnowWhatIAmDoing bool `protobuf:"varint,3,opt,name=i_know_what_i_am_doing,json=iKnowWhatIAmDoing,proto3" json:"i_know_what_i_am_doing,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *XCreateAccountRequest) Reset() {
+	*x = XCreateAccountRequest{}
+	mi := &file_walletrpc_walletkit_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *XCreateAccountRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*XCreateAccountRequest) ProtoMessage() {}
+
+func (x *XCreateAccountRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_walletrpc_walletkit_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use XCreateAccountRequest.ProtoReflect.Descriptor instead.
+func (*XCreateAccountRequest) Descriptor() ([]byte, []int) {
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *XCreateAccountRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *XCreateAccountRequest) GetAddressType() AddressType {
+	if x != nil {
+		return x.AddressType
+	}
+	return AddressType_UNKNOWN
+}
+
+func (x *XCreateAccountRequest) GetIKnowWhatIAmDoing() bool {
+	if x != nil {
+		return x.IKnowWhatIAmDoing
+	}
+	return false
+}
+
+type XCreateAccountResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The newly created account.
+	Account       *Account `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *XCreateAccountResponse) Reset() {
+	*x = XCreateAccountResponse{}
+	mi := &file_walletrpc_walletkit_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *XCreateAccountResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*XCreateAccountResponse) ProtoMessage() {}
+
+func (x *XCreateAccountResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_walletrpc_walletkit_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use XCreateAccountResponse.ProtoReflect.Descriptor instead.
+func (*XCreateAccountResponse) Descriptor() ([]byte, []int) {
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *XCreateAccountResponse) GetAccount() *Account {
+	if x != nil {
+		return x.Account
+	}
+	return nil
+}
+
 type RequiredReserveRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The number of additional channels the user would like to open.
@@ -1315,7 +1527,7 @@ type RequiredReserveRequest struct {
 
 func (x *RequiredReserveRequest) Reset() {
 	*x = RequiredReserveRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[14]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1327,7 +1539,7 @@ func (x *RequiredReserveRequest) String() string {
 func (*RequiredReserveRequest) ProtoMessage() {}
 
 func (x *RequiredReserveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[14]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1340,7 +1552,7 @@ func (x *RequiredReserveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequiredReserveRequest.ProtoReflect.Descriptor instead.
 func (*RequiredReserveRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{14}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RequiredReserveRequest) GetAdditionalPublicChannels() uint32 {
@@ -1360,7 +1572,7 @@ type RequiredReserveResponse struct {
 
 func (x *RequiredReserveResponse) Reset() {
 	*x = RequiredReserveResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[15]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1372,7 +1584,7 @@ func (x *RequiredReserveResponse) String() string {
 func (*RequiredReserveResponse) ProtoMessage() {}
 
 func (x *RequiredReserveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[15]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1385,7 +1597,7 @@ func (x *RequiredReserveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequiredReserveResponse.ProtoReflect.Descriptor instead.
 func (*RequiredReserveResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{15}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RequiredReserveResponse) GetRequiredReserve() int64 {
@@ -1408,7 +1620,7 @@ type ListAddressesRequest struct {
 
 func (x *ListAddressesRequest) Reset() {
 	*x = ListAddressesRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[16]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1420,7 +1632,7 @@ func (x *ListAddressesRequest) String() string {
 func (*ListAddressesRequest) ProtoMessage() {}
 
 func (x *ListAddressesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[16]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1433,7 +1645,7 @@ func (x *ListAddressesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAddressesRequest.ProtoReflect.Descriptor instead.
 func (*ListAddressesRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{16}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListAddressesRequest) GetAccountName() string {
@@ -1460,7 +1672,7 @@ type ListAddressesResponse struct {
 
 func (x *ListAddressesResponse) Reset() {
 	*x = ListAddressesResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[17]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1472,7 +1684,7 @@ func (x *ListAddressesResponse) String() string {
 func (*ListAddressesResponse) ProtoMessage() {}
 
 func (x *ListAddressesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[17]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1485,7 +1697,7 @@ func (x *ListAddressesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAddressesResponse.ProtoReflect.Descriptor instead.
 func (*ListAddressesResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{17}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListAddressesResponse) GetAccountWithAddresses() []*AccountWithAddresses {
@@ -1505,7 +1717,7 @@ type GetTransactionRequest struct {
 
 func (x *GetTransactionRequest) Reset() {
 	*x = GetTransactionRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[18]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1517,7 +1729,7 @@ func (x *GetTransactionRequest) String() string {
 func (*GetTransactionRequest) ProtoMessage() {}
 
 func (x *GetTransactionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[18]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1530,7 +1742,7 @@ func (x *GetTransactionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTransactionRequest.ProtoReflect.Descriptor instead.
 func (*GetTransactionRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{18}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetTransactionRequest) GetTxid() string {
@@ -1554,7 +1766,7 @@ type SignMessageWithAddrRequest struct {
 
 func (x *SignMessageWithAddrRequest) Reset() {
 	*x = SignMessageWithAddrRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[19]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1566,7 +1778,7 @@ func (x *SignMessageWithAddrRequest) String() string {
 func (*SignMessageWithAddrRequest) ProtoMessage() {}
 
 func (x *SignMessageWithAddrRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[19]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1579,7 +1791,7 @@ func (x *SignMessageWithAddrRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignMessageWithAddrRequest.ProtoReflect.Descriptor instead.
 func (*SignMessageWithAddrRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{19}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SignMessageWithAddrRequest) GetMsg() []byte {
@@ -1606,7 +1818,7 @@ type SignMessageWithAddrResponse struct {
 
 func (x *SignMessageWithAddrResponse) Reset() {
 	*x = SignMessageWithAddrResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[20]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1618,7 +1830,7 @@ func (x *SignMessageWithAddrResponse) String() string {
 func (*SignMessageWithAddrResponse) ProtoMessage() {}
 
 func (x *SignMessageWithAddrResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[20]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1631,7 +1843,7 @@ func (x *SignMessageWithAddrResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignMessageWithAddrResponse.ProtoReflect.Descriptor instead.
 func (*SignMessageWithAddrResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{20}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SignMessageWithAddrResponse) GetSignature() string {
@@ -1658,7 +1870,7 @@ type VerifyMessageWithAddrRequest struct {
 
 func (x *VerifyMessageWithAddrRequest) Reset() {
 	*x = VerifyMessageWithAddrRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[21]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1670,7 +1882,7 @@ func (x *VerifyMessageWithAddrRequest) String() string {
 func (*VerifyMessageWithAddrRequest) ProtoMessage() {}
 
 func (x *VerifyMessageWithAddrRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[21]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1683,7 +1895,7 @@ func (x *VerifyMessageWithAddrRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyMessageWithAddrRequest.ProtoReflect.Descriptor instead.
 func (*VerifyMessageWithAddrRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{21}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *VerifyMessageWithAddrRequest) GetMsg() []byte {
@@ -1719,7 +1931,7 @@ type VerifyMessageWithAddrResponse struct {
 
 func (x *VerifyMessageWithAddrResponse) Reset() {
 	*x = VerifyMessageWithAddrResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[22]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1731,7 +1943,7 @@ func (x *VerifyMessageWithAddrResponse) String() string {
 func (*VerifyMessageWithAddrResponse) ProtoMessage() {}
 
 func (x *VerifyMessageWithAddrResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[22]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1744,7 +1956,7 @@ func (x *VerifyMessageWithAddrResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyMessageWithAddrResponse.ProtoReflect.Descriptor instead.
 func (*VerifyMessageWithAddrResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{22}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *VerifyMessageWithAddrResponse) GetValid() bool {
@@ -1765,24 +1977,28 @@ type ImportAccountRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// A name to identify the account with.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// A public key that corresponds to a wallet account represented as an extended
-	// key. It must conform to a derivation path of the form
-	// m/purpose'/coin_type'/account'.
+	//
+	//A public key that corresponds to a wallet account represented as an extended
+	//key. It must conform to a derivation path of the form
+	//m/purpose'/coin_type'/account'.
 	ExtendedPublicKey string `protobuf:"bytes,2,opt,name=extended_public_key,json=extendedPublicKey,proto3" json:"extended_public_key,omitempty"`
-	// The fingerprint of the root key (also known as the key with derivation path
-	// m/) from which the account public key was derived from. This may be required
-	// by some hardware wallets for proper identification and signing. The bytes
-	// must be in big-endian order.
+	//
+	//The fingerprint of the root key (also known as the key with derivation path
+	//m/) from which the account public key was derived from. This may be required
+	//by some hardware wallets for proper identification and signing. The bytes
+	//must be in big-endian order.
 	MasterKeyFingerprint []byte `protobuf:"bytes,3,opt,name=master_key_fingerprint,json=masterKeyFingerprint,proto3" json:"master_key_fingerprint,omitempty"`
-	// An address type is only required when the extended account public key has a
-	// legacy version (xpub, tpub, etc.), such that the wallet cannot detect what
-	// address scheme it belongs to.
+	//
+	//An address type is only required when the extended account public key has a
+	//legacy version (xpub, tpub, etc.), such that the wallet cannot detect what
+	//address scheme it belongs to.
 	AddressType AddressType `protobuf:"varint,4,opt,name=address_type,json=addressType,proto3,enum=walletrpc.AddressType" json:"address_type,omitempty"`
-	// Whether a dry run should be attempted when importing the account. This
-	// serves as a way to confirm whether the account is being imported correctly
-	// by returning the first N addresses for the external and internal branches of
-	// the account. If these addresses match as expected, then it should be safe to
-	// import the account as is.
+	//
+	//Whether a dry run should be attempted when importing the account. This
+	//serves as a way to confirm whether the account is being imported correctly
+	//by returning the first N addresses for the external and internal branches of
+	//the account. If these addresses match as expected, then it should be safe to
+	//import the account as is.
 	DryRun        bool `protobuf:"varint,5,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1790,7 +2006,7 @@ type ImportAccountRequest struct {
 
 func (x *ImportAccountRequest) Reset() {
 	*x = ImportAccountRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[23]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1802,7 +2018,7 @@ func (x *ImportAccountRequest) String() string {
 func (*ImportAccountRequest) ProtoMessage() {}
 
 func (x *ImportAccountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[23]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1815,7 +2031,7 @@ func (x *ImportAccountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportAccountRequest.ProtoReflect.Descriptor instead.
 func (*ImportAccountRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{23}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ImportAccountRequest) GetName() string {
@@ -1857,13 +2073,15 @@ type ImportAccountResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The details of the imported account.
 	Account *Account `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
-	// The first N addresses that belong to the external branch of the account.
-	// The external branch is typically used for external non-change addresses.
-	// These are only returned if a dry run was specified within the request.
+	//
+	//The first N addresses that belong to the external branch of the account.
+	//The external branch is typically used for external non-change addresses.
+	//These are only returned if a dry run was specified within the request.
 	DryRunExternalAddrs []string `protobuf:"bytes,2,rep,name=dry_run_external_addrs,json=dryRunExternalAddrs,proto3" json:"dry_run_external_addrs,omitempty"`
-	// The first N addresses that belong to the internal branch of the account.
-	// The internal branch is typically used for change addresses. These are only
-	// returned if a dry run was specified within the request.
+	//
+	//The first N addresses that belong to the internal branch of the account.
+	//The internal branch is typically used for change addresses. These are only
+	//returned if a dry run was specified within the request.
 	DryRunInternalAddrs []string `protobuf:"bytes,3,rep,name=dry_run_internal_addrs,json=dryRunInternalAddrs,proto3" json:"dry_run_internal_addrs,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
@@ -1871,7 +2089,7 @@ type ImportAccountResponse struct {
 
 func (x *ImportAccountResponse) Reset() {
 	*x = ImportAccountResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[24]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1883,7 +2101,7 @@ func (x *ImportAccountResponse) String() string {
 func (*ImportAccountResponse) ProtoMessage() {}
 
 func (x *ImportAccountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[24]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1896,7 +2114,7 @@ func (x *ImportAccountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportAccountResponse.ProtoReflect.Descriptor instead.
 func (*ImportAccountResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{24}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ImportAccountResponse) GetAccount() *Account {
@@ -1932,7 +2150,7 @@ type ImportPublicKeyRequest struct {
 
 func (x *ImportPublicKeyRequest) Reset() {
 	*x = ImportPublicKeyRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[25]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1944,7 +2162,7 @@ func (x *ImportPublicKeyRequest) String() string {
 func (*ImportPublicKeyRequest) ProtoMessage() {}
 
 func (x *ImportPublicKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[25]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1957,7 +2175,7 @@ func (x *ImportPublicKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportPublicKeyRequest.ProtoReflect.Descriptor instead.
 func (*ImportPublicKeyRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{25}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ImportPublicKeyRequest) GetPublicKey() []byte {
@@ -1984,7 +2202,7 @@ type ImportPublicKeyResponse struct {
 
 func (x *ImportPublicKeyResponse) Reset() {
 	*x = ImportPublicKeyResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[26]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1996,7 +2214,7 @@ func (x *ImportPublicKeyResponse) String() string {
 func (*ImportPublicKeyResponse) ProtoMessage() {}
 
 func (x *ImportPublicKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[26]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2009,7 +2227,7 @@ func (x *ImportPublicKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportPublicKeyResponse.ProtoReflect.Descriptor instead.
 func (*ImportPublicKeyResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{26}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ImportPublicKeyResponse) GetStatus() string {
@@ -2021,7 +2239,8 @@ func (x *ImportPublicKeyResponse) GetStatus() string {
 
 type ImportTapscriptRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The internal public key, serialized as 32-byte x-only public key.
+	//
+	//The internal public key, serialized as 32-byte x-only public key.
 	InternalPublicKey []byte `protobuf:"bytes,1,opt,name=internal_public_key,json=internalPublicKey,proto3" json:"internal_public_key,omitempty"`
 	// Types that are valid to be assigned to Script:
 	//
@@ -2036,7 +2255,7 @@ type ImportTapscriptRequest struct {
 
 func (x *ImportTapscriptRequest) Reset() {
 	*x = ImportTapscriptRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[27]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2048,7 +2267,7 @@ func (x *ImportTapscriptRequest) String() string {
 func (*ImportTapscriptRequest) ProtoMessage() {}
 
 func (x *ImportTapscriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[27]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2061,7 +2280,7 @@ func (x *ImportTapscriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportTapscriptRequest.ProtoReflect.Descriptor instead.
 func (*ImportTapscriptRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{27}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ImportTapscriptRequest) GetInternalPublicKey() []byte {
@@ -2119,30 +2338,34 @@ type isImportTapscriptRequest_Script interface {
 }
 
 type ImportTapscriptRequest_FullTree struct {
-	// The full script tree with all individual leaves is known and the root
-	// hash can be constructed from the full tree directly.
+	//
+	//The full script tree with all individual leaves is known and the root
+	//hash can be constructed from the full tree directly.
 	FullTree *TapscriptFullTree `protobuf:"bytes,2,opt,name=full_tree,json=fullTree,proto3,oneof"`
 }
 
 type ImportTapscriptRequest_PartialReveal struct {
-	// Only a single script leaf is known. To construct the root hash, the full
-	// inclusion proof must also be provided.
+	//
+	//Only a single script leaf is known. To construct the root hash, the full
+	//inclusion proof must also be provided.
 	PartialReveal *TapscriptPartialReveal `protobuf:"bytes,3,opt,name=partial_reveal,json=partialReveal,proto3,oneof"`
 }
 
 type ImportTapscriptRequest_RootHashOnly struct {
-	// Only the root hash of the Taproot script tree (or other form of Taproot
-	// commitment) is known.
+	//
+	//Only the root hash of the Taproot script tree (or other form of Taproot
+	//commitment) is known.
 	RootHashOnly []byte `protobuf:"bytes,4,opt,name=root_hash_only,json=rootHashOnly,proto3,oneof"`
 }
 
 type ImportTapscriptRequest_FullKeyOnly struct {
-	// Only the final, tweaked Taproot key is known and no additional
-	// information about the internal key or type of tweak that was used to
-	// derive it. When this is set, the wallet treats the key in
-	// internal_public_key as the Taproot key directly. This can be useful for
-	// tracking arbitrary Taproot outputs without the goal of ever being able
-	// to spend from them through the internal wallet.
+	//
+	//Only the final, tweaked Taproot key is known and no additional
+	//information about the internal key or type of tweak that was used to
+	//derive it. When this is set, the wallet treats the key in
+	//internal_public_key as the Taproot key directly. This can be useful for
+	//tracking arbitrary Taproot outputs without the goal of ever being able
+	//to spend from them through the internal wallet.
 	FullKeyOnly bool `protobuf:"varint,5,opt,name=full_key_only,json=fullKeyOnly,proto3,oneof"`
 }
 
@@ -2156,7 +2379,8 @@ func (*ImportTapscriptRequest_FullKeyOnly) isImportTapscriptRequest_Script() {}
 
 type TapscriptFullTree struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The complete, ordered list of all tap leaves of the tree.
+	//
+	//The complete, ordered list of all tap leaves of the tree.
 	AllLeaves     []*TapLeaf `protobuf:"bytes,1,rep,name=all_leaves,json=allLeaves,proto3" json:"all_leaves,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2164,7 +2388,7 @@ type TapscriptFullTree struct {
 
 func (x *TapscriptFullTree) Reset() {
 	*x = TapscriptFullTree{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[28]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2176,7 +2400,7 @@ func (x *TapscriptFullTree) String() string {
 func (*TapscriptFullTree) ProtoMessage() {}
 
 func (x *TapscriptFullTree) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[28]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2189,7 +2413,7 @@ func (x *TapscriptFullTree) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TapscriptFullTree.ProtoReflect.Descriptor instead.
 func (*TapscriptFullTree) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{28}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TapscriptFullTree) GetAllLeaves() []*TapLeaf {
@@ -2211,7 +2435,7 @@ type TapLeaf struct {
 
 func (x *TapLeaf) Reset() {
 	*x = TapLeaf{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[29]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2223,7 +2447,7 @@ func (x *TapLeaf) String() string {
 func (*TapLeaf) ProtoMessage() {}
 
 func (x *TapLeaf) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[29]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2236,7 +2460,7 @@ func (x *TapLeaf) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TapLeaf.ProtoReflect.Descriptor instead.
 func (*TapLeaf) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{29}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *TapLeaf) GetLeafVersion() uint32 {
@@ -2268,7 +2492,7 @@ type TapscriptPartialReveal struct {
 
 func (x *TapscriptPartialReveal) Reset() {
 	*x = TapscriptPartialReveal{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[30]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2280,7 +2504,7 @@ func (x *TapscriptPartialReveal) String() string {
 func (*TapscriptPartialReveal) ProtoMessage() {}
 
 func (x *TapscriptPartialReveal) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[30]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2293,7 +2517,7 @@ func (x *TapscriptPartialReveal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TapscriptPartialReveal.ProtoReflect.Descriptor instead.
 func (*TapscriptPartialReveal) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{30}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *TapscriptPartialReveal) GetRevealedLeaf() *TapLeaf {
@@ -2312,8 +2536,9 @@ func (x *TapscriptPartialReveal) GetFullInclusionProof() []byte {
 
 type ImportTapscriptResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The resulting pay-to-Taproot address that represents the imported internal
-	// key with the script committed to it.
+	//
+	//The resulting pay-to-Taproot address that represents the imported internal
+	//key with the script committed to it.
 	P2TrAddress   string `protobuf:"bytes,1,opt,name=p2tr_address,json=p2trAddress,proto3" json:"p2tr_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2321,7 +2546,7 @@ type ImportTapscriptResponse struct {
 
 func (x *ImportTapscriptResponse) Reset() {
 	*x = ImportTapscriptResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[31]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2333,7 +2558,7 @@ func (x *ImportTapscriptResponse) String() string {
 func (*ImportTapscriptResponse) ProtoMessage() {}
 
 func (x *ImportTapscriptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[31]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2346,7 +2571,7 @@ func (x *ImportTapscriptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportTapscriptResponse.ProtoReflect.Descriptor instead.
 func (*ImportTapscriptResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{31}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ImportTapscriptResponse) GetP2TrAddress() string {
@@ -2358,11 +2583,13 @@ func (x *ImportTapscriptResponse) GetP2TrAddress() string {
 
 type Transaction struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The raw serialized transaction. Despite the field name, this does need to be
-	// specified in raw bytes (or base64 encoded when using REST) and not in hex.
-	// To not break existing software, the field can't simply be renamed.
+	//
+	//The raw serialized transaction. Despite the field name, this does need to be
+	//specified in raw bytes (or base64 encoded when using REST) and not in hex.
+	//To not break existing software, the field can't simply be renamed.
 	TxHex []byte `protobuf:"bytes,1,opt,name=tx_hex,json=txHex,proto3" json:"tx_hex,omitempty"`
-	// An optional label to save with the transaction. Limited to 500 characters.
+	//
+	//An optional label to save with the transaction. Limited to 500 characters.
 	Label         string `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2370,7 +2597,7 @@ type Transaction struct {
 
 func (x *Transaction) Reset() {
 	*x = Transaction{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[32]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2382,7 +2609,7 @@ func (x *Transaction) String() string {
 func (*Transaction) ProtoMessage() {}
 
 func (x *Transaction) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[32]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2395,7 +2622,7 @@ func (x *Transaction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Transaction.ProtoReflect.Descriptor instead.
 func (*Transaction) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{32}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *Transaction) GetTxHex() []byte {
@@ -2414,11 +2641,12 @@ func (x *Transaction) GetLabel() string {
 
 type PublishResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// If blank, then no error occurred and the transaction was successfully
-	// published. If not the empty string, then a string representation of the
-	// broadcast error.
 	//
-	// TODO(roasbeef): map to a proper enum type
+	//If blank, then no error occurred and the transaction was successfully
+	//published. If not the empty string, then a string representation of the
+	//broadcast error.
+	//
+	//TODO(roasbeef): map to a proper enum type
 	PublishError  string `protobuf:"bytes,1,opt,name=publish_error,json=publishError,proto3" json:"publish_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2426,7 +2654,7 @@ type PublishResponse struct {
 
 func (x *PublishResponse) Reset() {
 	*x = PublishResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[33]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2438,7 +2666,7 @@ func (x *PublishResponse) String() string {
 func (*PublishResponse) ProtoMessage() {}
 
 func (x *PublishResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[33]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2451,7 +2679,7 @@ func (x *PublishResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishResponse.ProtoReflect.Descriptor instead.
 func (*PublishResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{33}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *PublishResponse) GetPublishError() string {
@@ -2463,13 +2691,15 @@ func (x *PublishResponse) GetPublishError() string {
 
 type SubmitPackageRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The raw serialized transactions forming the package, topologically sorted
-	// with unconfirmed parents first and the child last.
+	//
+	//The raw serialized transactions forming the package, topologically sorted
+	//with unconfirmed parents first and the child last.
 	RawTxs [][]byte `protobuf:"bytes,1,rep,name=raw_txs,json=rawTxs,proto3" json:"raw_txs,omitempty"`
-	// Optional per-transaction fee-rate ceiling in sat/vByte (mapped onto the
-	// submitpackage maxfeerate). When unset the node's default is used; an
-	// explicit 0 means no limit, which is required for a CPFP child whose
-	// standalone feerate is high.
+	//
+	//Optional per-transaction fee-rate ceiling in sat/vByte (mapped onto the
+	//submitpackage maxfeerate). When unset the node's default is used; an
+	//explicit 0 means no limit, which is required for a CPFP child whose
+	//standalone feerate is high.
 	SatPerVbyte   *uint64 `protobuf:"varint,2,opt,name=sat_per_vbyte,json=satPerVbyte,proto3,oneof" json:"sat_per_vbyte,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2477,7 +2707,7 @@ type SubmitPackageRequest struct {
 
 func (x *SubmitPackageRequest) Reset() {
 	*x = SubmitPackageRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[34]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2489,7 +2719,7 @@ func (x *SubmitPackageRequest) String() string {
 func (*SubmitPackageRequest) ProtoMessage() {}
 
 func (x *SubmitPackageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[34]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2502,7 +2732,7 @@ func (x *SubmitPackageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPackageRequest.ProtoReflect.Descriptor instead.
 func (*SubmitPackageRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{34}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SubmitPackageRequest) GetRawTxs() [][]byte {
@@ -2525,9 +2755,10 @@ type SubmitPackageTxResult struct {
 	Txid string `protobuf:"bytes,1,opt,name=txid,proto3" json:"txid,omitempty"`
 	// If non-empty, the reason this transaction was rejected.
 	Error string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-	// If non-empty, the wtxid (in hex) of a transaction with the same txid but a
-	// different witness that was already in the mempool; the submitted
-	// transaction was ignored as a duplicate (witness replacement).
+	//
+	//If non-empty, the wtxid (in hex) of a transaction with the same txid but a
+	//different witness that was already in the mempool; the submitted
+	//transaction was ignored as a duplicate (witness replacement).
 	OtherWtxid    string `protobuf:"bytes,3,opt,name=other_wtxid,json=otherWtxid,proto3" json:"other_wtxid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2535,7 +2766,7 @@ type SubmitPackageTxResult struct {
 
 func (x *SubmitPackageTxResult) Reset() {
 	*x = SubmitPackageTxResult{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[35]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2547,7 +2778,7 @@ func (x *SubmitPackageTxResult) String() string {
 func (*SubmitPackageTxResult) ProtoMessage() {}
 
 func (x *SubmitPackageTxResult) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[35]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2560,7 +2791,7 @@ func (x *SubmitPackageTxResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPackageTxResult.ProtoReflect.Descriptor instead.
 func (*SubmitPackageTxResult) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{35}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SubmitPackageTxResult) GetTxid() string {
@@ -2598,7 +2829,7 @@ type SubmitPackageResponse struct {
 
 func (x *SubmitPackageResponse) Reset() {
 	*x = SubmitPackageResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[36]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2610,7 +2841,7 @@ func (x *SubmitPackageResponse) String() string {
 func (*SubmitPackageResponse) ProtoMessage() {}
 
 func (x *SubmitPackageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[36]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2623,7 +2854,7 @@ func (x *SubmitPackageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPackageResponse.ProtoReflect.Descriptor instead.
 func (*SubmitPackageResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{36}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SubmitPackageResponse) GetPackageMsg() string {
@@ -2657,7 +2888,7 @@ type RemoveTransactionResponse struct {
 
 func (x *RemoveTransactionResponse) Reset() {
 	*x = RemoveTransactionResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[37]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2669,7 +2900,7 @@ func (x *RemoveTransactionResponse) String() string {
 func (*RemoveTransactionResponse) ProtoMessage() {}
 
 func (x *RemoveTransactionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[37]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2682,7 +2913,7 @@ func (x *RemoveTransactionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveTransactionResponse.ProtoReflect.Descriptor instead.
 func (*RemoveTransactionResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{37}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RemoveTransactionResponse) GetStatus() string {
@@ -2694,10 +2925,12 @@ func (x *RemoveTransactionResponse) GetStatus() string {
 
 type SendOutputsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The number of satoshis per kilo weight that should be used when crafting
-	// this transaction.
+	//
+	//The number of satoshis per kilo weight that should be used when crafting
+	//this transaction.
 	SatPerKw int64 `protobuf:"varint,1,opt,name=sat_per_kw,json=satPerKw,proto3" json:"sat_per_kw,omitempty"`
-	// A slice of the outputs that should be created in the transaction produced.
+	//
+	//A slice of the outputs that should be created in the transaction produced.
 	Outputs []*signrpc.TxOut `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty"`
 	// An optional label for the transaction, limited to 500 characters.
 	Label string `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
@@ -2714,7 +2947,7 @@ type SendOutputsRequest struct {
 
 func (x *SendOutputsRequest) Reset() {
 	*x = SendOutputsRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[38]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2726,7 +2959,7 @@ func (x *SendOutputsRequest) String() string {
 func (*SendOutputsRequest) ProtoMessage() {}
 
 func (x *SendOutputsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[38]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2739,7 +2972,7 @@ func (x *SendOutputsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendOutputsRequest.ProtoReflect.Descriptor instead.
 func (*SendOutputsRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{38}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *SendOutputsRequest) GetSatPerKw() int64 {
@@ -2786,7 +3019,8 @@ func (x *SendOutputsRequest) GetCoinSelectionStrategy() lnrpc.CoinSelectionStrat
 
 type SendOutputsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The serialized transaction sent out on the network.
+	//
+	//The serialized transaction sent out on the network.
 	RawTx         []byte `protobuf:"bytes,1,opt,name=raw_tx,json=rawTx,proto3" json:"raw_tx,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2794,7 +3028,7 @@ type SendOutputsResponse struct {
 
 func (x *SendOutputsResponse) Reset() {
 	*x = SendOutputsResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[39]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2806,7 +3040,7 @@ func (x *SendOutputsResponse) String() string {
 func (*SendOutputsResponse) ProtoMessage() {}
 
 func (x *SendOutputsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[39]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2819,7 +3053,7 @@ func (x *SendOutputsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendOutputsResponse.ProtoReflect.Descriptor instead.
 func (*SendOutputsResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{39}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SendOutputsResponse) GetRawTx() []byte {
@@ -2831,7 +3065,8 @@ func (x *SendOutputsResponse) GetRawTx() []byte {
 
 type EstimateFeeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The number of confirmations to shoot for when estimating the fee.
+	//
+	//The number of confirmations to shoot for when estimating the fee.
 	ConfTarget    int32 `protobuf:"varint,1,opt,name=conf_target,json=confTarget,proto3" json:"conf_target,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2839,7 +3074,7 @@ type EstimateFeeRequest struct {
 
 func (x *EstimateFeeRequest) Reset() {
 	*x = EstimateFeeRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[40]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2851,7 +3086,7 @@ func (x *EstimateFeeRequest) String() string {
 func (*EstimateFeeRequest) ProtoMessage() {}
 
 func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[40]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2864,7 +3099,7 @@ func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{40}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *EstimateFeeRequest) GetConfTarget() int32 {
@@ -2876,8 +3111,9 @@ func (x *EstimateFeeRequest) GetConfTarget() int32 {
 
 type EstimateFeeResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The amount of satoshis per kw that should be used in order to reach the
-	// confirmation target in the request.
+	//
+	//The amount of satoshis per kw that should be used in order to reach the
+	//confirmation target in the request.
 	SatPerKw int64 `protobuf:"varint,1,opt,name=sat_per_kw,json=satPerKw,proto3" json:"sat_per_kw,omitempty"`
 	// The current minimum relay fee based on our chain backend in sat/kw.
 	MinRelayFeeSatPerKw int64 `protobuf:"varint,2,opt,name=min_relay_fee_sat_per_kw,json=minRelayFeeSatPerKw,proto3" json:"min_relay_fee_sat_per_kw,omitempty"`
@@ -2887,7 +3123,7 @@ type EstimateFeeResponse struct {
 
 func (x *EstimateFeeResponse) Reset() {
 	*x = EstimateFeeResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[41]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2899,7 +3135,7 @@ func (x *EstimateFeeResponse) String() string {
 func (*EstimateFeeResponse) ProtoMessage() {}
 
 func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[41]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2912,7 +3148,7 @@ func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{41}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *EstimateFeeResponse) GetSatPerKw() int64 {
@@ -2937,30 +3173,34 @@ type PendingSweep struct {
 	WitnessType WitnessType `protobuf:"varint,2,opt,name=witness_type,json=witnessType,proto3,enum=walletrpc.WitnessType" json:"witness_type,omitempty"`
 	// The value of the output we're attempting to sweep.
 	AmountSat uint32 `protobuf:"varint,3,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
-	// Deprecated, use sat_per_vbyte.
-	// The fee rate we'll use to sweep the output, expressed in sat/vbyte. The fee
-	// rate is only determined once a sweeping transaction for the output is
-	// created, so it's possible for this to be 0 before this.
+	//
+	//Deprecated, use sat_per_vbyte.
+	//The fee rate we'll use to sweep the output, expressed in sat/vbyte. The fee
+	//rate is only determined once a sweeping transaction for the output is
+	//created, so it's possible for this to be 0 before this.
 	//
 	// Deprecated: Marked as deprecated in walletrpc/walletkit.proto.
 	SatPerByte uint32 `protobuf:"varint,4,opt,name=sat_per_byte,json=satPerByte,proto3" json:"sat_per_byte,omitempty"`
 	// The number of broadcast attempts we've made to sweep the output.
 	BroadcastAttempts uint32 `protobuf:"varint,5,opt,name=broadcast_attempts,json=broadcastAttempts,proto3" json:"broadcast_attempts,omitempty"`
-	// Deprecated.
-	// The next height of the chain at which we'll attempt to broadcast the
-	// sweep transaction of the output.
+	//
+	//Deprecated.
+	//The next height of the chain at which we'll attempt to broadcast the
+	//sweep transaction of the output.
 	//
 	// Deprecated: Marked as deprecated in walletrpc/walletkit.proto.
 	NextBroadcastHeight uint32 `protobuf:"varint,6,opt,name=next_broadcast_height,json=nextBroadcastHeight,proto3" json:"next_broadcast_height,omitempty"`
-	// Deprecated, use immediate.
-	// Whether this input must be force-swept. This means that it is swept
-	// immediately.
+	//
+	//Deprecated, use immediate.
+	//Whether this input must be force-swept. This means that it is swept
+	//immediately.
 	//
 	// Deprecated: Marked as deprecated in walletrpc/walletkit.proto.
 	Force bool `protobuf:"varint,7,opt,name=force,proto3" json:"force,omitempty"`
-	// Deprecated, use deadline.
-	// The requested confirmation target for this output, which is the deadline
-	// used by the sweeper.
+	//
+	//Deprecated, use deadline.
+	//The requested confirmation target for this output, which is the deadline
+	//used by the sweeper.
 	//
 	// Deprecated: Marked as deprecated in walletrpc/walletkit.proto.
 	RequestedConfTarget uint32 `protobuf:"varint,8,opt,name=requested_conf_target,json=requestedConfTarget,proto3" json:"requested_conf_target,omitempty"`
@@ -2969,22 +3209,27 @@ type PendingSweep struct {
 	//
 	// Deprecated: Marked as deprecated in walletrpc/walletkit.proto.
 	RequestedSatPerByte uint32 `protobuf:"varint,9,opt,name=requested_sat_per_byte,json=requestedSatPerByte,proto3" json:"requested_sat_per_byte,omitempty"`
-	// The current fee rate we'll use to sweep the output, expressed in sat/vbyte.
-	// The fee rate is only determined once a sweeping transaction for the output
-	// is created, so it's possible for this to be 0 before this.
+	//
+	//The current fee rate we'll use to sweep the output, expressed in sat/vbyte.
+	//The fee rate is only determined once a sweeping transaction for the output
+	//is created, so it's possible for this to be 0 before this.
 	SatPerVbyte uint64 `protobuf:"varint,10,opt,name=sat_per_vbyte,json=satPerVbyte,proto3" json:"sat_per_vbyte,omitempty"`
 	// The requested starting fee rate, expressed in sat/vbyte, for this
 	// output. When not requested, this field will be 0.
 	RequestedSatPerVbyte uint64 `protobuf:"varint,11,opt,name=requested_sat_per_vbyte,json=requestedSatPerVbyte,proto3" json:"requested_sat_per_vbyte,omitempty"`
-	// Whether this input will be swept immediately.
+	//
+	//Whether this input will be swept immediately.
 	Immediate bool `protobuf:"varint,12,opt,name=immediate,proto3" json:"immediate,omitempty"`
-	// The budget for this sweep, expressed in satoshis. This is the maximum amount
-	// that can be spent as fees to sweep this output.
+	//
+	//The budget for this sweep, expressed in satoshis. This is the maximum amount
+	//that can be spent as fees to sweep this output.
 	Budget uint64 `protobuf:"varint,13,opt,name=budget,proto3" json:"budget,omitempty"`
-	// The deadline height used for this output when perform fee bumping.
+	//
+	//The deadline height used for this output when perform fee bumping.
 	DeadlineHeight uint32 `protobuf:"varint,14,opt,name=deadline_height,json=deadlineHeight,proto3" json:"deadline_height,omitempty"`
-	// The block height which the input's locktime will expire at. Zero if the
-	// input has no locktime.
+	//
+	//The block height which the input's locktime will expire at. Zero if the
+	//input has no locktime.
 	MaturityHeight uint32 `protobuf:"varint,15,opt,name=maturity_height,json=maturityHeight,proto3" json:"maturity_height,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -2992,7 +3237,7 @@ type PendingSweep struct {
 
 func (x *PendingSweep) Reset() {
 	*x = PendingSweep{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[42]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3004,7 +3249,7 @@ func (x *PendingSweep) String() string {
 func (*PendingSweep) ProtoMessage() {}
 
 func (x *PendingSweep) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[42]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3017,7 +3262,7 @@ func (x *PendingSweep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingSweep.ProtoReflect.Descriptor instead.
 func (*PendingSweep) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{42}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *PendingSweep) GetOutpoint() *lnrpc.OutPoint {
@@ -3138,7 +3383,7 @@ type PendingSweepsRequest struct {
 
 func (x *PendingSweepsRequest) Reset() {
 	*x = PendingSweepsRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[43]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3150,7 +3395,7 @@ func (x *PendingSweepsRequest) String() string {
 func (*PendingSweepsRequest) ProtoMessage() {}
 
 func (x *PendingSweepsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[43]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3163,12 +3408,13 @@ func (x *PendingSweepsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingSweepsRequest.ProtoReflect.Descriptor instead.
 func (*PendingSweepsRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{43}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{45}
 }
 
 type PendingSweepsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The set of outputs currently being swept by lnd's central batching engine.
+	//
+	//The set of outputs currently being swept by lnd's central batching engine.
 	PendingSweeps []*PendingSweep `protobuf:"bytes,1,rep,name=pending_sweeps,json=pendingSweeps,proto3" json:"pending_sweeps,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3176,7 +3422,7 @@ type PendingSweepsResponse struct {
 
 func (x *PendingSweepsResponse) Reset() {
 	*x = PendingSweepsResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[44]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3188,7 +3434,7 @@ func (x *PendingSweepsResponse) String() string {
 func (*PendingSweepsResponse) ProtoMessage() {}
 
 func (x *PendingSweepsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[44]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3201,7 +3447,7 @@ func (x *PendingSweepsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingSweepsResponse.ProtoReflect.Descriptor instead.
 func (*PendingSweepsResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{44}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *PendingSweepsResponse) GetPendingSweeps() []*PendingSweep {
@@ -3218,32 +3464,37 @@ type BumpFeeRequest struct {
 	// Optional. The conf target the underlying fee estimator will use to
 	// estimate the starting fee rate for the fee function.
 	TargetConf uint32 `protobuf:"varint,2,opt,name=target_conf,json=targetConf,proto3" json:"target_conf,omitempty"`
-	// Deprecated, use sat_per_vbyte.
-	// The fee rate, expressed in sat/vbyte, that should be used to spend the input
-	// with.
+	//
+	//Deprecated, use sat_per_vbyte.
+	//The fee rate, expressed in sat/vbyte, that should be used to spend the input
+	//with.
 	//
 	// Deprecated: Marked as deprecated in walletrpc/walletkit.proto.
 	SatPerByte uint32 `protobuf:"varint,3,opt,name=sat_per_byte,json=satPerByte,proto3" json:"sat_per_byte,omitempty"`
-	// Deprecated, use immediate.
-	// Whether this input must be force-swept. This means that it is swept
-	// immediately.
+	//
+	//Deprecated, use immediate.
+	//Whether this input must be force-swept. This means that it is swept
+	//immediately.
 	//
 	// Deprecated: Marked as deprecated in walletrpc/walletkit.proto.
 	Force bool `protobuf:"varint,4,opt,name=force,proto3" json:"force,omitempty"`
-	// Optional. The starting fee rate, expressed in sat/vbyte, that will be used
-	// to spend the input with initially. This value will be used by the sweeper's
-	// fee function as its starting fee rate. When not set, the sweeper will use
-	// the estimated fee rate using the `target_conf` as the starting fee rate.
+	//
+	//Optional. The starting fee rate, expressed in sat/vbyte, that will be used
+	//to spend the input with initially. This value will be used by the sweeper's
+	//fee function as its starting fee rate. When not set, the sweeper will use
+	//the estimated fee rate using the `target_conf` as the starting fee rate.
 	SatPerVbyte uint64 `protobuf:"varint,5,opt,name=sat_per_vbyte,json=satPerVbyte,proto3" json:"sat_per_vbyte,omitempty"`
-	// Optional. Whether this input will be swept immediately. When set to true,
-	// the sweeper will sweep this input without waiting for the next block.
+	//
+	//Optional. Whether this input will be swept immediately. When set to true,
+	//the sweeper will sweep this input without waiting for the next block.
 	Immediate bool `protobuf:"varint,6,opt,name=immediate,proto3" json:"immediate,omitempty"`
-	// Optional. The max amount in sats that can be used as the fees. Setting this
-	// value greater than the input's value may result in CPFP - one or more wallet
-	// utxos will be used to pay the fees specified by the budget. If not set, for
-	// new inputs, by default 50% of the input's value will be treated as the
-	// budget for fee bumping; for existing inputs, their current budgets will be
-	// retained.
+	//
+	//Optional. The max amount in sats that can be used as the fees. Setting this
+	//value greater than the input's value may result in CPFP - one or more wallet
+	//utxos will be used to pay the fees specified by the budget. If not set, for
+	//new inputs, by default 50% of the input's value will be treated as the
+	//budget for fee bumping; for existing inputs, their current budgets will be
+	//retained.
 	Budget uint64 `protobuf:"varint,7,opt,name=budget,proto3" json:"budget,omitempty"`
 	// Optional. The deadline delta in number of blocks that the output
 	// should be spent within. This translates internally to the width of the
@@ -3256,7 +3507,7 @@ type BumpFeeRequest struct {
 
 func (x *BumpFeeRequest) Reset() {
 	*x = BumpFeeRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[45]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3268,7 +3519,7 @@ func (x *BumpFeeRequest) String() string {
 func (*BumpFeeRequest) ProtoMessage() {}
 
 func (x *BumpFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[45]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3281,7 +3532,7 @@ func (x *BumpFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BumpFeeRequest.ProtoReflect.Descriptor instead.
 func (*BumpFeeRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{45}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *BumpFeeRequest) GetOutpoint() *lnrpc.OutPoint {
@@ -3352,7 +3603,7 @@ type BumpFeeResponse struct {
 
 func (x *BumpFeeResponse) Reset() {
 	*x = BumpFeeResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[46]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3364,7 +3615,7 @@ func (x *BumpFeeResponse) String() string {
 func (*BumpFeeResponse) ProtoMessage() {}
 
 func (x *BumpFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[46]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3377,7 +3628,7 @@ func (x *BumpFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BumpFeeResponse.ProtoReflect.Descriptor instead.
 func (*BumpFeeResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{46}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *BumpFeeResponse) GetStatus() string {
@@ -3396,21 +3647,24 @@ type BumpForceCloseFeeRequest struct {
 	// should be spent within to bump the closing transaction. When the
 	// deadline is reached, ALL the budget will be spent as fees
 	DeadlineDelta uint32 `protobuf:"varint,2,opt,name=deadline_delta,json=deadlineDelta,proto3" json:"deadline_delta,omitempty"`
-	// Optional. The starting fee rate, expressed in sat/vbyte. This value will be
-	// used by the sweeper's fee function as its starting fee rate. When not set,
-	// the sweeper will use the estimated fee rate using the target_conf as the
-	// starting fee rate.
+	//
+	//Optional. The starting fee rate, expressed in sat/vbyte. This value will be
+	//used by the sweeper's fee function as its starting fee rate. When not set,
+	//the sweeper will use the estimated fee rate using the target_conf as the
+	//starting fee rate.
 	StartingFeerate uint64 `protobuf:"varint,3,opt,name=starting_feerate,json=startingFeerate,proto3" json:"starting_feerate,omitempty"`
-	// Optional. Whether this cpfp transaction will be triggered immediately. When
-	// set to true, the sweeper will consider all currently registered sweeps and
-	// trigger new batch transactions including the sweeping of the anchor output
-	// related to the selected force close transaction.
+	//
+	//Optional. Whether this cpfp transaction will be triggered immediately. When
+	//set to true, the sweeper will consider all currently registered sweeps and
+	//trigger new batch transactions including the sweeping of the anchor output
+	//related to the selected force close transaction.
 	Immediate bool `protobuf:"varint,4,opt,name=immediate,proto3" json:"immediate,omitempty"`
-	// Optional. The max amount in sats that can be used as the fees. For already
-	// registered anchor outputs if not set explicitly the old value will be used.
-	// For channel force closes which have no HTLCs in their commitment transaction
-	// this value has to be set to an appropriate amount to pay for the cpfp
-	// transaction of the force closed channel otherwise the fee bumping will fail.
+	//
+	//Optional. The max amount in sats that can be used as the fees. For already
+	//registered anchor outputs if not set explicitly the old value will be used.
+	//For channel force closes which have no HTLCs in their commitment transaction
+	//this value has to be set to an appropriate amount to pay for the cpfp
+	//transaction of the force closed channel otherwise the fee bumping will fail.
 	Budget uint64 `protobuf:"varint,5,opt,name=budget,proto3" json:"budget,omitempty"`
 	// Optional. The conf target the underlying fee estimator will use to
 	// estimate the starting fee rate for the fee function.
@@ -3421,7 +3675,7 @@ type BumpForceCloseFeeRequest struct {
 
 func (x *BumpForceCloseFeeRequest) Reset() {
 	*x = BumpForceCloseFeeRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[47]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3433,7 +3687,7 @@ func (x *BumpForceCloseFeeRequest) String() string {
 func (*BumpForceCloseFeeRequest) ProtoMessage() {}
 
 func (x *BumpForceCloseFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[47]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3446,7 +3700,7 @@ func (x *BumpForceCloseFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BumpForceCloseFeeRequest.ProtoReflect.Descriptor instead.
 func (*BumpForceCloseFeeRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{47}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *BumpForceCloseFeeRequest) GetChanPoint() *lnrpc.ChannelPoint {
@@ -3501,7 +3755,7 @@ type BumpForceCloseFeeResponse struct {
 
 func (x *BumpForceCloseFeeResponse) Reset() {
 	*x = BumpForceCloseFeeResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[48]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3513,7 +3767,7 @@ func (x *BumpForceCloseFeeResponse) String() string {
 func (*BumpForceCloseFeeResponse) ProtoMessage() {}
 
 func (x *BumpForceCloseFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[48]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3526,7 +3780,7 @@ func (x *BumpForceCloseFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BumpForceCloseFeeResponse.ProtoReflect.Descriptor instead.
 func (*BumpForceCloseFeeResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{48}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *BumpForceCloseFeeResponse) GetStatus() string {
@@ -3538,13 +3792,15 @@ func (x *BumpForceCloseFeeResponse) GetStatus() string {
 
 type ListSweepsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Retrieve the full sweep transaction details. If false, only the sweep txids
-	// will be returned. Note that some sweeps that LND publishes will have been
-	// replaced-by-fee, so will not be included in this output.
+	//
+	//Retrieve the full sweep transaction details. If false, only the sweep txids
+	//will be returned. Note that some sweeps that LND publishes will have been
+	//replaced-by-fee, so will not be included in this output.
 	Verbose bool `protobuf:"varint,1,opt,name=verbose,proto3" json:"verbose,omitempty"`
-	// The start height to use when fetching sweeps. If not specified (0), the
-	// result will start from the earliest sweep. If set to -1 the result will
-	// only include unconfirmed sweeps (at the time of the call).
+	//
+	//The start height to use when fetching sweeps. If not specified (0), the
+	//result will start from the earliest sweep. If set to -1 the result will
+	//only include unconfirmed sweeps (at the time of the call).
 	StartHeight   int32 `protobuf:"varint,2,opt,name=start_height,json=startHeight,proto3" json:"start_height,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3552,7 +3808,7 @@ type ListSweepsRequest struct {
 
 func (x *ListSweepsRequest) Reset() {
 	*x = ListSweepsRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[49]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3564,7 +3820,7 @@ func (x *ListSweepsRequest) String() string {
 func (*ListSweepsRequest) ProtoMessage() {}
 
 func (x *ListSweepsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[49]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3577,7 +3833,7 @@ func (x *ListSweepsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSweepsRequest.ProtoReflect.Descriptor instead.
 func (*ListSweepsRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{49}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *ListSweepsRequest) GetVerbose() bool {
@@ -3607,7 +3863,7 @@ type ListSweepsResponse struct {
 
 func (x *ListSweepsResponse) Reset() {
 	*x = ListSweepsResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[50]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3619,7 +3875,7 @@ func (x *ListSweepsResponse) String() string {
 func (*ListSweepsResponse) ProtoMessage() {}
 
 func (x *ListSweepsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[50]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3632,7 +3888,7 @@ func (x *ListSweepsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSweepsResponse.ProtoReflect.Descriptor instead.
 func (*ListSweepsResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{50}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *ListSweepsResponse) GetSweeps() isListSweepsResponse_Sweeps {
@@ -3691,7 +3947,7 @@ type LabelTransactionRequest struct {
 
 func (x *LabelTransactionRequest) Reset() {
 	*x = LabelTransactionRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[51]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3703,7 +3959,7 @@ func (x *LabelTransactionRequest) String() string {
 func (*LabelTransactionRequest) ProtoMessage() {}
 
 func (x *LabelTransactionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[51]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3716,7 +3972,7 @@ func (x *LabelTransactionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabelTransactionRequest.ProtoReflect.Descriptor instead.
 func (*LabelTransactionRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{51}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *LabelTransactionRequest) GetTxid() []byte {
@@ -3750,7 +4006,7 @@ type LabelTransactionResponse struct {
 
 func (x *LabelTransactionResponse) Reset() {
 	*x = LabelTransactionResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[52]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3762,7 +4018,7 @@ func (x *LabelTransactionResponse) String() string {
 func (*LabelTransactionResponse) ProtoMessage() {}
 
 func (x *LabelTransactionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[52]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3775,7 +4031,7 @@ func (x *LabelTransactionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabelTransactionResponse.ProtoReflect.Descriptor instead.
 func (*LabelTransactionResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{52}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *LabelTransactionResponse) GetStatus() string {
@@ -3799,8 +4055,9 @@ type FundPsbtRequest struct {
 	//	*FundPsbtRequest_SatPerVbyte
 	//	*FundPsbtRequest_SatPerKw
 	Fees isFundPsbtRequest_Fees `protobuf_oneof:"fees"`
-	// The name of the account to fund the PSBT with. If empty, the default wallet
-	// account is used.
+	//
+	//The name of the account to fund the PSBT with. If empty, the default wallet
+	//account is used.
 	Account string `protobuf:"bytes,5,opt,name=account,proto3" json:"account,omitempty"`
 	// The minimum number of confirmations each one of your outputs used for
 	// the transaction must satisfy.
@@ -3818,19 +4075,28 @@ type FundPsbtRequest struct {
 	MaxFeeRatio float64 `protobuf:"fixed64,12,opt,name=max_fee_ratio,json=maxFeeRatio,proto3" json:"max_fee_ratio,omitempty"`
 	// The custom lock ID to use for the inputs in the funded PSBT. The value
 	// if set must be exactly 32 bytes long. If empty, the default lock ID will
-	// be used.
+	// be used. This field is required when input_release_after_spend_confs is
+	// non-zero. In that mode it must not be all zero or LND's reserved
+	// internal lock ID. The caller must persist this ID before funding and use
+	// ReleaseOutput to unlock an abandoned PSBT whose spend never confirms.
 	CustomLockId []byte `protobuf:"bytes,13,opt,name=custom_lock_id,json=customLockId,proto3" json:"custom_lock_id,omitempty"`
-	// If set, then the inputs in the funded PSBT will be locked for the
-	// specified duration. The lock duration is specified in seconds. If not
-	// set, the default lock duration will be used.
+	// If set, then time-controlled input leases in the funded PSBT will be
+	// locked for the specified duration in seconds. If not set, the default
+	// lock duration is used. A non-zero input_release_after_spend_confs makes
+	// this deadline informational only.
 	LockExpirationSeconds uint64 `protobuf:"varint,14,opt,name=lock_expiration_seconds,json=lockExpirationSeconds,proto3" json:"lock_expiration_seconds,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Keep each acquired input lease until its spending transaction reaches
+	// this confirmation count or the owner explicitly releases it. A
+	// reorganization resets maturity progress. A non-zero value ignores
+	// lock_expiration_seconds; zero preserves time-controlled lease behavior.
+	InputReleaseAfterSpendConfs uint32 `protobuf:"varint,15,opt,name=input_release_after_spend_confs,json=inputReleaseAfterSpendConfs,proto3" json:"input_release_after_spend_confs,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *FundPsbtRequest) Reset() {
 	*x = FundPsbtRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[53]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3842,7 +4108,7 @@ func (x *FundPsbtRequest) String() string {
 func (*FundPsbtRequest) ProtoMessage() {}
 
 func (x *FundPsbtRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[53]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3855,7 +4121,7 @@ func (x *FundPsbtRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FundPsbtRequest.ProtoReflect.Descriptor instead.
 func (*FundPsbtRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{53}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *FundPsbtRequest) GetTemplate() isFundPsbtRequest_Template {
@@ -3982,44 +4248,54 @@ func (x *FundPsbtRequest) GetLockExpirationSeconds() uint64 {
 	return 0
 }
 
+func (x *FundPsbtRequest) GetInputReleaseAfterSpendConfs() uint32 {
+	if x != nil {
+		return x.InputReleaseAfterSpendConfs
+	}
+	return 0
+}
+
 type isFundPsbtRequest_Template interface {
 	isFundPsbtRequest_Template()
 }
 
 type FundPsbtRequest_Psbt struct {
-	// Use an existing PSBT packet as the template for the funded PSBT.
 	//
-	// The packet must contain at least one non-dust output. If one or more
-	// inputs are specified, no coin selection is performed. In that case every
-	// input must be an UTXO known to the wallet that has not been locked
-	// before. The sum of all inputs must be sufficiently greater than the sum
-	// of all outputs to pay a miner fee with the specified fee rate. A change
-	// output is added to the PSBT if necessary.
+	//Use an existing PSBT packet as the template for the funded PSBT.
+	//
+	//The packet must contain at least one non-dust output. If one or more
+	//inputs are specified, no coin selection is performed. In that case every
+	//input must be an UTXO known to the wallet that has not been locked
+	//before. The sum of all inputs must be sufficiently greater than the sum
+	//of all outputs to pay a miner fee with the specified fee rate. A change
+	//output is added to the PSBT if necessary.
 	Psbt []byte `protobuf:"bytes,1,opt,name=psbt,proto3,oneof"`
 }
 
 type FundPsbtRequest_Raw struct {
-	// Use the outputs and optional inputs from this raw template.
+	//
+	//Use the outputs and optional inputs from this raw template.
 	Raw *TxTemplate `protobuf:"bytes,2,opt,name=raw,proto3,oneof"`
 }
 
 type FundPsbtRequest_CoinSelect struct {
-	// Use an existing PSBT packet as the template for the funded PSBT.
 	//
-	// The difference to the pure PSBT template above is that coin selection is
-	// performed even if inputs are specified. The output amounts are summed up
-	// and used as the target amount for coin selection. A change output must
-	// either already exist in the PSBT and be marked as such, otherwise a new
-	// change output of the specified output type will be added. Any inputs
-	// already specified in the PSBT must already be locked (if they belong to
-	// this node), only newly added inputs will be locked by this RPC.
+	//Use an existing PSBT packet as the template for the funded PSBT.
 	//
-	// In case the sum of the already provided inputs exceeds the required
-	// output amount, no new coins are selected. Instead only the fee and
-	// change amount calculation is performed (e.g. a change output is added if
-	// requested or the change is added to the specified existing change
-	// output, given there is any non-dust change). This can be identified by
-	// the returned locked UTXOs being empty.
+	//The difference to the pure PSBT template above is that coin selection is
+	//performed even if inputs are specified. The output amounts are summed up
+	//and used as the target amount for coin selection. A change output must
+	//either already exist in the PSBT and be marked as such, otherwise a new
+	//change output of the specified output type will be added. Any inputs
+	//already specified in the PSBT must already be locked (if they belong to
+	//this node), only newly added inputs will be locked by this RPC.
+	//
+	//In case the sum of the already provided inputs exceeds the required
+	//output amount, no new coins are selected. Instead only the fee and
+	//change amount calculation is performed (e.g. a change output is added if
+	//requested or the change is added to the specified existing change
+	//output, given there is any non-dust change). This can be identified by
+	//the returned locked UTXOs being empty.
 	CoinSelect *PsbtCoinSelect `protobuf:"bytes,9,opt,name=coin_select,json=coinSelect,proto3,oneof"`
 }
 
@@ -4034,19 +4310,22 @@ type isFundPsbtRequest_Fees interface {
 }
 
 type FundPsbtRequest_TargetConf struct {
-	// The target number of blocks that the transaction should be confirmed in.
+	//
+	//The target number of blocks that the transaction should be confirmed in.
 	TargetConf uint32 `protobuf:"varint,3,opt,name=target_conf,json=targetConf,proto3,oneof"`
 }
 
 type FundPsbtRequest_SatPerVbyte struct {
-	// The fee rate, expressed in sat/vbyte, that should be used to spend the
-	// input with.
+	//
+	//The fee rate, expressed in sat/vbyte, that should be used to spend the
+	//input with.
 	SatPerVbyte uint64 `protobuf:"varint,4,opt,name=sat_per_vbyte,json=satPerVbyte,proto3,oneof"`
 }
 
 type FundPsbtRequest_SatPerKw struct {
-	// The fee rate, expressed in sat/kWU, that should be used to spend the
-	// input with.
+	//
+	//The fee rate, expressed in sat/kWU, that should be used to spend the
+	//input with.
 	SatPerKw uint64 `protobuf:"varint,11,opt,name=sat_per_kw,json=satPerKw,proto3,oneof"`
 }
 
@@ -4058,13 +4337,16 @@ func (*FundPsbtRequest_SatPerKw) isFundPsbtRequest_Fees() {}
 
 type FundPsbtResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The funded but not yet signed PSBT packet.
+	//
+	//The funded but not yet signed PSBT packet.
 	FundedPsbt []byte `protobuf:"bytes,1,opt,name=funded_psbt,json=fundedPsbt,proto3" json:"funded_psbt,omitempty"`
-	// The index of the added change output or -1 if no change was left over.
+	//
+	//The index of the added change output or -1 if no change was left over.
 	ChangeOutputIndex int32 `protobuf:"varint,2,opt,name=change_output_index,json=changeOutputIndex,proto3" json:"change_output_index,omitempty"`
-	// The list of lock leases that were acquired for the inputs in the funded PSBT
-	// packet. Only inputs added to the PSBT by this RPC are locked, inputs that
-	// were already present in the PSBT are not locked.
+	//
+	//The list of lock leases that were acquired for the inputs in the funded PSBT
+	//packet. Only inputs added to the PSBT by this RPC are locked, inputs that
+	//were already present in the PSBT are not locked.
 	LockedUtxos   []*UtxoLease `protobuf:"bytes,3,rep,name=locked_utxos,json=lockedUtxos,proto3" json:"locked_utxos,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4072,7 +4354,7 @@ type FundPsbtResponse struct {
 
 func (x *FundPsbtResponse) Reset() {
 	*x = FundPsbtResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[54]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4084,7 +4366,7 @@ func (x *FundPsbtResponse) String() string {
 func (*FundPsbtResponse) ProtoMessage() {}
 
 func (x *FundPsbtResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[54]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4097,7 +4379,7 @@ func (x *FundPsbtResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FundPsbtResponse.ProtoReflect.Descriptor instead.
 func (*FundPsbtResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{54}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *FundPsbtResponse) GetFundedPsbt() []byte {
@@ -4123,15 +4405,17 @@ func (x *FundPsbtResponse) GetLockedUtxos() []*UtxoLease {
 
 type TxTemplate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// An optional list of inputs to use. Every input must be an UTXO known to the
-	// wallet that has not been locked before. The sum of all inputs must be
-	// sufficiently greater than the sum of all outputs to pay a miner fee with the
-	// fee rate specified in the parent message.
 	//
-	// If no inputs are specified, coin selection will be performed instead and
-	// inputs of sufficient value will be added to the resulting PSBT.
+	//An optional list of inputs to use. Every input must be an UTXO known to the
+	//wallet that has not been locked before. The sum of all inputs must be
+	//sufficiently greater than the sum of all outputs to pay a miner fee with the
+	//fee rate specified in the parent message.
+	//
+	//If no inputs are specified, coin selection will be performed instead and
+	//inputs of sufficient value will be added to the resulting PSBT.
 	Inputs []*lnrpc.OutPoint `protobuf:"bytes,1,rep,name=inputs,proto3" json:"inputs,omitempty"`
-	// A map of all addresses and the amounts to send to in the funded PSBT.
+	//
+	//A map of all addresses and the amounts to send to in the funded PSBT.
 	Outputs       map[string]uint64 `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4139,7 +4423,7 @@ type TxTemplate struct {
 
 func (x *TxTemplate) Reset() {
 	*x = TxTemplate{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[55]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4151,7 +4435,7 @@ func (x *TxTemplate) String() string {
 func (*TxTemplate) ProtoMessage() {}
 
 func (x *TxTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[55]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4164,7 +4448,7 @@ func (x *TxTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TxTemplate.ProtoReflect.Descriptor instead.
 func (*TxTemplate) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{55}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *TxTemplate) GetInputs() []*lnrpc.OutPoint {
@@ -4183,15 +4467,16 @@ func (x *TxTemplate) GetOutputs() map[string]uint64 {
 
 type PsbtCoinSelect struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The template to use for the funded PSBT. The template must contain at least
-	// one non-dust output. The amount to be funded is calculated by summing up the
-	// amounts of all outputs in the template, subtracting all the input values of
-	// the already specified inputs. The change value is added to the output that
-	// is marked as such (or a new change output is added if none is marked). For
-	// the input amount calculation to be correct, the template must have the
-	// WitnessUtxo field set for all inputs. Any inputs already specified in the
-	// PSBT must already be locked (if they belong to this node), only newly added
-	// inputs will be locked by this RPC.
+	//
+	//The template to use for the funded PSBT. The template must contain at least
+	//one non-dust output. The amount to be funded is calculated by summing up the
+	//amounts of all outputs in the template, subtracting all the input values of
+	//the already specified inputs. The change value is added to the output that
+	//is marked as such (or a new change output is added if none is marked). For
+	//the input amount calculation to be correct, the template must have the
+	//WitnessUtxo field set for all inputs. Any inputs already specified in the
+	//PSBT must already be locked (if they belong to this node), only newly added
+	//inputs will be locked by this RPC.
 	Psbt []byte `protobuf:"bytes,1,opt,name=psbt,proto3" json:"psbt,omitempty"`
 	// Types that are valid to be assigned to ChangeOutput:
 	//
@@ -4204,7 +4489,7 @@ type PsbtCoinSelect struct {
 
 func (x *PsbtCoinSelect) Reset() {
 	*x = PsbtCoinSelect{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[56]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4216,7 +4501,7 @@ func (x *PsbtCoinSelect) String() string {
 func (*PsbtCoinSelect) ProtoMessage() {}
 
 func (x *PsbtCoinSelect) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[56]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4229,7 +4514,7 @@ func (x *PsbtCoinSelect) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PsbtCoinSelect.ProtoReflect.Descriptor instead.
 func (*PsbtCoinSelect) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{56}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *PsbtCoinSelect) GetPsbt() []byte {
@@ -4269,17 +4554,19 @@ type isPsbtCoinSelect_ChangeOutput interface {
 }
 
 type PsbtCoinSelect_ExistingOutputIndex struct {
-	// Use the existing output within the template PSBT with the specified
-	// index as the change output. Any leftover change will be added to the
-	// already specified amount of that output. To add a new change output to
-	// the PSBT, set the "add" field below instead. The type of change output
-	// added is defined by change_type in the parent message.
+	//
+	//Use the existing output within the template PSBT with the specified
+	//index as the change output. Any leftover change will be added to the
+	//already specified amount of that output. To add a new change output to
+	//the PSBT, set the "add" field below instead. The type of change output
+	//added is defined by change_type in the parent message.
 	ExistingOutputIndex int32 `protobuf:"varint,2,opt,name=existing_output_index,json=existingOutputIndex,proto3,oneof"`
 }
 
 type PsbtCoinSelect_Add struct {
-	// Add a new change output to the PSBT using the change_type specified in
-	// the parent message.
+	//
+	//Add a new change output to the PSBT using the change_type specified in
+	//the parent message.
 	Add bool `protobuf:"varint,3,opt,name=add,proto3,oneof"`
 }
 
@@ -4289,23 +4576,38 @@ func (*PsbtCoinSelect_Add) isPsbtCoinSelect_ChangeOutput() {}
 
 type UtxoLease struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// A 32 byte random ID that identifies the lease.
+	//
+	//A 32 byte random ID that identifies the lease.
 	Id []byte `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// The identifying outpoint of the output being leased.
 	Outpoint *lnrpc.OutPoint `protobuf:"bytes,2,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	// The absolute expiration of the output lease represented as a unix timestamp.
+	//
+	//The absolute expiration of a time-controlled output lease represented as a
+	//unix timestamp. Confirmation-controlled leases retain this value for
+	//compatibility but do not apply it.
 	Expiration uint64 `protobuf:"varint,3,opt,name=expiration,proto3" json:"expiration,omitempty"`
-	// The public key script of the leased output.
+	//
+	//The public key script of the leased output.
 	PkScript []byte `protobuf:"bytes,4,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
-	// The value of the leased output in satoshis.
-	Value         uint64 `protobuf:"varint,5,opt,name=value,proto3" json:"value,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	//
+	//The value of the leased output in satoshis.
+	Value uint64 `protobuf:"varint,5,opt,name=value,proto3" json:"value,omitempty"`
+	// The spend maturity depth recorded for this lease. FundPsbt returns it
+	// only after the wallet successfully applies the requested option.
+	ReleaseAfterSpendConfs uint32 `protobuf:"varint,6,opt,name=release_after_spend_confs,json=releaseAfterSpendConfs,proto3" json:"release_after_spend_confs,omitempty"`
+	// The block height where the spending transaction first confirmed. Zero
+	// means no confirmed spend was observed. A negative value means a
+	// previously observed spend was disconnected and is awaiting
+	// reconfirmation. The only negative value emitted is -1; its magnitude
+	// carries no additional information.
+	ConfirmedSpendHeight int32 `protobuf:"varint,7,opt,name=confirmed_spend_height,json=confirmedSpendHeight,proto3" json:"confirmed_spend_height,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *UtxoLease) Reset() {
 	*x = UtxoLease{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[57]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4317,7 +4619,7 @@ func (x *UtxoLease) String() string {
 func (*UtxoLease) ProtoMessage() {}
 
 func (x *UtxoLease) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[57]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4330,7 +4632,7 @@ func (x *UtxoLease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UtxoLease.ProtoReflect.Descriptor instead.
 func (*UtxoLease) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{57}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *UtxoLease) GetId() []byte {
@@ -4368,10 +4670,25 @@ func (x *UtxoLease) GetValue() uint64 {
 	return 0
 }
 
+func (x *UtxoLease) GetReleaseAfterSpendConfs() uint32 {
+	if x != nil {
+		return x.ReleaseAfterSpendConfs
+	}
+	return 0
+}
+
+func (x *UtxoLease) GetConfirmedSpendHeight() int32 {
+	if x != nil {
+		return x.ConfirmedSpendHeight
+	}
+	return 0
+}
+
 type SignPsbtRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The PSBT that should be signed. The PSBT must contain all required inputs,
-	// outputs, UTXO data and custom fields required to identify the signing key.
+	//
+	//The PSBT that should be signed. The PSBT must contain all required inputs,
+	//outputs, UTXO data and custom fields required to identify the signing key.
 	FundedPsbt    []byte `protobuf:"bytes,1,opt,name=funded_psbt,json=fundedPsbt,proto3" json:"funded_psbt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4379,7 +4696,7 @@ type SignPsbtRequest struct {
 
 func (x *SignPsbtRequest) Reset() {
 	*x = SignPsbtRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[58]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4391,7 +4708,7 @@ func (x *SignPsbtRequest) String() string {
 func (*SignPsbtRequest) ProtoMessage() {}
 
 func (x *SignPsbtRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[58]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4404,7 +4721,7 @@ func (x *SignPsbtRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignPsbtRequest.ProtoReflect.Descriptor instead.
 func (*SignPsbtRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{58}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *SignPsbtRequest) GetFundedPsbt() []byte {
@@ -4426,7 +4743,7 @@ type SignPsbtResponse struct {
 
 func (x *SignPsbtResponse) Reset() {
 	*x = SignPsbtResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[59]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4438,7 +4755,7 @@ func (x *SignPsbtResponse) String() string {
 func (*SignPsbtResponse) ProtoMessage() {}
 
 func (x *SignPsbtResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[59]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4451,7 +4768,7 @@ func (x *SignPsbtResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignPsbtResponse.ProtoReflect.Descriptor instead.
 func (*SignPsbtResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{59}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *SignPsbtResponse) GetSignedPsbt() []byte {
@@ -4470,12 +4787,14 @@ func (x *SignPsbtResponse) GetSignedInputs() []uint32 {
 
 type FinalizePsbtRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// A PSBT that should be signed and finalized. The PSBT must contain all
-	// required inputs, outputs, UTXO data and partial signatures of all other
-	// signers.
+	//
+	//A PSBT that should be signed and finalized. The PSBT must contain all
+	//required inputs, outputs, UTXO data and partial signatures of all other
+	//signers.
 	FundedPsbt []byte `protobuf:"bytes,1,opt,name=funded_psbt,json=fundedPsbt,proto3" json:"funded_psbt,omitempty"`
-	// The name of the account to finalize the PSBT with. If empty, the default
-	// wallet account is used.
+	//
+	//The name of the account to finalize the PSBT with. If empty, the default
+	//wallet account is used.
 	Account       string `protobuf:"bytes,5,opt,name=account,proto3" json:"account,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4483,7 +4802,7 @@ type FinalizePsbtRequest struct {
 
 func (x *FinalizePsbtRequest) Reset() {
 	*x = FinalizePsbtRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[60]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4495,7 +4814,7 @@ func (x *FinalizePsbtRequest) String() string {
 func (*FinalizePsbtRequest) ProtoMessage() {}
 
 func (x *FinalizePsbtRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[60]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4508,7 +4827,7 @@ func (x *FinalizePsbtRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizePsbtRequest.ProtoReflect.Descriptor instead.
 func (*FinalizePsbtRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{60}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *FinalizePsbtRequest) GetFundedPsbt() []byte {
@@ -4537,7 +4856,7 @@ type FinalizePsbtResponse struct {
 
 func (x *FinalizePsbtResponse) Reset() {
 	*x = FinalizePsbtResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[61]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4549,7 +4868,7 @@ func (x *FinalizePsbtResponse) String() string {
 func (*FinalizePsbtResponse) ProtoMessage() {}
 
 func (x *FinalizePsbtResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[61]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4562,7 +4881,7 @@ func (x *FinalizePsbtResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizePsbtResponse.ProtoReflect.Descriptor instead.
 func (*FinalizePsbtResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{61}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *FinalizePsbtResponse) GetSignedPsbt() []byte {
@@ -4587,7 +4906,7 @@ type ListLeasesRequest struct {
 
 func (x *ListLeasesRequest) Reset() {
 	*x = ListLeasesRequest{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[62]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4599,7 +4918,7 @@ func (x *ListLeasesRequest) String() string {
 func (*ListLeasesRequest) ProtoMessage() {}
 
 func (x *ListLeasesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[62]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4612,7 +4931,7 @@ func (x *ListLeasesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLeasesRequest.ProtoReflect.Descriptor instead.
 func (*ListLeasesRequest) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{62}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{64}
 }
 
 type ListLeasesResponse struct {
@@ -4625,7 +4944,7 @@ type ListLeasesResponse struct {
 
 func (x *ListLeasesResponse) Reset() {
 	*x = ListLeasesResponse{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[63]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4637,7 +4956,7 @@ func (x *ListLeasesResponse) String() string {
 func (*ListLeasesResponse) ProtoMessage() {}
 
 func (x *ListLeasesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[63]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4650,7 +4969,7 @@ func (x *ListLeasesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLeasesResponse.ProtoReflect.Descriptor instead.
 func (*ListLeasesResponse) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{63}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *ListLeasesResponse) GetLockedUtxos() []*UtxoLease {
@@ -4662,9 +4981,10 @@ func (x *ListLeasesResponse) GetLockedUtxos() []*UtxoLease {
 
 type ListSweepsResponse_TransactionIDs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Reversed, hex-encoded string representing the transaction ids of the
-	// sweeps that our node has broadcast. Note that these transactions may
-	// not have confirmed yet, we record sweeps on broadcast, not confirmation.
+	//
+	//Reversed, hex-encoded string representing the transaction ids of the
+	//sweeps that our node has broadcast. Note that these transactions may
+	//not have confirmed yet, we record sweeps on broadcast, not confirmation.
 	TransactionIds []string `protobuf:"bytes,1,rep,name=transaction_ids,json=transactionIds,proto3" json:"transaction_ids,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -4672,7 +4992,7 @@ type ListSweepsResponse_TransactionIDs struct {
 
 func (x *ListSweepsResponse_TransactionIDs) Reset() {
 	*x = ListSweepsResponse_TransactionIDs{}
-	mi := &file_walletrpc_walletkit_proto_msgTypes[65]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4684,7 +5004,7 @@ func (x *ListSweepsResponse_TransactionIDs) String() string {
 func (*ListSweepsResponse_TransactionIDs) ProtoMessage() {}
 
 func (x *ListSweepsResponse_TransactionIDs) ProtoReflect() protoreflect.Message {
-	mi := &file_walletrpc_walletkit_proto_msgTypes[65]
+	mi := &file_walletrpc_walletkit_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4697,7 +5017,7 @@ func (x *ListSweepsResponse_TransactionIDs) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ListSweepsResponse_TransactionIDs.ProtoReflect.Descriptor instead.
 func (*ListSweepsResponse_TransactionIDs) Descriptor() ([]byte, []int) {
-	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{50, 0}
+	return file_walletrpc_walletkit_proto_rawDescGZIP(), []int{52, 0}
 }
 
 func (x *ListSweepsResponse_TransactionIDs) GetTransactionIds() []string {
@@ -4718,15 +5038,17 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	"\aaccount\x18\x03 \x01(\tR\aaccount\x12)\n" +
 	"\x10unconfirmed_only\x18\x04 \x01(\bR\x0funconfirmedOnly\"8\n" +
 	"\x13ListUnspentResponse\x12!\n" +
-	"\x05utxos\x18\x01 \x03(\v2\v.lnrpc.UtxoR\x05utxos\"\x80\x01\n" +
+	"\x05utxos\x18\x01 \x03(\v2\v.lnrpc.UtxoR\x05utxos\"\xbb\x01\n" +
 	"\x12LeaseOutputRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12+\n" +
 	"\boutpoint\x18\x02 \x01(\v2\x0f.lnrpc.OutPointR\boutpoint\x12-\n" +
-	"\x12expiration_seconds\x18\x03 \x01(\x04R\x11expirationSeconds\"5\n" +
+	"\x12expiration_seconds\x18\x03 \x01(\x04R\x11expirationSeconds\x129\n" +
+	"\x19release_after_spend_confs\x18\x04 \x01(\rR\x16releaseAfterSpendConfs\"p\n" +
 	"\x13LeaseOutputResponse\x12\x1e\n" +
 	"\n" +
 	"expiration\x18\x01 \x01(\x04R\n" +
-	"expiration\"S\n" +
+	"expiration\x129\n" +
+	"\x19release_after_spend_confs\x18\x02 \x01(\rR\x16releaseAfterSpendConfs\"S\n" +
 	"\x14ReleaseOutputRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12+\n" +
 	"\boutpoint\x18\x02 \x01(\v2\x0f.lnrpc.OutPointR\boutpoint\"/\n" +
@@ -4769,7 +5091,13 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x129\n" +
 	"\faddress_type\x18\x02 \x01(\x0e2\x16.walletrpc.AddressTypeR\vaddressType\"F\n" +
 	"\x14ListAccountsResponse\x12.\n" +
-	"\baccounts\x18\x01 \x03(\v2\x12.walletrpc.AccountR\baccounts\"V\n" +
+	"\baccounts\x18\x01 \x03(\v2\x12.walletrpc.AccountR\baccounts\"\x99\x01\n" +
+	"\x15XCreateAccountRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x129\n" +
+	"\faddress_type\x18\x02 \x01(\x0e2\x16.walletrpc.AddressTypeR\vaddressType\x121\n" +
+	"\x16i_know_what_i_am_doing\x18\x03 \x01(\bR\x11iKnowWhatIAmDoing\"F\n" +
+	"\x16XCreateAccountResponse\x12,\n" +
+	"\aaccount\x18\x01 \x01(\v2\x12.walletrpc.AccountR\aaccount\"V\n" +
 	"\x16RequiredReserveRequest\x12<\n" +
 	"\x1aadditional_public_channels\x18\x01 \x01(\rR\x18additionalPublicChannels\"D\n" +
 	"\x17RequiredReserveResponse\x12)\n" +
@@ -4929,7 +5257,7 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x1c\n" +
 	"\toverwrite\x18\x03 \x01(\bR\toverwrite\"2\n" +
 	"\x18LabelTransactionResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status\"\x88\x05\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"\xce\x05\n" +
 	"\x0fFundPsbtRequest\x12\x14\n" +
 	"\x04psbt\x18\x01 \x01(\fH\x00R\x04psbt\x12)\n" +
 	"\x03raw\x18\x02 \x01(\v2\x15.walletrpc.TxTemplateH\x00R\x03raw\x12<\n" +
@@ -4949,7 +5277,8 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	" \x01(\x0e2\x1c.lnrpc.CoinSelectionStrategyR\x15coinSelectionStrategy\x12\"\n" +
 	"\rmax_fee_ratio\x18\f \x01(\x01R\vmaxFeeRatio\x12$\n" +
 	"\x0ecustom_lock_id\x18\r \x01(\fR\fcustomLockId\x126\n" +
-	"\x17lock_expiration_seconds\x18\x0e \x01(\x04R\x15lockExpirationSecondsB\n" +
+	"\x17lock_expiration_seconds\x18\x0e \x01(\x04R\x15lockExpirationSeconds\x12D\n" +
+	"\x1finput_release_after_spend_confs\x18\x0f \x01(\rR\x1binputReleaseAfterSpendConfsB\n" +
 	"\n" +
 	"\btemplateB\x06\n" +
 	"\x04fees\"\x9c\x01\n" +
@@ -4969,7 +5298,7 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	"\x04psbt\x18\x01 \x01(\fR\x04psbt\x124\n" +
 	"\x15existing_output_index\x18\x02 \x01(\x05H\x00R\x13existingOutputIndex\x12\x12\n" +
 	"\x03add\x18\x03 \x01(\bH\x00R\x03addB\x0f\n" +
-	"\rchange_output\"\x9b\x01\n" +
+	"\rchange_output\"\x8c\x02\n" +
 	"\tUtxoLease\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12+\n" +
 	"\boutpoint\x18\x02 \x01(\v2\x0f.lnrpc.OutPointR\boutpoint\x12\x1e\n" +
@@ -4977,7 +5306,9 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	"expiration\x18\x03 \x01(\x04R\n" +
 	"expiration\x12\x1b\n" +
 	"\tpk_script\x18\x04 \x01(\fR\bpkScript\x12\x14\n" +
-	"\x05value\x18\x05 \x01(\x04R\x05value\"2\n" +
+	"\x05value\x18\x05 \x01(\x04R\x05value\x129\n" +
+	"\x19release_after_spend_confs\x18\x06 \x01(\rR\x16releaseAfterSpendConfs\x124\n" +
+	"\x16confirmed_spend_height\x18\a \x01(\x05R\x14confirmedSpendHeight\"2\n" +
 	"\x0fSignPsbtRequest\x12\x1f\n" +
 	"\vfunded_psbt\x18\x01 \x01(\fR\n" +
 	"fundedPsbt\"X\n" +
@@ -5050,7 +5381,7 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	"\x1fTAPROOT_COMMITMENT_REVOKE_FINAL\x10**V\n" +
 	"\x11ChangeAddressType\x12#\n" +
 	"\x1fCHANGE_ADDRESS_TYPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
-	"\x18CHANGE_ADDRESS_TYPE_P2TR\x10\x012\xaa\x12\n" +
+	"\x18CHANGE_ADDRESS_TYPE_P2TR\x10\x012\x81\x13\n" +
 	"\tWalletKit\x12L\n" +
 	"\vListUnspent\x12\x1d.walletrpc.ListUnspentRequest\x1a\x1e.walletrpc.ListUnspentResponse\x12L\n" +
 	"\vLeaseOutput\x12\x1d.walletrpc.LeaseOutputRequest\x1a\x1e.walletrpc.LeaseOutputResponse\x12R\n" +
@@ -5061,7 +5392,8 @@ const file_walletrpc_walletkit_proto_rawDesc = "" +
 	"\tDeriveKey\x12\x13.signrpc.KeyLocator\x1a\x16.signrpc.KeyDescriptor\x12;\n" +
 	"\bNextAddr\x12\x16.walletrpc.AddrRequest\x1a\x17.walletrpc.AddrResponse\x12F\n" +
 	"\x0eGetTransaction\x12 .walletrpc.GetTransactionRequest\x1a\x12.lnrpc.Transaction\x12O\n" +
-	"\fListAccounts\x12\x1e.walletrpc.ListAccountsRequest\x1a\x1f.walletrpc.ListAccountsResponse\x12X\n" +
+	"\fListAccounts\x12\x1e.walletrpc.ListAccountsRequest\x1a\x1f.walletrpc.ListAccountsResponse\x12U\n" +
+	"\x0eXCreateAccount\x12 .walletrpc.XCreateAccountRequest\x1a!.walletrpc.XCreateAccountResponse\x12X\n" +
 	"\x0fRequiredReserve\x12!.walletrpc.RequiredReserveRequest\x1a\".walletrpc.RequiredReserveResponse\x12R\n" +
 	"\rListAddresses\x12\x1f.walletrpc.ListAddressesRequest\x1a .walletrpc.ListAddressesResponse\x12d\n" +
 	"\x13SignMessageWithAddr\x12%.walletrpc.SignMessageWithAddrRequest\x1a&.walletrpc.SignMessageWithAddrResponse\x12j\n" +
@@ -5097,7 +5429,7 @@ func file_walletrpc_walletkit_proto_rawDescGZIP() []byte {
 }
 
 var file_walletrpc_walletkit_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_walletrpc_walletkit_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
+var file_walletrpc_walletkit_proto_msgTypes = make([]protoimpl.MessageInfo, 69)
 var file_walletrpc_walletkit_proto_goTypes = []any{
 	(AddressType)(0),                          // 0: walletrpc.AddressType
 	(WitnessType)(0),                          // 1: walletrpc.WitnessType
@@ -5116,170 +5448,176 @@ var file_walletrpc_walletkit_proto_goTypes = []any{
 	(*AccountWithAddresses)(nil),              // 14: walletrpc.AccountWithAddresses
 	(*ListAccountsRequest)(nil),               // 15: walletrpc.ListAccountsRequest
 	(*ListAccountsResponse)(nil),              // 16: walletrpc.ListAccountsResponse
-	(*RequiredReserveRequest)(nil),            // 17: walletrpc.RequiredReserveRequest
-	(*RequiredReserveResponse)(nil),           // 18: walletrpc.RequiredReserveResponse
-	(*ListAddressesRequest)(nil),              // 19: walletrpc.ListAddressesRequest
-	(*ListAddressesResponse)(nil),             // 20: walletrpc.ListAddressesResponse
-	(*GetTransactionRequest)(nil),             // 21: walletrpc.GetTransactionRequest
-	(*SignMessageWithAddrRequest)(nil),        // 22: walletrpc.SignMessageWithAddrRequest
-	(*SignMessageWithAddrResponse)(nil),       // 23: walletrpc.SignMessageWithAddrResponse
-	(*VerifyMessageWithAddrRequest)(nil),      // 24: walletrpc.VerifyMessageWithAddrRequest
-	(*VerifyMessageWithAddrResponse)(nil),     // 25: walletrpc.VerifyMessageWithAddrResponse
-	(*ImportAccountRequest)(nil),              // 26: walletrpc.ImportAccountRequest
-	(*ImportAccountResponse)(nil),             // 27: walletrpc.ImportAccountResponse
-	(*ImportPublicKeyRequest)(nil),            // 28: walletrpc.ImportPublicKeyRequest
-	(*ImportPublicKeyResponse)(nil),           // 29: walletrpc.ImportPublicKeyResponse
-	(*ImportTapscriptRequest)(nil),            // 30: walletrpc.ImportTapscriptRequest
-	(*TapscriptFullTree)(nil),                 // 31: walletrpc.TapscriptFullTree
-	(*TapLeaf)(nil),                           // 32: walletrpc.TapLeaf
-	(*TapscriptPartialReveal)(nil),            // 33: walletrpc.TapscriptPartialReveal
-	(*ImportTapscriptResponse)(nil),           // 34: walletrpc.ImportTapscriptResponse
-	(*Transaction)(nil),                       // 35: walletrpc.Transaction
-	(*PublishResponse)(nil),                   // 36: walletrpc.PublishResponse
-	(*SubmitPackageRequest)(nil),              // 37: walletrpc.SubmitPackageRequest
-	(*SubmitPackageTxResult)(nil),             // 38: walletrpc.SubmitPackageTxResult
-	(*SubmitPackageResponse)(nil),             // 39: walletrpc.SubmitPackageResponse
-	(*RemoveTransactionResponse)(nil),         // 40: walletrpc.RemoveTransactionResponse
-	(*SendOutputsRequest)(nil),                // 41: walletrpc.SendOutputsRequest
-	(*SendOutputsResponse)(nil),               // 42: walletrpc.SendOutputsResponse
-	(*EstimateFeeRequest)(nil),                // 43: walletrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil),               // 44: walletrpc.EstimateFeeResponse
-	(*PendingSweep)(nil),                      // 45: walletrpc.PendingSweep
-	(*PendingSweepsRequest)(nil),              // 46: walletrpc.PendingSweepsRequest
-	(*PendingSweepsResponse)(nil),             // 47: walletrpc.PendingSweepsResponse
-	(*BumpFeeRequest)(nil),                    // 48: walletrpc.BumpFeeRequest
-	(*BumpFeeResponse)(nil),                   // 49: walletrpc.BumpFeeResponse
-	(*BumpForceCloseFeeRequest)(nil),          // 50: walletrpc.BumpForceCloseFeeRequest
-	(*BumpForceCloseFeeResponse)(nil),         // 51: walletrpc.BumpForceCloseFeeResponse
-	(*ListSweepsRequest)(nil),                 // 52: walletrpc.ListSweepsRequest
-	(*ListSweepsResponse)(nil),                // 53: walletrpc.ListSweepsResponse
-	(*LabelTransactionRequest)(nil),           // 54: walletrpc.LabelTransactionRequest
-	(*LabelTransactionResponse)(nil),          // 55: walletrpc.LabelTransactionResponse
-	(*FundPsbtRequest)(nil),                   // 56: walletrpc.FundPsbtRequest
-	(*FundPsbtResponse)(nil),                  // 57: walletrpc.FundPsbtResponse
-	(*TxTemplate)(nil),                        // 58: walletrpc.TxTemplate
-	(*PsbtCoinSelect)(nil),                    // 59: walletrpc.PsbtCoinSelect
-	(*UtxoLease)(nil),                         // 60: walletrpc.UtxoLease
-	(*SignPsbtRequest)(nil),                   // 61: walletrpc.SignPsbtRequest
-	(*SignPsbtResponse)(nil),                  // 62: walletrpc.SignPsbtResponse
-	(*FinalizePsbtRequest)(nil),               // 63: walletrpc.FinalizePsbtRequest
-	(*FinalizePsbtResponse)(nil),              // 64: walletrpc.FinalizePsbtResponse
-	(*ListLeasesRequest)(nil),                 // 65: walletrpc.ListLeasesRequest
-	(*ListLeasesResponse)(nil),                // 66: walletrpc.ListLeasesResponse
-	nil,                                       // 67: walletrpc.SubmitPackageResponse.TxResultsEntry
-	(*ListSweepsResponse_TransactionIDs)(nil), // 68: walletrpc.ListSweepsResponse.TransactionIDs
-	nil,                              // 69: walletrpc.TxTemplate.OutputsEntry
-	(*lnrpc.Utxo)(nil),               // 70: lnrpc.Utxo
-	(*lnrpc.OutPoint)(nil),           // 71: lnrpc.OutPoint
-	(*signrpc.TxOut)(nil),            // 72: signrpc.TxOut
-	(lnrpc.CoinSelectionStrategy)(0), // 73: lnrpc.CoinSelectionStrategy
-	(*lnrpc.ChannelPoint)(nil),       // 74: lnrpc.ChannelPoint
-	(*lnrpc.TransactionDetails)(nil), // 75: lnrpc.TransactionDetails
-	(*signrpc.KeyLocator)(nil),       // 76: signrpc.KeyLocator
-	(*signrpc.KeyDescriptor)(nil),    // 77: signrpc.KeyDescriptor
-	(*lnrpc.Transaction)(nil),        // 78: lnrpc.Transaction
+	(*XCreateAccountRequest)(nil),             // 17: walletrpc.XCreateAccountRequest
+	(*XCreateAccountResponse)(nil),            // 18: walletrpc.XCreateAccountResponse
+	(*RequiredReserveRequest)(nil),            // 19: walletrpc.RequiredReserveRequest
+	(*RequiredReserveResponse)(nil),           // 20: walletrpc.RequiredReserveResponse
+	(*ListAddressesRequest)(nil),              // 21: walletrpc.ListAddressesRequest
+	(*ListAddressesResponse)(nil),             // 22: walletrpc.ListAddressesResponse
+	(*GetTransactionRequest)(nil),             // 23: walletrpc.GetTransactionRequest
+	(*SignMessageWithAddrRequest)(nil),        // 24: walletrpc.SignMessageWithAddrRequest
+	(*SignMessageWithAddrResponse)(nil),       // 25: walletrpc.SignMessageWithAddrResponse
+	(*VerifyMessageWithAddrRequest)(nil),      // 26: walletrpc.VerifyMessageWithAddrRequest
+	(*VerifyMessageWithAddrResponse)(nil),     // 27: walletrpc.VerifyMessageWithAddrResponse
+	(*ImportAccountRequest)(nil),              // 28: walletrpc.ImportAccountRequest
+	(*ImportAccountResponse)(nil),             // 29: walletrpc.ImportAccountResponse
+	(*ImportPublicKeyRequest)(nil),            // 30: walletrpc.ImportPublicKeyRequest
+	(*ImportPublicKeyResponse)(nil),           // 31: walletrpc.ImportPublicKeyResponse
+	(*ImportTapscriptRequest)(nil),            // 32: walletrpc.ImportTapscriptRequest
+	(*TapscriptFullTree)(nil),                 // 33: walletrpc.TapscriptFullTree
+	(*TapLeaf)(nil),                           // 34: walletrpc.TapLeaf
+	(*TapscriptPartialReveal)(nil),            // 35: walletrpc.TapscriptPartialReveal
+	(*ImportTapscriptResponse)(nil),           // 36: walletrpc.ImportTapscriptResponse
+	(*Transaction)(nil),                       // 37: walletrpc.Transaction
+	(*PublishResponse)(nil),                   // 38: walletrpc.PublishResponse
+	(*SubmitPackageRequest)(nil),              // 39: walletrpc.SubmitPackageRequest
+	(*SubmitPackageTxResult)(nil),             // 40: walletrpc.SubmitPackageTxResult
+	(*SubmitPackageResponse)(nil),             // 41: walletrpc.SubmitPackageResponse
+	(*RemoveTransactionResponse)(nil),         // 42: walletrpc.RemoveTransactionResponse
+	(*SendOutputsRequest)(nil),                // 43: walletrpc.SendOutputsRequest
+	(*SendOutputsResponse)(nil),               // 44: walletrpc.SendOutputsResponse
+	(*EstimateFeeRequest)(nil),                // 45: walletrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil),               // 46: walletrpc.EstimateFeeResponse
+	(*PendingSweep)(nil),                      // 47: walletrpc.PendingSweep
+	(*PendingSweepsRequest)(nil),              // 48: walletrpc.PendingSweepsRequest
+	(*PendingSweepsResponse)(nil),             // 49: walletrpc.PendingSweepsResponse
+	(*BumpFeeRequest)(nil),                    // 50: walletrpc.BumpFeeRequest
+	(*BumpFeeResponse)(nil),                   // 51: walletrpc.BumpFeeResponse
+	(*BumpForceCloseFeeRequest)(nil),          // 52: walletrpc.BumpForceCloseFeeRequest
+	(*BumpForceCloseFeeResponse)(nil),         // 53: walletrpc.BumpForceCloseFeeResponse
+	(*ListSweepsRequest)(nil),                 // 54: walletrpc.ListSweepsRequest
+	(*ListSweepsResponse)(nil),                // 55: walletrpc.ListSweepsResponse
+	(*LabelTransactionRequest)(nil),           // 56: walletrpc.LabelTransactionRequest
+	(*LabelTransactionResponse)(nil),          // 57: walletrpc.LabelTransactionResponse
+	(*FundPsbtRequest)(nil),                   // 58: walletrpc.FundPsbtRequest
+	(*FundPsbtResponse)(nil),                  // 59: walletrpc.FundPsbtResponse
+	(*TxTemplate)(nil),                        // 60: walletrpc.TxTemplate
+	(*PsbtCoinSelect)(nil),                    // 61: walletrpc.PsbtCoinSelect
+	(*UtxoLease)(nil),                         // 62: walletrpc.UtxoLease
+	(*SignPsbtRequest)(nil),                   // 63: walletrpc.SignPsbtRequest
+	(*SignPsbtResponse)(nil),                  // 64: walletrpc.SignPsbtResponse
+	(*FinalizePsbtRequest)(nil),               // 65: walletrpc.FinalizePsbtRequest
+	(*FinalizePsbtResponse)(nil),              // 66: walletrpc.FinalizePsbtResponse
+	(*ListLeasesRequest)(nil),                 // 67: walletrpc.ListLeasesRequest
+	(*ListLeasesResponse)(nil),                // 68: walletrpc.ListLeasesResponse
+	nil,                                       // 69: walletrpc.SubmitPackageResponse.TxResultsEntry
+	(*ListSweepsResponse_TransactionIDs)(nil), // 70: walletrpc.ListSweepsResponse.TransactionIDs
+	nil,                              // 71: walletrpc.TxTemplate.OutputsEntry
+	(*lnrpc.Utxo)(nil),               // 72: lnrpc.Utxo
+	(*lnrpc.OutPoint)(nil),           // 73: lnrpc.OutPoint
+	(*signrpc.TxOut)(nil),            // 74: signrpc.TxOut
+	(lnrpc.CoinSelectionStrategy)(0), // 75: lnrpc.CoinSelectionStrategy
+	(*lnrpc.ChannelPoint)(nil),       // 76: lnrpc.ChannelPoint
+	(*lnrpc.TransactionDetails)(nil), // 77: lnrpc.TransactionDetails
+	(*signrpc.KeyLocator)(nil),       // 78: signrpc.KeyLocator
+	(*signrpc.KeyDescriptor)(nil),    // 79: signrpc.KeyDescriptor
+	(*lnrpc.Transaction)(nil),        // 80: lnrpc.Transaction
 }
 var file_walletrpc_walletkit_proto_depIdxs = []int32{
-	70, // 0: walletrpc.ListUnspentResponse.utxos:type_name -> lnrpc.Utxo
-	71, // 1: walletrpc.LeaseOutputRequest.outpoint:type_name -> lnrpc.OutPoint
-	71, // 2: walletrpc.ReleaseOutputRequest.outpoint:type_name -> lnrpc.OutPoint
+	72, // 0: walletrpc.ListUnspentResponse.utxos:type_name -> lnrpc.Utxo
+	73, // 1: walletrpc.LeaseOutputRequest.outpoint:type_name -> lnrpc.OutPoint
+	73, // 2: walletrpc.ReleaseOutputRequest.outpoint:type_name -> lnrpc.OutPoint
 	0,  // 3: walletrpc.AddrRequest.type:type_name -> walletrpc.AddressType
 	0,  // 4: walletrpc.Account.address_type:type_name -> walletrpc.AddressType
 	0,  // 5: walletrpc.AccountWithAddresses.address_type:type_name -> walletrpc.AddressType
 	13, // 6: walletrpc.AccountWithAddresses.addresses:type_name -> walletrpc.AddressProperty
 	0,  // 7: walletrpc.ListAccountsRequest.address_type:type_name -> walletrpc.AddressType
 	12, // 8: walletrpc.ListAccountsResponse.accounts:type_name -> walletrpc.Account
-	14, // 9: walletrpc.ListAddressesResponse.account_with_addresses:type_name -> walletrpc.AccountWithAddresses
-	0,  // 10: walletrpc.ImportAccountRequest.address_type:type_name -> walletrpc.AddressType
-	12, // 11: walletrpc.ImportAccountResponse.account:type_name -> walletrpc.Account
-	0,  // 12: walletrpc.ImportPublicKeyRequest.address_type:type_name -> walletrpc.AddressType
-	31, // 13: walletrpc.ImportTapscriptRequest.full_tree:type_name -> walletrpc.TapscriptFullTree
-	33, // 14: walletrpc.ImportTapscriptRequest.partial_reveal:type_name -> walletrpc.TapscriptPartialReveal
-	32, // 15: walletrpc.TapscriptFullTree.all_leaves:type_name -> walletrpc.TapLeaf
-	32, // 16: walletrpc.TapscriptPartialReveal.revealed_leaf:type_name -> walletrpc.TapLeaf
-	67, // 17: walletrpc.SubmitPackageResponse.tx_results:type_name -> walletrpc.SubmitPackageResponse.TxResultsEntry
-	72, // 18: walletrpc.SendOutputsRequest.outputs:type_name -> signrpc.TxOut
-	73, // 19: walletrpc.SendOutputsRequest.coin_selection_strategy:type_name -> lnrpc.CoinSelectionStrategy
-	71, // 20: walletrpc.PendingSweep.outpoint:type_name -> lnrpc.OutPoint
-	1,  // 21: walletrpc.PendingSweep.witness_type:type_name -> walletrpc.WitnessType
-	45, // 22: walletrpc.PendingSweepsResponse.pending_sweeps:type_name -> walletrpc.PendingSweep
-	71, // 23: walletrpc.BumpFeeRequest.outpoint:type_name -> lnrpc.OutPoint
-	74, // 24: walletrpc.BumpForceCloseFeeRequest.chan_point:type_name -> lnrpc.ChannelPoint
-	75, // 25: walletrpc.ListSweepsResponse.transaction_details:type_name -> lnrpc.TransactionDetails
-	68, // 26: walletrpc.ListSweepsResponse.transaction_ids:type_name -> walletrpc.ListSweepsResponse.TransactionIDs
-	58, // 27: walletrpc.FundPsbtRequest.raw:type_name -> walletrpc.TxTemplate
-	59, // 28: walletrpc.FundPsbtRequest.coin_select:type_name -> walletrpc.PsbtCoinSelect
-	2,  // 29: walletrpc.FundPsbtRequest.change_type:type_name -> walletrpc.ChangeAddressType
-	73, // 30: walletrpc.FundPsbtRequest.coin_selection_strategy:type_name -> lnrpc.CoinSelectionStrategy
-	60, // 31: walletrpc.FundPsbtResponse.locked_utxos:type_name -> walletrpc.UtxoLease
-	71, // 32: walletrpc.TxTemplate.inputs:type_name -> lnrpc.OutPoint
-	69, // 33: walletrpc.TxTemplate.outputs:type_name -> walletrpc.TxTemplate.OutputsEntry
-	71, // 34: walletrpc.UtxoLease.outpoint:type_name -> lnrpc.OutPoint
-	60, // 35: walletrpc.ListLeasesResponse.locked_utxos:type_name -> walletrpc.UtxoLease
-	38, // 36: walletrpc.SubmitPackageResponse.TxResultsEntry.value:type_name -> walletrpc.SubmitPackageTxResult
-	3,  // 37: walletrpc.WalletKit.ListUnspent:input_type -> walletrpc.ListUnspentRequest
-	5,  // 38: walletrpc.WalletKit.LeaseOutput:input_type -> walletrpc.LeaseOutputRequest
-	7,  // 39: walletrpc.WalletKit.ReleaseOutput:input_type -> walletrpc.ReleaseOutputRequest
-	65, // 40: walletrpc.WalletKit.ListLeases:input_type -> walletrpc.ListLeasesRequest
-	9,  // 41: walletrpc.WalletKit.DeriveNextKey:input_type -> walletrpc.KeyReq
-	76, // 42: walletrpc.WalletKit.DeriveKey:input_type -> signrpc.KeyLocator
-	10, // 43: walletrpc.WalletKit.NextAddr:input_type -> walletrpc.AddrRequest
-	21, // 44: walletrpc.WalletKit.GetTransaction:input_type -> walletrpc.GetTransactionRequest
-	15, // 45: walletrpc.WalletKit.ListAccounts:input_type -> walletrpc.ListAccountsRequest
-	17, // 46: walletrpc.WalletKit.RequiredReserve:input_type -> walletrpc.RequiredReserveRequest
-	19, // 47: walletrpc.WalletKit.ListAddresses:input_type -> walletrpc.ListAddressesRequest
-	22, // 48: walletrpc.WalletKit.SignMessageWithAddr:input_type -> walletrpc.SignMessageWithAddrRequest
-	24, // 49: walletrpc.WalletKit.VerifyMessageWithAddr:input_type -> walletrpc.VerifyMessageWithAddrRequest
-	26, // 50: walletrpc.WalletKit.ImportAccount:input_type -> walletrpc.ImportAccountRequest
-	28, // 51: walletrpc.WalletKit.ImportPublicKey:input_type -> walletrpc.ImportPublicKeyRequest
-	30, // 52: walletrpc.WalletKit.ImportTapscript:input_type -> walletrpc.ImportTapscriptRequest
-	35, // 53: walletrpc.WalletKit.PublishTransaction:input_type -> walletrpc.Transaction
-	37, // 54: walletrpc.WalletKit.SubmitPackage:input_type -> walletrpc.SubmitPackageRequest
-	21, // 55: walletrpc.WalletKit.RemoveTransaction:input_type -> walletrpc.GetTransactionRequest
-	41, // 56: walletrpc.WalletKit.SendOutputs:input_type -> walletrpc.SendOutputsRequest
-	43, // 57: walletrpc.WalletKit.EstimateFee:input_type -> walletrpc.EstimateFeeRequest
-	46, // 58: walletrpc.WalletKit.PendingSweeps:input_type -> walletrpc.PendingSweepsRequest
-	48, // 59: walletrpc.WalletKit.BumpFee:input_type -> walletrpc.BumpFeeRequest
-	50, // 60: walletrpc.WalletKit.BumpForceCloseFee:input_type -> walletrpc.BumpForceCloseFeeRequest
-	52, // 61: walletrpc.WalletKit.ListSweeps:input_type -> walletrpc.ListSweepsRequest
-	54, // 62: walletrpc.WalletKit.LabelTransaction:input_type -> walletrpc.LabelTransactionRequest
-	56, // 63: walletrpc.WalletKit.FundPsbt:input_type -> walletrpc.FundPsbtRequest
-	61, // 64: walletrpc.WalletKit.SignPsbt:input_type -> walletrpc.SignPsbtRequest
-	63, // 65: walletrpc.WalletKit.FinalizePsbt:input_type -> walletrpc.FinalizePsbtRequest
-	4,  // 66: walletrpc.WalletKit.ListUnspent:output_type -> walletrpc.ListUnspentResponse
-	6,  // 67: walletrpc.WalletKit.LeaseOutput:output_type -> walletrpc.LeaseOutputResponse
-	8,  // 68: walletrpc.WalletKit.ReleaseOutput:output_type -> walletrpc.ReleaseOutputResponse
-	66, // 69: walletrpc.WalletKit.ListLeases:output_type -> walletrpc.ListLeasesResponse
-	77, // 70: walletrpc.WalletKit.DeriveNextKey:output_type -> signrpc.KeyDescriptor
-	77, // 71: walletrpc.WalletKit.DeriveKey:output_type -> signrpc.KeyDescriptor
-	11, // 72: walletrpc.WalletKit.NextAddr:output_type -> walletrpc.AddrResponse
-	78, // 73: walletrpc.WalletKit.GetTransaction:output_type -> lnrpc.Transaction
-	16, // 74: walletrpc.WalletKit.ListAccounts:output_type -> walletrpc.ListAccountsResponse
-	18, // 75: walletrpc.WalletKit.RequiredReserve:output_type -> walletrpc.RequiredReserveResponse
-	20, // 76: walletrpc.WalletKit.ListAddresses:output_type -> walletrpc.ListAddressesResponse
-	23, // 77: walletrpc.WalletKit.SignMessageWithAddr:output_type -> walletrpc.SignMessageWithAddrResponse
-	25, // 78: walletrpc.WalletKit.VerifyMessageWithAddr:output_type -> walletrpc.VerifyMessageWithAddrResponse
-	27, // 79: walletrpc.WalletKit.ImportAccount:output_type -> walletrpc.ImportAccountResponse
-	29, // 80: walletrpc.WalletKit.ImportPublicKey:output_type -> walletrpc.ImportPublicKeyResponse
-	34, // 81: walletrpc.WalletKit.ImportTapscript:output_type -> walletrpc.ImportTapscriptResponse
-	36, // 82: walletrpc.WalletKit.PublishTransaction:output_type -> walletrpc.PublishResponse
-	39, // 83: walletrpc.WalletKit.SubmitPackage:output_type -> walletrpc.SubmitPackageResponse
-	40, // 84: walletrpc.WalletKit.RemoveTransaction:output_type -> walletrpc.RemoveTransactionResponse
-	42, // 85: walletrpc.WalletKit.SendOutputs:output_type -> walletrpc.SendOutputsResponse
-	44, // 86: walletrpc.WalletKit.EstimateFee:output_type -> walletrpc.EstimateFeeResponse
-	47, // 87: walletrpc.WalletKit.PendingSweeps:output_type -> walletrpc.PendingSweepsResponse
-	49, // 88: walletrpc.WalletKit.BumpFee:output_type -> walletrpc.BumpFeeResponse
-	51, // 89: walletrpc.WalletKit.BumpForceCloseFee:output_type -> walletrpc.BumpForceCloseFeeResponse
-	53, // 90: walletrpc.WalletKit.ListSweeps:output_type -> walletrpc.ListSweepsResponse
-	55, // 91: walletrpc.WalletKit.LabelTransaction:output_type -> walletrpc.LabelTransactionResponse
-	57, // 92: walletrpc.WalletKit.FundPsbt:output_type -> walletrpc.FundPsbtResponse
-	62, // 93: walletrpc.WalletKit.SignPsbt:output_type -> walletrpc.SignPsbtResponse
-	64, // 94: walletrpc.WalletKit.FinalizePsbt:output_type -> walletrpc.FinalizePsbtResponse
-	66, // [66:95] is the sub-list for method output_type
-	37, // [37:66] is the sub-list for method input_type
-	37, // [37:37] is the sub-list for extension type_name
-	37, // [37:37] is the sub-list for extension extendee
-	0,  // [0:37] is the sub-list for field type_name
+	0,  // 9: walletrpc.XCreateAccountRequest.address_type:type_name -> walletrpc.AddressType
+	12, // 10: walletrpc.XCreateAccountResponse.account:type_name -> walletrpc.Account
+	14, // 11: walletrpc.ListAddressesResponse.account_with_addresses:type_name -> walletrpc.AccountWithAddresses
+	0,  // 12: walletrpc.ImportAccountRequest.address_type:type_name -> walletrpc.AddressType
+	12, // 13: walletrpc.ImportAccountResponse.account:type_name -> walletrpc.Account
+	0,  // 14: walletrpc.ImportPublicKeyRequest.address_type:type_name -> walletrpc.AddressType
+	33, // 15: walletrpc.ImportTapscriptRequest.full_tree:type_name -> walletrpc.TapscriptFullTree
+	35, // 16: walletrpc.ImportTapscriptRequest.partial_reveal:type_name -> walletrpc.TapscriptPartialReveal
+	34, // 17: walletrpc.TapscriptFullTree.all_leaves:type_name -> walletrpc.TapLeaf
+	34, // 18: walletrpc.TapscriptPartialReveal.revealed_leaf:type_name -> walletrpc.TapLeaf
+	69, // 19: walletrpc.SubmitPackageResponse.tx_results:type_name -> walletrpc.SubmitPackageResponse.TxResultsEntry
+	74, // 20: walletrpc.SendOutputsRequest.outputs:type_name -> signrpc.TxOut
+	75, // 21: walletrpc.SendOutputsRequest.coin_selection_strategy:type_name -> lnrpc.CoinSelectionStrategy
+	73, // 22: walletrpc.PendingSweep.outpoint:type_name -> lnrpc.OutPoint
+	1,  // 23: walletrpc.PendingSweep.witness_type:type_name -> walletrpc.WitnessType
+	47, // 24: walletrpc.PendingSweepsResponse.pending_sweeps:type_name -> walletrpc.PendingSweep
+	73, // 25: walletrpc.BumpFeeRequest.outpoint:type_name -> lnrpc.OutPoint
+	76, // 26: walletrpc.BumpForceCloseFeeRequest.chan_point:type_name -> lnrpc.ChannelPoint
+	77, // 27: walletrpc.ListSweepsResponse.transaction_details:type_name -> lnrpc.TransactionDetails
+	70, // 28: walletrpc.ListSweepsResponse.transaction_ids:type_name -> walletrpc.ListSweepsResponse.TransactionIDs
+	60, // 29: walletrpc.FundPsbtRequest.raw:type_name -> walletrpc.TxTemplate
+	61, // 30: walletrpc.FundPsbtRequest.coin_select:type_name -> walletrpc.PsbtCoinSelect
+	2,  // 31: walletrpc.FundPsbtRequest.change_type:type_name -> walletrpc.ChangeAddressType
+	75, // 32: walletrpc.FundPsbtRequest.coin_selection_strategy:type_name -> lnrpc.CoinSelectionStrategy
+	62, // 33: walletrpc.FundPsbtResponse.locked_utxos:type_name -> walletrpc.UtxoLease
+	73, // 34: walletrpc.TxTemplate.inputs:type_name -> lnrpc.OutPoint
+	71, // 35: walletrpc.TxTemplate.outputs:type_name -> walletrpc.TxTemplate.OutputsEntry
+	73, // 36: walletrpc.UtxoLease.outpoint:type_name -> lnrpc.OutPoint
+	62, // 37: walletrpc.ListLeasesResponse.locked_utxos:type_name -> walletrpc.UtxoLease
+	40, // 38: walletrpc.SubmitPackageResponse.TxResultsEntry.value:type_name -> walletrpc.SubmitPackageTxResult
+	3,  // 39: walletrpc.WalletKit.ListUnspent:input_type -> walletrpc.ListUnspentRequest
+	5,  // 40: walletrpc.WalletKit.LeaseOutput:input_type -> walletrpc.LeaseOutputRequest
+	7,  // 41: walletrpc.WalletKit.ReleaseOutput:input_type -> walletrpc.ReleaseOutputRequest
+	67, // 42: walletrpc.WalletKit.ListLeases:input_type -> walletrpc.ListLeasesRequest
+	9,  // 43: walletrpc.WalletKit.DeriveNextKey:input_type -> walletrpc.KeyReq
+	78, // 44: walletrpc.WalletKit.DeriveKey:input_type -> signrpc.KeyLocator
+	10, // 45: walletrpc.WalletKit.NextAddr:input_type -> walletrpc.AddrRequest
+	23, // 46: walletrpc.WalletKit.GetTransaction:input_type -> walletrpc.GetTransactionRequest
+	15, // 47: walletrpc.WalletKit.ListAccounts:input_type -> walletrpc.ListAccountsRequest
+	17, // 48: walletrpc.WalletKit.XCreateAccount:input_type -> walletrpc.XCreateAccountRequest
+	19, // 49: walletrpc.WalletKit.RequiredReserve:input_type -> walletrpc.RequiredReserveRequest
+	21, // 50: walletrpc.WalletKit.ListAddresses:input_type -> walletrpc.ListAddressesRequest
+	24, // 51: walletrpc.WalletKit.SignMessageWithAddr:input_type -> walletrpc.SignMessageWithAddrRequest
+	26, // 52: walletrpc.WalletKit.VerifyMessageWithAddr:input_type -> walletrpc.VerifyMessageWithAddrRequest
+	28, // 53: walletrpc.WalletKit.ImportAccount:input_type -> walletrpc.ImportAccountRequest
+	30, // 54: walletrpc.WalletKit.ImportPublicKey:input_type -> walletrpc.ImportPublicKeyRequest
+	32, // 55: walletrpc.WalletKit.ImportTapscript:input_type -> walletrpc.ImportTapscriptRequest
+	37, // 56: walletrpc.WalletKit.PublishTransaction:input_type -> walletrpc.Transaction
+	39, // 57: walletrpc.WalletKit.SubmitPackage:input_type -> walletrpc.SubmitPackageRequest
+	23, // 58: walletrpc.WalletKit.RemoveTransaction:input_type -> walletrpc.GetTransactionRequest
+	43, // 59: walletrpc.WalletKit.SendOutputs:input_type -> walletrpc.SendOutputsRequest
+	45, // 60: walletrpc.WalletKit.EstimateFee:input_type -> walletrpc.EstimateFeeRequest
+	48, // 61: walletrpc.WalletKit.PendingSweeps:input_type -> walletrpc.PendingSweepsRequest
+	50, // 62: walletrpc.WalletKit.BumpFee:input_type -> walletrpc.BumpFeeRequest
+	52, // 63: walletrpc.WalletKit.BumpForceCloseFee:input_type -> walletrpc.BumpForceCloseFeeRequest
+	54, // 64: walletrpc.WalletKit.ListSweeps:input_type -> walletrpc.ListSweepsRequest
+	56, // 65: walletrpc.WalletKit.LabelTransaction:input_type -> walletrpc.LabelTransactionRequest
+	58, // 66: walletrpc.WalletKit.FundPsbt:input_type -> walletrpc.FundPsbtRequest
+	63, // 67: walletrpc.WalletKit.SignPsbt:input_type -> walletrpc.SignPsbtRequest
+	65, // 68: walletrpc.WalletKit.FinalizePsbt:input_type -> walletrpc.FinalizePsbtRequest
+	4,  // 69: walletrpc.WalletKit.ListUnspent:output_type -> walletrpc.ListUnspentResponse
+	6,  // 70: walletrpc.WalletKit.LeaseOutput:output_type -> walletrpc.LeaseOutputResponse
+	8,  // 71: walletrpc.WalletKit.ReleaseOutput:output_type -> walletrpc.ReleaseOutputResponse
+	68, // 72: walletrpc.WalletKit.ListLeases:output_type -> walletrpc.ListLeasesResponse
+	79, // 73: walletrpc.WalletKit.DeriveNextKey:output_type -> signrpc.KeyDescriptor
+	79, // 74: walletrpc.WalletKit.DeriveKey:output_type -> signrpc.KeyDescriptor
+	11, // 75: walletrpc.WalletKit.NextAddr:output_type -> walletrpc.AddrResponse
+	80, // 76: walletrpc.WalletKit.GetTransaction:output_type -> lnrpc.Transaction
+	16, // 77: walletrpc.WalletKit.ListAccounts:output_type -> walletrpc.ListAccountsResponse
+	18, // 78: walletrpc.WalletKit.XCreateAccount:output_type -> walletrpc.XCreateAccountResponse
+	20, // 79: walletrpc.WalletKit.RequiredReserve:output_type -> walletrpc.RequiredReserveResponse
+	22, // 80: walletrpc.WalletKit.ListAddresses:output_type -> walletrpc.ListAddressesResponse
+	25, // 81: walletrpc.WalletKit.SignMessageWithAddr:output_type -> walletrpc.SignMessageWithAddrResponse
+	27, // 82: walletrpc.WalletKit.VerifyMessageWithAddr:output_type -> walletrpc.VerifyMessageWithAddrResponse
+	29, // 83: walletrpc.WalletKit.ImportAccount:output_type -> walletrpc.ImportAccountResponse
+	31, // 84: walletrpc.WalletKit.ImportPublicKey:output_type -> walletrpc.ImportPublicKeyResponse
+	36, // 85: walletrpc.WalletKit.ImportTapscript:output_type -> walletrpc.ImportTapscriptResponse
+	38, // 86: walletrpc.WalletKit.PublishTransaction:output_type -> walletrpc.PublishResponse
+	41, // 87: walletrpc.WalletKit.SubmitPackage:output_type -> walletrpc.SubmitPackageResponse
+	42, // 88: walletrpc.WalletKit.RemoveTransaction:output_type -> walletrpc.RemoveTransactionResponse
+	44, // 89: walletrpc.WalletKit.SendOutputs:output_type -> walletrpc.SendOutputsResponse
+	46, // 90: walletrpc.WalletKit.EstimateFee:output_type -> walletrpc.EstimateFeeResponse
+	49, // 91: walletrpc.WalletKit.PendingSweeps:output_type -> walletrpc.PendingSweepsResponse
+	51, // 92: walletrpc.WalletKit.BumpFee:output_type -> walletrpc.BumpFeeResponse
+	53, // 93: walletrpc.WalletKit.BumpForceCloseFee:output_type -> walletrpc.BumpForceCloseFeeResponse
+	55, // 94: walletrpc.WalletKit.ListSweeps:output_type -> walletrpc.ListSweepsResponse
+	57, // 95: walletrpc.WalletKit.LabelTransaction:output_type -> walletrpc.LabelTransactionResponse
+	59, // 96: walletrpc.WalletKit.FundPsbt:output_type -> walletrpc.FundPsbtResponse
+	64, // 97: walletrpc.WalletKit.SignPsbt:output_type -> walletrpc.SignPsbtResponse
+	66, // 98: walletrpc.WalletKit.FinalizePsbt:output_type -> walletrpc.FinalizePsbtResponse
+	69, // [69:99] is the sub-list for method output_type
+	39, // [39:69] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_walletrpc_walletkit_proto_init() }
@@ -5287,18 +5625,18 @@ func file_walletrpc_walletkit_proto_init() {
 	if File_walletrpc_walletkit_proto != nil {
 		return
 	}
-	file_walletrpc_walletkit_proto_msgTypes[27].OneofWrappers = []any{
+	file_walletrpc_walletkit_proto_msgTypes[29].OneofWrappers = []any{
 		(*ImportTapscriptRequest_FullTree)(nil),
 		(*ImportTapscriptRequest_PartialReveal)(nil),
 		(*ImportTapscriptRequest_RootHashOnly)(nil),
 		(*ImportTapscriptRequest_FullKeyOnly)(nil),
 	}
-	file_walletrpc_walletkit_proto_msgTypes[34].OneofWrappers = []any{}
-	file_walletrpc_walletkit_proto_msgTypes[50].OneofWrappers = []any{
+	file_walletrpc_walletkit_proto_msgTypes[36].OneofWrappers = []any{}
+	file_walletrpc_walletkit_proto_msgTypes[52].OneofWrappers = []any{
 		(*ListSweepsResponse_TransactionDetails)(nil),
 		(*ListSweepsResponse_TransactionIds)(nil),
 	}
-	file_walletrpc_walletkit_proto_msgTypes[53].OneofWrappers = []any{
+	file_walletrpc_walletkit_proto_msgTypes[55].OneofWrappers = []any{
 		(*FundPsbtRequest_Psbt)(nil),
 		(*FundPsbtRequest_Raw)(nil),
 		(*FundPsbtRequest_CoinSelect)(nil),
@@ -5306,7 +5644,7 @@ func file_walletrpc_walletkit_proto_init() {
 		(*FundPsbtRequest_SatPerVbyte)(nil),
 		(*FundPsbtRequest_SatPerKw)(nil),
 	}
-	file_walletrpc_walletkit_proto_msgTypes[56].OneofWrappers = []any{
+	file_walletrpc_walletkit_proto_msgTypes[58].OneofWrappers = []any{
 		(*PsbtCoinSelect_ExistingOutputIndex)(nil),
 		(*PsbtCoinSelect_Add)(nil),
 	}
@@ -5316,7 +5654,7 @@ func file_walletrpc_walletkit_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_walletrpc_walletkit_proto_rawDesc), len(file_walletrpc_walletkit_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   67,
+			NumMessages:   69,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -154,8 +154,9 @@ type OpenChannel struct {
 	// RemoteNextRevocation is the revocation key to be used for the *next*
 	// commitment transaction we create for the local node. Within the
 	// specification, this value is referred to as the
-	// per-commitment-point.
-	RemoteNextRevocation *btcec.PublicKey
+	// per-commitment-point. It's only known once the remote party has sent
+	// channel_ready, so it's None until then.
+	RemoteNextRevocation fn.Option[btcec.PublicKey]
 
 	// RevocationProducer is used to generate the revocation in such a way
 	// that remote side might store it efficiently and have the ability to
@@ -347,6 +348,8 @@ func (c *OpenChannel) ChannelStatusForStore() ChannelStatus {
 // SetChannelStatusForStore updates the in-memory channel status without taking
 // the channel mutex.
 //
+// TODO(chanstate): remove together with the other ForStore accessors.
+//
 // NOTE: This is a preliminary migration hook for KV-backed store code that
 // still lives in channeldb during this refactor. Callers are responsible for
 // synchronization. Normal callers should use ApplyChanStatus or
@@ -396,6 +399,8 @@ func (c *OpenChannel) hasChanStatus(status ChannelStatus) bool {
 // HasChanStatusForStore returns true if the internal bitfield channel status
 // has the specified status bit set, without taking the channel mutex.
 //
+// TODO(chanstate): remove together with the other ForStore accessors.
+//
 // NOTE: This is a preliminary migration hook for KV-backed store code that
 // still lives in channeldb during this refactor. Callers are responsible for
 // synchronization. Normal callers should use HasChanStatus.
@@ -406,6 +411,8 @@ func (c *OpenChannel) HasChanStatusForStore(status ChannelStatus) bool {
 // ConfirmedScidForStore returns the in-memory confirmed SCID without taking
 // the channel mutex.
 //
+// TODO(chanstate): remove together with the other ForStore accessors.
+//
 // NOTE: This is a preliminary migration hook for KV-backed store code that
 // still lives in channeldb during this refactor. Callers are responsible for
 // synchronization. Normal callers should use ZeroConfRealScid.
@@ -415,6 +422,8 @@ func (c *OpenChannel) ConfirmedScidForStore() lnwire.ShortChannelID {
 
 // SetConfirmedScidForStore updates the in-memory confirmed SCID without taking
 // the channel mutex.
+//
+// TODO(chanstate): remove together with the other ForStore accessors.
 //
 // NOTE: This is a preliminary migration hook for KV-backed store code that
 // still lives in channeldb during this refactor. Callers are responsible for
@@ -429,6 +438,20 @@ func (c *OpenChannel) BroadcastHeight() uint32 {
 	defer c.RUnlock()
 
 	return c.FundingBroadcastHeight
+}
+
+// fundingTxPresent returns true if we expect the funding transaction to be
+// found on disk or already populated within the channel.
+//
+// NOTE: this reads channel state without holding the lock, matching the
+// other ForStore accessors it calls. Callers are responsible for
+// synchronization.
+func (c *OpenChannel) fundingTxPresent() bool {
+	chanType := c.ChanType
+
+	return chanType.IsSingleFunder() && chanType.HasFundingTx() &&
+		c.IsInitiator &&
+		!c.HasChanStatusForStore(ChanStatusRestored)
 }
 
 // SetBroadcastHeight sets the FundingBroadcastHeight.
@@ -925,7 +948,7 @@ func (c *OpenChannel) RemoteUnsignedLocalUpdates() ([]LogUpdate, error) {
 //
 // NOTE: If this method isn't called, then the target channel won't be able to
 // propose new states for the commitment state of the remote party.
-func (c *OpenChannel) InsertNextRevocation(revKey *btcec.PublicKey) error {
+func (c *OpenChannel) InsertNextRevocation(revKey btcec.PublicKey) error {
 	c.Lock()
 	defer c.Unlock()
 
@@ -991,6 +1014,15 @@ func (c *OpenChannel) LoadFwdPkgs() ([]*FwdPkg, error) {
 	defer c.RUnlock()
 
 	return c.Db.LoadFwdPkgs(c)
+}
+
+// CountFwdPkgs returns the number of forwarding packages without loading their
+// contents.
+func (c *OpenChannel) CountFwdPkgs() (int, error) {
+	c.RLock()
+	defer c.RUnlock()
+
+	return c.Db.CountFwdPkgs(c)
 }
 
 // AckAddHtlcs updates the AckAddFilter containing any of the provided AddRefs
@@ -1066,7 +1098,7 @@ func (c *OpenChannel) FindPreviousState(
 // channel entails persisting a record of the close while either purging the
 // nested per-channel state inline (synchronous backends like bbolt and etcd)
 // or skipping the cascading delete on tombstone-enabled backends, where the
-// outpoint-index flip to outpointClosed is the authoritative marker. The
+// outpoint-index flip to OutpointClosed is the authoritative marker. The
 // compact summary written to closedChannelBucket and the historical record
 // under historicalChannelBucket are populated identically across both paths,
 // so historical reads remain uniform regardless of backend. The optional set

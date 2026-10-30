@@ -1500,7 +1500,8 @@
         "HTLC_INVOICE_TYPE_MISMATCH",
         "AMP_ERROR",
         "AMP_RECONSTRUCTION",
-        "EXTERNAL_VALIDATION_FAILED"
+        "EXTERNAL_VALIDATION_FAILED",
+        "INVOICE_INTERCEPTOR_ERROR"
       ],
       "default": "UNKNOWN"
     },
@@ -1557,7 +1558,7 @@
         "incoming_amount_msat": {
           "type": "string",
           "format": "uint64",
-          "description": "The incoming htlc amount."
+          "description": "The incoming htlc amount. This is the amount the incoming peer actually\ncommitted to on the channel and is the only amount that can be trusted\nwhen deciding how to resolve the HTLC."
         },
         "incoming_expiry": {
           "type": "integer",
@@ -1572,12 +1573,12 @@
         "outgoing_requested_chan_id": {
           "type": "string",
           "format": "uint64",
-          "description": "The requested outgoing channel id for this forwarded htlc. Because of\nnon-strict forwarding, this isn't necessarily the channel over which the\npacket will be forwarded eventually. A different channel to the same peer\nmay be selected as well."
+          "description": "The requested outgoing channel id for this forwarded htlc. Because of\nnon-strict forwarding, this isn't necessarily the channel over which the\npacket will be forwarded eventually. A different channel to the same peer\nmay be selected as well. This is set to a sentinel value (all bits set)\nif the outgoing_requested_node_id is specified for blinded routes."
         },
         "outgoing_amount_msat": {
           "type": "string",
           "format": "uint64",
-          "description": "The outgoing htlc amount."
+          "description": "The outgoing htlc amount. NOTE: this is the amount the sender requested\nin the onion payload (amt_to_forward). It has NOT been validated against\nincoming_amount_msat or the forwarding policy of the outgoing channel\nyet. That validation only happens if the HTLC is resumed; a SETTLE\nresponse skips it entirely. An interceptor that settles or otherwise\naccounts for the HTLC must treat this value as untrusted sender input and\nrely on incoming_amount_msat instead."
         },
         "outgoing_expiry": {
           "type": "integer",
@@ -1609,6 +1610,11 @@
             "format": "byte"
           },
           "description": "The custom records of the peer's incoming p2p wire message."
+        },
+        "outgoing_requested_node_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The requested outgoing node for a blinded forward. When non-empty, this\nfield contains exactly one 33-byte compressed public key and\noutgoing_requested_chan_id is set to 18446744073709551615\n(0xffffffffffffffff). Clients MUST NOT interpret that value as an actual\nchannel ID; the presence of this field identifies a node-addressed\nforward.\n\nThe possible next-hop representations are:\n  node ID empty, channel ID 0: final receive;\n  node ID empty, ordinary channel ID: channel-addressed forward;\n  node ID present, channel ID MaxUint64: node-addressed forward."
         }
       }
     },
@@ -1640,7 +1646,7 @@
         "in_amount_msat": {
           "type": "string",
           "format": "uint64",
-          "description": "The amount that was set on the p2p wire message of the incoming HTLC.\nThis field is ignored if the action is not RESUME_MODIFIED or the amount\nis zero."
+          "description": "The amount to use in place of the actual incoming HTLC amount when\nresuming with RESUME_MODIFIED. This does not change the amount committed\nby the incoming peer. The override is used for forwarding validation\n(effective incoming - outgoing \u003e= outbound fee + inbound fee), incoming\ndust exposure, and forwarding-history accounting. A value of zero leaves\nthe actual incoming amount unchanged."
         },
         "out_amount_msat": {
           "type": "string",

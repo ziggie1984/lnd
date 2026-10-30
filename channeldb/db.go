@@ -43,6 +43,14 @@ import (
 
 const (
 	dbName = "channel.db"
+
+	// missingDBVersionRecoveryVersion is the latest mandatory DB
+	// version before the init ordering regression that could create a
+	// DB without writing the DB version key. Affected DBs are therefore
+	// already at least this version, so recovery starts here to run the
+	// v0.21 waiting proof migration without replaying older migrations
+	// against a modern DB.
+	missingDBVersionRecoveryVersion = 33
 )
 
 var (
@@ -52,13 +60,11 @@ var (
 
 	// ErrFinalHtlcsBucketNotFound signals that the top-level final htlcs
 	// bucket does not exist.
-	ErrFinalHtlcsBucketNotFound = errors.New("final htlcs bucket not " +
-		"found")
+	ErrFinalHtlcsBucketNotFound = chanstate.ErrFinalHtlcsBucketNotFound
 
 	// ErrFinalChannelBucketNotFound signals that the channel bucket for
 	// final htlc outcomes does not exist.
-	ErrFinalChannelBucketNotFound = errors.New("final htlcs channel " +
-		"bucket not found")
+	ErrFinalChannelBucketNotFound = chanstate.ErrFinalChannelBucketNotFound
 )
 
 // migration is a function which takes a prior outdated version of the database
@@ -344,11 +350,6 @@ var (
 	// Big endian is the preferred byte order, due to cursor scans over
 	// integer keys iterating in order.
 	byteOrder = binary.BigEndian
-
-	// channelOpeningStateBucket is the database bucket used to store the
-	// channelOpeningState for each channel that is currently in the process
-	// of being opened.
-	channelOpeningStateBucket = []byte("channelOpeningState")
 )
 
 // DB is the primary datastore for the lnd daemon. The database stores
@@ -419,6 +420,7 @@ func CreateWithBackend(backend kvdb.Backend, modifiers ...OptionModifier) (*DB,
 			linkNodeDB: &LinkNodeDB{
 				backend: backend,
 			},
+			kvStore:                 chanstate.NewKVStore(backend),
 			backend:                 backend,
 			tombstoneClosedChannels: opts.tombstoneClosedChannels,
 		},
@@ -456,6 +458,7 @@ func (d *DB) Path() string {
 
 var dbTopLevelBuckets = [][]byte{
 	openChannelBucket,
+	fwdResponseBucketKey,
 	closedChannelBucket,
 	forwardingLogBucket,
 	fwdPackagesKey,
@@ -502,21 +505,36 @@ func initChannelDB(db kvdb.Backend) error {
 			return err
 		}
 
+		meta := &Meta{}
+		metaErr := FetchMeta(meta, tx)
+
 		for _, tlb := range dbTopLevelBuckets {
 			if _, err := tx.CreateTopLevelBucket(tlb); err != nil {
 				return err
 			}
 		}
 
-		meta := &Meta{}
-		// Check if DB is already initialized.
-		err := FetchMeta(meta, tx)
-		if err == nil {
+		switch {
+		// Metadata with a DB version already exists. Required
+		// top-level buckets were created above, so init is complete.
+		case metaErr == nil:
+			return nil
+
+		// There is no metadata bucket at all, so this is a fresh DB.
+		// Initialize the DB version after creating the required
+		// top-level buckets.
+		case errors.Is(metaErr, ErrMetaNotFound):
+			meta.DbVersionNumber = getLatestDBVersion(dbVersions)
+			return putMeta(meta, tx)
+
+		// The DB already has a metadata bucket but no version key.
+		// Leave recovery to the migration path, which can infer a
+		// safe starting version before writing the version key.
+		case errors.Is(metaErr, ErrDBVersionNotFound):
 			return nil
 		}
 
-		meta.DbVersionNumber = getLatestDBVersion(dbVersions)
-		return putMeta(meta, tx)
+		return metaErr
 	}, func() {})
 	if err != nil {
 		return fmt.Errorf("unable to create new channeldb: %w", err)
@@ -550,6 +568,10 @@ type ChannelStateDB struct {
 	// backend points to the actual backend holding the channel state
 	// database. This may be a real backend or a cache middleware.
 	backend kvdb.Backend
+
+	// kvStore is the chanstate-owned KV implementation. ChannelStateDB
+	// keeps compatibility wrappers while callers still import channeldb.
+	kvStore *chanstate.KVStore
 
 	// tombstoneClosedChannels is set by OptionTombstoneClosedChannels.
 	// When true, CloseChannel skips deleting nested per-channel state and
@@ -1337,10 +1359,6 @@ func (c *ChannelStateDB) FetchClosedChannels(pendingOnly bool) (
 	return chanSummaries, nil
 }
 
-// ErrClosedChannelNotFound signals that a closed channel could not be found in
-// the channeldb.
-var ErrClosedChannelNotFound = errors.New("unable to find closed channel summary")
-
 // FetchClosedChannel queries for a channel close summary using the channel
 // point of the channel in question.
 func (c *ChannelStateDB) FetchClosedChannel(chanID *wire.OutPoint) (
@@ -1799,14 +1817,7 @@ func (c *ChannelStateDB) AbandonChannel(chanPoint *wire.OutPoint,
 func (c *ChannelStateDB) SaveChannelOpeningState(outPoint,
 	serializedState []byte) error {
 
-	return kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
-		bucket, err := tx.CreateTopLevelBucket(channelOpeningStateBucket)
-		if err != nil {
-			return err
-		}
-
-		return bucket.Put(outPoint, serializedState)
-	}, func() {})
+	return c.kvStore.SaveChannelOpeningState(outPoint, serializedState)
 }
 
 // GetChannelOpeningState fetches the serialized channel state for the provided
@@ -1815,55 +1826,55 @@ func (c *ChannelStateDB) SaveChannelOpeningState(outPoint,
 func (c *ChannelStateDB) GetChannelOpeningState(outPoint []byte) ([]byte,
 	error) {
 
-	var serializedState []byte
-	err := kvdb.View(c.backend, func(tx kvdb.RTx) error {
-		bucket := tx.ReadBucket(channelOpeningStateBucket)
-		if bucket == nil {
-			// If the bucket does not exist, it means we never added
-			//  a channel to the db, so return ErrChannelNotFound.
-			return ErrChannelNotFound
-		}
-
-		stateBytes := bucket.Get(outPoint)
-		if stateBytes == nil {
-			return ErrChannelNotFound
-		}
-
-		serializedState = append(serializedState, stateBytes...)
-
-		return nil
-	}, func() {
-		serializedState = nil
-	})
-	return serializedState, err
+	return c.kvStore.GetChannelOpeningState(outPoint)
 }
 
 // DeleteChannelOpeningState removes any state for outPoint from the database.
 func (c *ChannelStateDB) DeleteChannelOpeningState(outPoint []byte) error {
-	return kvdb.Update(c.backend, func(tx kvdb.RwTx) error {
-		bucket := tx.ReadWriteBucket(channelOpeningStateBucket)
-		if bucket == nil {
-			return ErrChannelNotFound
-		}
-
-		return bucket.Delete(outPoint)
-	}, func() {})
+	return c.kvStore.DeleteChannelOpeningState(outPoint)
 }
 
 // syncVersions function is used for safe db version synchronization. It
 // applies migration functions to the current database and recovers the
 // previous state of db if at least one error/panic appeared during migration.
 func (d *DB) syncVersions(versions []mandatoryVersion) error {
+	latestVersion := getLatestDBVersion(versions)
+
 	meta, err := d.FetchMeta()
 	if err != nil {
-		if err == ErrMetaNotFound {
+		switch {
+		case errors.Is(err, ErrMetaNotFound):
 			meta = &Meta{}
-		} else {
+
+		case errors.Is(err, ErrDBVersionNotFound):
+			recoveryVersion := uint32(
+				missingDBVersionRecoveryVersion,
+			)
+
+			// Missing DB version recovery is only valid for DBs
+			// created after the init ordering regression. Older DBs
+			// wrote the DB version before init returned, so a
+			// missing version key on a sub-33 DB is not a valid
+			// state to infer from.
+			if latestVersion < recoveryVersion {
+				return fmt.Errorf("unable to recover missing "+
+					"DB version key: latest_version=%v "+
+					"recovery_version=%v", latestVersion,
+					recoveryVersion)
+			}
+
+			log.Warnf("DB version key missing, recovering from "+
+				"db_version=%v", recoveryVersion)
+
+			meta = &Meta{
+				DbVersionNumber: recoveryVersion,
+			}
+
+		default:
 			return err
 		}
 	}
 
-	latestVersion := getLatestDBVersion(versions)
 	log.Infof("Checking for schema update: latest_version=%v, "+
 		"db_version=%v", latestVersion, meta.DbVersionNumber)
 
@@ -2107,33 +2118,17 @@ func (c *ChannelStateDB) FetchHistoricalChannel(outPoint *wire.OutPoint) (
 func fetchFinalHtlcsBucket(tx kvdb.RTx,
 	chanID lnwire.ShortChannelID) (kvdb.RBucket, error) {
 
-	finalHtlcsBucket := tx.ReadBucket(finalHtlcsBucket)
-	if finalHtlcsBucket == nil {
-		return nil, ErrFinalHtlcsBucketNotFound
-	}
-
-	var chanIDBytes [8]byte
-	byteOrder.PutUint64(chanIDBytes[:], chanID.ToUint64())
-
-	chanBucket := finalHtlcsBucket.NestedReadBucket(chanIDBytes[:])
-	if chanBucket == nil {
-		return nil, ErrFinalChannelBucketNotFound
-	}
-
-	return chanBucket, nil
+	return chanstate.FetchFinalHtlcsBucket(tx, chanID)
 }
 
-var ErrHtlcUnknown = errors.New("htlc unknown")
+var ErrHtlcUnknown = chanstate.ErrHtlcUnknown
 
 // LookupFinalHtlc retrieves a final htlc resolution from the database. If the
 // htlc has no final resolution yet, ErrHtlcUnknown is returned.
 func (c *ChannelStateDB) LookupFinalHtlc(chanID lnwire.ShortChannelID,
 	htlcIndex uint64) (*FinalHtlcInfo, error) {
 
-	var idBytes [8]byte
-	byteOrder.PutUint64(idBytes[:], htlcIndex)
-
-	var settledByte byte
+	var info *FinalHtlcInfo
 
 	err := kvdb.View(c.backend, func(tx kvdb.RTx) error {
 		finalHtlcsBucket, err := fetchFinalHtlcsBucket(
@@ -2151,31 +2146,19 @@ func (c *ChannelStateDB) LookupFinalHtlc(chanID lnwire.ShortChannelID,
 				err)
 		}
 
-		value := finalHtlcsBucket.Get(idBytes[:])
-		if value == nil {
-			return ErrHtlcUnknown
-		}
+		info, err = chanstate.FetchFinalHtlc(
+			finalHtlcsBucket, htlcIndex,
+		)
 
-		if len(value) != 1 {
-			return errors.New("unexpected final htlc value length")
-		}
-
-		settledByte = value[0]
-
-		return nil
+		return err
 	}, func() {
-		settledByte = 0
+		info = nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	info := FinalHtlcInfo{
-		Settled:  settledByte&byte(FinalHtlcSettledBit) != 0,
-		Offchain: settledByte&byte(FinalHtlcOffchainBit) != 0,
-	}
-
-	return &info, nil
+	return info, nil
 }
 
 // PutOnchainFinalHtlcOutcome stores the final on-chain outcome of an htlc in

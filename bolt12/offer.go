@@ -3,6 +3,7 @@ package bolt12
 import (
 	"bytes"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -60,7 +61,8 @@ type Offer struct {
 	// Handled types map to nil; unhandled types map to their value bytes.
 	// Encoding and validation both derive their view from this single field
 	// so they cannot drift apart, and so signed-range extras the decoder
-	// did not understand are re-emitted on encode and preserve offer_id.
+	// did not understand are re-emitted on encode and preserve the offer
+	// hash.
 	decodedTLVs tlv.TypeMap
 }
 
@@ -95,9 +97,9 @@ func (o *Offer) allRecordProducers() []tlv.RecordProducer {
 	return p
 }
 
-// Encode serialises the offer into a canonical TLV byte stream.
-func (o *Offer) Encode() ([]byte, error) {
-	if err := ValidateOfferWrite(o); err != nil {
+// encode serialises the offer into a canonical TLV byte stream.
+func (o *Offer) encode() ([]byte, error) {
+	if err := validateOfferWrite(o); err != nil {
 		return nil, fmt.Errorf("validate offer: %w", err)
 	}
 
@@ -111,9 +113,9 @@ func (o *Offer) Encode() ([]byte, error) {
 
 // decodeOffer parses a TLV byte stream into an Offer. Decoding is permissive —
 // the spec writer requirements are not enforced here, so callers that need a
-// valid offer must run ValidateOfferRead. Unknown TLVs are preserved on the
-// returned offer so a later Encode can re-emit signed-range extras and keep
-// offer_id stable.
+// valid offer must run validateOfferRead. Unknown TLVs are preserved on the
+// returned offer so a later encode can re-emit signed-range extras and keep
+// offer hash stable.
 func decodeOffer(data []byte) (*Offer, error) {
 	var o Offer
 
@@ -138,7 +140,7 @@ func decodeOffer(data []byte) (*Offer, error) {
 		currency.Record(),
 		amount.Record(),
 		desc.Record(),
-		features.Record(),
+		strictFeaturesRecord(&features),
 		expiry.Record(),
 		paths.Record(),
 		issuer.Record(),
@@ -164,4 +166,45 @@ func decodeOffer(data []byte) (*Offer, error) {
 	o.decodedTLVs = tm
 
 	return &o, nil
+}
+
+// DecodeOfferString decodes a BOLT 12 offer from its bech32 string
+// representation (lno1...). The spec reader gates (chain, expiry, features) are
+// folded in via validateOfferRead.
+func DecodeOfferString(s string, now time.Time,
+	activeChain [32]byte) (*Offer, error) {
+
+	hrp, tlvBytes, err := decodeBech32(s)
+	if err != nil {
+		return nil, fmt.Errorf("bech32: %w", err)
+	}
+
+	if hrp != HRPOffer {
+		return nil, fmt.Errorf("expected HRP %q, got %q",
+			HRPOffer, hrp)
+	}
+
+	offer, err := decodeOffer(tlvBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateOfferRead(
+		offer, now, activeChain, Bolt12Features,
+	); err != nil {
+		return nil, fmt.Errorf("validate: %w", err)
+	}
+
+	return offer, nil
+}
+
+// EncodeOfferString encodes an offer to its bech32 string representation
+// (lno1...). Writer-side validation is delegated to (*Offer).encode.
+func EncodeOfferString(o *Offer) (string, error) {
+	tlvBytes, err := o.encode()
+	if err != nil {
+		return "", err
+	}
+
+	return encodeBech32(HRPOffer, tlvBytes)
 }

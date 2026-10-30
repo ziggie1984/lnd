@@ -22,18 +22,20 @@
 
 # Bug Fixes
 
+* [Fixed an overflow](https://github.com/lightningnetwork/lnd/pull/11290)
+  in the accumulated fee calculation for blinded paths. The aggregate base fee
+  and fee rate advertised in a blinded path's payinfo were computed with
+  `uint32` arithmetic, which wrapped once the summed fees exceeded about 4295
+  msat or 4295 ppm. The under-reported fees made payers underpay, so payments
+  to such invoices failed. The aggregates are now computed with checked
+  arithmetic, and a candidate path whose aggregate fees don't fit in the
+  invoice's `uint32` payinfo fields is skipped instead of being advertised
+  with under-reported fees.
+
 * Bitcoind outbound peer health checks [now use](https://github.com/lightningnetwork/lnd/pull/10686)
   `getnetworkinfo.connections_out` instead of `getpeerinfo`. The same PR also
   [clarifies](https://github.com/lightningnetwork/lnd/issues/10568) the ZMQ
   port-mismatch warnings so they no longer suggest that the connection failed.
-
-* [Fixed a bug](https://github.com/lightningnetwork/lnd/pull/10782)
-  that could be encountered during co-op closes whereby
-  `ChanStatusCoopBroadcasted` was set before a close transaction
-  actually existed. As a side effect, channels in shutdown
-  negotiation now remain in `ListChannels` (as inactive) until
-  the close transaction is actually broadcast, and
-  `WaitingCloseChannel.ClosingTx` is never empty.
 
 * [Fixed a bug](https://github.com/lightningnetwork/lnd/pull/10890)
   where `ListChannels` reported 100% `uptime` for channels whose peer
@@ -49,9 +51,58 @@
   exclude such inputs from sweeping even though their input set could
   comfortably pay its fees.
 
+* [Fixed a bug](https://github.com/lightningnetwork/lnd/pull/10963) in
+  `GetNetworkInfo` where encountering an already-seen channel skipped the
+  rest of that node's channels instead of just that channel, undercounting
+  the reported network statistics such as total network capacity, channel
+  count and max out degree.
+
+* lnd [no longer keeps one Postgres connection for each schema
+  migration](https://github.com/lightningnetwork/lnd/pull/11267). Startup
+  no longer hangs on a fresh database when `db.postgres.maxconnections` is
+  set to a low value.
+
+* [Fixed a bug](https://github.com/lightningnetwork/lnd/pull/11219) in the
+  `NodeAnnouncement2` address decoders, where all decoded addresses aliased
+  one scratch array and truncated records decoded without an error.
+
 # New Features
 
 ## Functional Enhancements
+
+* lnd now supports an [outbound remote
+  signer](https://github.com/lightningnetwork/lnd/pull/8754) (experimental).
+  Instead of the watch-only node dialing the signer, the signer opens a single
+  outbound connection to the watch-only node, so the signer needs no open
+  inbound port. The watch-only node enables this with
+  `remotesigner.experimentalallowinboundconnection` and
+  `remotesigner.experimentalrpclisten`, and the signer with
+  `remotesigner.experimentalenable`. See
+  [remote-signing.md](https://github.com/lightningnetwork/lnd/blob/master/docs/remote-signing.md)
+  for setup.
+
+* A new `watchonlyrpc.WatchOnly` service with a
+  [`SignCoordinatorStreams`](https://github.com/lightningnetwork/lnd/pull/8754)
+  RPC, used by an outbound remote signer to connect to its watch-only node.
+
+* Add [graph-based pathfinding for onion
+  messages](https://github.com/lightningnetwork/lnd/pull/10612), which finds
+  the shortest path to a destination through nodes that advertise onion
+  message support.
+
+* A new experimental [local reputation
+  subsystem](https://github.com/lightningnetwork/lnd/pull/10919) tracks the
+  historical forwarding behaviour of peers, following the scoring recommended in
+  BOLT [#1280](https://github.com/lightning/bolts/pull/1280). It is enabled by
+  default but is purely observational and does not affect routing in any way.
+  For every HTLC the node forwards it records whether the outgoing channel has
+  earned enough fees in the past to be trusted with that HTLC, and logs the
+  answer. The per-HTLC lines are logged at debug level under the `REPM`
+  subsystem, so operators who want to see them should run with
+  `--debuglevel=REPM=debug`. Nothing is persisted and no action is needed from
+  operators in this release; the output exists so that the scoring can be
+  evaluated against real traffic before any enforcement is added. The subsystem
+  can be disabled with `routing.no-reputation`.
 
 ## RPC Additions
 
@@ -60,23 +111,12 @@
   channels](https://github.com/lightningnetwork/lnd/pull/10501) via the new
   `outgoing_chan_ids` field in `RouteFeeRequest`.
 
-* A new
-  [`walletrpc.SubmitPackage`](https://github.com/lightningnetwork/lnd/pull/10900)
-  RPC submits a package of related transactions (parents first, child last) to
-  the chain backend via bitcoind's `submitpackage`, allowing a zero-fee v3/TRUC
-  parent to be accepted together with a fee-paying CPFP child.
-
 ## lncli Additions
 
 * The `estimateroutefee` command now supports [restricting fee estimates to
   specific first-hop outgoing
   channels](https://github.com/lightningnetwork/lnd/pull/10501) via the new
   `--outgoing_chan_id` flag.
-
-* A new
-  [`wallet submitpackage`](https://github.com/lightningnetwork/lnd/pull/10900)
-  command submits a package of hex-encoded transactions via the new
-  `SubmitPackage` RPC.
 
 # Improvements
 
@@ -117,7 +157,57 @@
   in `SubscribeOnionMessages`, ensuring a nil reply path remains nil in the
   RPC response rather than being emitted as an empty struct.
 
+* [BOLT 12 invoice
+  codec](https://github.com/lightningnetwork/lnd/pull/10941): add the
+  `invoice` TLV message to the `bolt12/` package with structural
+  reader/writer validation. Schnorr signature verification is not yet
+  performed; callers must verify the signature independently until the
+  Merkle and signing primitives land.
+
+* [BOLT 12 invoice_error
+  codec](https://github.com/lightningnetwork/lnd/pull/10958): add the
+  `invoice_error` TLV message to `bolt12/` for onion-message replies.
+
+* [BOLT 12 string codec](https://github.com/lightningnetwork/lnd/pull/11001):
+  add checksumless bech32 encoding/decoding for BOLT 12 `lno`, `lnr`, and `lni`
+  strings with continuation line handling.
+
+* [BOLT 12 Merkle tree and BIP-340
+  signatures](https://github.com/lightningnetwork/lnd/pull/11061): add Merkle
+  tree construction over TLV records and BIP-340 Schnorr message signatures for
+  invoice requests and invoices, and verify the signature on read so a decoded
+  message with an invalid signature is rejected.
+
+* [BOLT 12 string codecs and payment
+  validation](https://github.com/lightningnetwork/lnd/pull/11146): add
+  validated `Decode`/`Encode` string entry points for offers, invoice
+  requests, and invoices, and `ValidateInvoiceForPayment` to bundle the
+  payer-side invoice checks into one call.
+
+* [BOLT 12 offer
+  store](https://github.com/lightningnetwork/lnd/pull/11278): add the
+  `offers` package with a SQL-backed store for BOLT 12 offers. The store
+  keeps the encoded offer, a disabled flag and the creation time. It finds
+  an offer by its hash. `CreateOffer` validates the parameters, encodes the
+  offer and stores it. The `offers` table migration is a development
+  migration for now, so a normal build does not change the database
+  schema.
+
 ## Testing
+
+* [BOLT 12 spec test vectors](https://github.com/lightningnetwork/lnd/pull/11001):
+  add spec test vectors for offer decoding and format string parsing in
+  `bolt12/test-vectors/`.
+
+* [BOLT 12 signature test
+  vectors](https://github.com/lightningnetwork/lnd/pull/11061): add spec test
+  vectors pinning Merkle tree construction and BIP-340 signature verification
+  in `bolt12/test-vectors/`.
+
+* [BOLT 12 fuzz
+  harnesses](https://github.com/lightningnetwork/lnd/pull/11146): fuzz the
+  `bolt12/` decoders for panics and encode/decode bijection, and pin Merkle
+  root determinism.
 
 ## Database
 
@@ -138,7 +228,12 @@
 
 # Contributors (Alphabetical Order)
 
+* Abdullahi Yunus
+* Allen Piscitello
 * bitromortac
 * Boris Nagaev
 * Erick Cestari
 * Jared Tobin
+* Vandit Singh
+* Viktor Torstensson
+* s1ns3nz0

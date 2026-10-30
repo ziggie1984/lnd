@@ -36,7 +36,7 @@ ACTIVE_GO_VERSION_MINOR := $(shell echo $(ACTIVE_GO_VERSION) | cut -d. -f2)
 # GO_VERSION is the Go version used for the release build, docker files, and
 # GitHub Actions. This is the reference version for the project. All other Go
 # versions are checked against this version.
-GO_VERSION = 1.26.4
+GO_VERSION = 1.27.3
 
 GOBUILD := $(GOCC) build -v
 GOINSTALL := $(GOCC) install -v
@@ -81,12 +81,13 @@ ifdef CI
 # CI mode: bind mount to host paths that GitHub Actions caches.
 DOCKER_TOOLS_BASE = docker run \
   --rm \
-  -v $${HOME}/.cache/go-build:/tmp/build/.cache \
-  -v $${HOME}/go/pkg/mod:/tmp/build/.modcache \
-  -v $${HOME}/.cache/golangci-lint:/root/.cache/golangci-lint \
-	-v $$(pwd):/build
+  -v "$${HOME}/.cache/go-build:/tmp/build/.cache" \
+  -v "$${HOME}/go/pkg/mod:/tmp/build/.modcache" \
+  -v "$${HOME}/.cache/golangci-lint:/root/.cache/golangci-lint" \
+  -v "$$(pwd):/build"
 DOCKER_TOOLS = $(DOCKER_TOOLS_BASE) lnd-tools
-DOCKER_TOOLS_LINT = $(DOCKER_TOOLS)
+DOCKER_TOOLS_LINT_BASE = $(DOCKER_TOOLS_BASE) -e GOGC
+DOCKER_TOOLS_LINT = $(DOCKER_TOOLS_LINT_BASE) lnd-tools
 else
 # Local mode: Docker named volumes for fast macOS/Windows performance.
 # Detect if we're in a git worktree. Use git rev-parse --git-common-dir to get
@@ -103,9 +104,10 @@ DOCKER_TOOLS_BASE = docker run \
   -v lnd-go-build-cache:/tmp/build/.cache \
   -v lnd-go-mod-cache:/tmp/build/.modcache \
   -v lnd-go-lint-cache:/root/.cache/golangci-lint \
-  -v $$(pwd):/build
+  -v "$$(pwd):/build"
 DOCKER_TOOLS = $(DOCKER_TOOLS_BASE) lnd-tools
-DOCKER_TOOLS_LINT = $(DOCKER_TOOLS_BASE) $(GIT_VOLUME) lnd-tools
+DOCKER_TOOLS_LINT_BASE = $(DOCKER_TOOLS_BASE) $(GIT_VOLUME) -e GOGC
+DOCKER_TOOLS_LINT = $(DOCKER_TOOLS_LINT_BASE) lnd-tools
 endif
 
 GREEN := "\\033[0;32m"
@@ -199,7 +201,11 @@ release: clean-mobile
 	./scripts/release.sh build-release "$(VERSION_TAG)" "$(BUILD_SYSTEM)" "$(RELEASE_TAGS)" "$(RELEASE_LDFLAGS)" "$(GO_VERSION)"
 
 #? docker-release: Same as release but within a docker container to support reproducible builds on BSD/MacOS platforms
-docker-release:
+docker-release-cache:
+	$(call check_docker_release_cache,$(DOCKER_RELEASE_GOCACHE))
+	$(call check_docker_release_cache,$(DOCKER_RELEASE_GOMODCACHE))
+
+docker-release: docker-release-cache
 	@$(call print, "Building release helper docker image.")
 	if [ "$(tag)" = "" ]; then echo "Must specify tag=<commit_or_tag>!"; exit 1; fi
 
@@ -207,7 +213,13 @@ docker-release:
 
 	# Run the actual compilation inside the docker image. We pass in all flags
 	# that we might want to overwrite in manual tests.
-	$(DOCKER_RELEASE_HELPER) make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)" 
+	$(DOCKER_RELEASE_HELPER) make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)"
+
+#? release-notes: Fold the release note fragments into the release notes of version=<major>.<minor>.<patch>, listing the contributors since from=<tag> (defaults to the newest release tag below version)
+release-notes:
+	@$(call print, "Folding release note fragments.")
+	if [ "$(version)" = "" ]; then echo "Must specify version=<major>.<minor>.<patch>!"; exit 1; fi
+	$(GOCC) run ./scripts/release-notes "$(version)" $(from)
 
 docker-tools:
 	@$(call print, "Building tools docker image.")
@@ -398,6 +410,21 @@ lint-native: check-go-version lint-config-check build-native-linter
 	GOWORK=off ./tools/custom-gcl run -v $(LINT_WORKERS) \
 	  --new-from-rev=$$(git merge-base HEAD master)
 
+#? lint-module: Run static code analysis on all submodules (or specify module=<name> for a specific one)
+lint-module: docker-tools
+	@$(call print, "Linting submodules.")
+	LINT_MODULE_MAKE="$(MAKE)" LINT_MODULE_WORKERS="$(workers)" \
+		scripts/lint_modules.sh "$(module)"
+
+# lint-module-run runs the linter for one module. It is called by
+# scripts/lint_modules.sh so all lint targets share the Docker cache and Git
+# worktree mounts defined above.
+lint-module-run:
+	$(DOCKER_TOOLS_LINT_BASE) \
+		--workdir "/build/$(module)" \
+		lnd-tools custom-gcl run -v $(LINT_WORKERS) \
+		-c "$(lint_config)"
+
 #? protolint: Lint proto files using protolint
 protolint:
 	@$(call print, "Linting proto files.")
@@ -539,6 +566,8 @@ clean-docker-volumes:
 	flake-unit \
 	fmt \
 	lint \
+	lint-module \
+	lint-module-run \
 	lint-native \
 	list \
 	rpc \

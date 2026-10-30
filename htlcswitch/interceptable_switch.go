@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 
@@ -101,6 +102,7 @@ type interceptedPackets struct {
 	packets  []*htlcPacket
 	linkQuit <-chan struct{}
 	isReplay bool
+	done     chan error
 }
 
 type onchainInterceptRequest struct {
@@ -306,6 +308,10 @@ func (s *InterceptableSwitch) run() error {
 
 		case packets := <-s.intercepted:
 			var notIntercepted []*htlcPacket
+			if packets.isReplay {
+				s.reconcileReplays(packets)
+			}
+
 			for _, p := range packets.packets {
 				intercepted, err := s.interceptForward(
 					p, packets.isReplay,
@@ -361,6 +367,52 @@ func (s *InterceptableSwitch) run() error {
 			return nil
 		}
 	}
+}
+
+// reconcileReplays forwards adds with known incoming circuits while the
+// incoming link remains paused. Packets that still require interception remain
+// in the batch for the event loop to process.
+func (s *InterceptableSwitch) reconcileReplays(packets *interceptedPackets) {
+	var err error
+	defer func() {
+		packets.done <- err
+	}()
+
+	var known []*htlcPacket
+	known, packets.packets = s.partitionReplays(packets.packets)
+	err = s.htlcSwitch.ForwardPackets(packets.linkQuit, known...)
+}
+
+// partitionReplays separates adds with known incoming circuits from packets
+// that still require interceptor processing.
+func (s *InterceptableSwitch) partitionReplays(
+	packets []*htlcPacket) ([]*htlcPacket, []*htlcPacket) {
+
+	var known, remaining []*htlcPacket
+	for _, packet := range packets {
+		if !s.isKnownReplay(packet) {
+			remaining = append(remaining, packet)
+			continue
+		}
+
+		known = append(known, packet)
+	}
+
+	return known, remaining
+}
+
+// isKnownReplay reports whether the packet is a remote add with an incoming
+// circuit that the switch can reconcile.
+func (s *InterceptableSwitch) isKnownReplay(packet *htlcPacket) bool {
+	if _, isAdd := packet.htlc.(*lnwire.UpdateAddHTLC); !isAdd {
+		return false
+	}
+
+	if packet.incomingChanID == hop.Source {
+		return false
+	}
+
+	return s.htlcSwitch.circuits.LookupCircuit(packet.inKey()) != nil
 }
 
 func (s *InterceptableSwitch) failExpiredHtlcs() {
@@ -444,9 +496,14 @@ func (s *InterceptableSwitch) Resolve(res *FwdResolution) error {
 // ForwardPackets attempts to forward the batch of htlcs to a connected
 // interceptor. If the interceptor signals the resume action, the htlcs are
 // forwarded to the switch. The link's quit signal should be provided to allow
-// cancellation of forwarding during link shutdown.
+// cancellation of forwarding during link shutdown. Replay calls return after
+// the switch has reconciled any circuits that already exist.
 func (s *InterceptableSwitch) ForwardPackets(linkQuit <-chan struct{},
 	isReplay bool, packets ...*htlcPacket) error {
+	var done chan error
+	if isReplay {
+		done = make(chan error, 1)
+	}
 
 	// Synchronize with the main event loop. This should be light in the
 	// case where there is no interceptor.
@@ -455,10 +512,28 @@ func (s *InterceptableSwitch) ForwardPackets(linkQuit <-chan struct{},
 		packets:  packets,
 		linkQuit: linkQuit,
 		isReplay: isReplay,
+		done:     done,
 	}:
 
 	case <-linkQuit:
 		log.Debugf("Forward cancelled because link quit")
+
+	case <-s.quit:
+		return errors.New("interceptable switch quit")
+	}
+
+	if !isReplay {
+		return nil
+	}
+
+	// Keep the incoming link paused until the switch reconciles any
+	// existing replay circuits.
+	select {
+	case err := <-done:
+		return err
+
+	case <-linkQuit:
+		log.Debugf("Replay reconciliation cancelled because link quit")
 
 	case <-s.quit:
 		return errors.New("interceptable switch quit")
@@ -519,6 +594,13 @@ func (s *InterceptableSwitch) interceptForward(packet *htlcPacket,
 			return false, nil
 		}
 
+		// A held replay retains the original expiry decision and
+		// resolution handle. Do not fail a duplicate as the chain
+		// height advances.
+		if s.heldHtlcSet.exists(packet.inKey()) {
+			return true, nil
+		}
+
 		intercepted := &interceptedForward{
 			htlc:       htlc,
 			packet:     packet,
@@ -559,13 +641,6 @@ func (s *InterceptableSwitch) interceptForward(packet *htlcPacket,
 // interceptor if needed.
 func (s *InterceptableSwitch) forwardOffChain(
 	fwd InterceptedForward, isReplay bool) (bool, error) {
-
-	inKey := fwd.Packet().IncomingCircuit
-
-	// Ignore already held htlcs.
-	if s.heldHtlcSet.exists(inKey) {
-		return true, nil
-	}
 
 	// If there is no interceptor currently registered, configuration and packet
 	// replay status determine how the packet is handled.
@@ -661,13 +736,35 @@ func (s *InterceptableSwitch) removeOnChainIntercept(key models.CircuitKey) {
 	}
 }
 
-// handleExpired checks that the htlc isn't too close to the channel
-// force-close broadcast height. If it is, it is cancelled back.
+// handleExpired checks that the htlc's expiry is within the range that can be
+// offered to the interceptor. Expiries near the channel force-close broadcast
+// height and expiries whose auto-fail height cannot be represented are failed
+// back.
 func (s *InterceptableSwitch) handleExpired(fwd *interceptedForward) (
 	bool, error) {
 
 	height := uint32(s.currentHeight)
-	if fwd.packet.incomingTimeout >= height+s.cltvInterceptDelta {
+	incomingTimeout := fwd.packet.incomingTimeout
+
+	// The interceptor auto-fail height is the incoming timeout less the
+	// reject delta and is exposed as an int32 block height. Calculate it in
+	// int64 so that we can check the representable range before conversion.
+	autoFailHeight := int64(incomingTimeout) - int64(s.cltvRejectDelta)
+	if autoFailHeight > math.MaxInt32 {
+		log.Debugf("Interception rejected because htlc expires too "+
+			"far in the future: circuit=%v, height=%v, "+
+			"incoming_timeout=%v", fwd.packet.inKey(), height,
+			incomingTimeout)
+
+		err := fwd.FailWithCode(lnwire.CodeExpiryTooFar)
+		if err != nil {
+			return false, err
+		}
+
+		return true, nil
+	}
+
+	if incomingTimeout >= height+s.cltvInterceptDelta {
 		return false, nil
 	}
 
@@ -675,7 +772,7 @@ func (s *InterceptableSwitch) handleExpired(fwd *interceptedForward) (
 		"expires too soon: circuit=%v, "+
 		"height=%v, incoming_timeout=%v",
 		fwd.packet.inKey(), height,
-		fwd.packet.incomingTimeout)
+		incomingTimeout)
 
 	err := fwd.FailWithCode(
 		lnwire.CodeExpiryTooSoon,
@@ -705,6 +802,7 @@ func (f *interceptedForward) Packet() InterceptedPacket {
 			HtlcID: f.packet.incomingHTLCID,
 		},
 		OutgoingChanID:       f.packet.outgoingChanID,
+		OutgoingNodeID:       f.packet.outgoingHop.RightToSome(),
 		Hash:                 f.htlc.PaymentHash,
 		OutgoingExpiry:       f.htlc.Expiry,
 		OutgoingAmount:       f.htlc.Amount,
@@ -858,6 +956,9 @@ func (f *interceptedForward) FailWithCode(code lnwire.FailCode) error {
 
 		failureMsg = lnwire.NewExpiryTooSoon(*update)
 
+	case lnwire.CodeExpiryTooFar:
+		failureMsg = &lnwire.FailExpiryTooFar{}
+
 	default:
 		return ErrUnsupportedFailureCode
 	}
@@ -891,6 +992,7 @@ func (f *interceptedForward) resolve(message lnwire.Message) error {
 		incomingChanID: f.packet.incomingChanID,
 		incomingHTLCID: f.packet.incomingHTLCID,
 		outgoingChanID: f.packet.outgoingChanID,
+		outgoingHop:    f.packet.outgoingHop,
 		outgoingHTLCID: f.packet.outgoingHTLCID,
 		isResolution:   true,
 		circuit:        f.packet.circuit,

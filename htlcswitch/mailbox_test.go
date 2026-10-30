@@ -1,16 +1,19 @@
 package htlcswitch
 
 import (
+	"errors"
 	prand "math/rand"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/chanstate"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnmock"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -167,6 +170,96 @@ func TestMailBoxCouriers(t *testing.T) {
 	}
 }
 
+// TestMailBoxAdmissionBudgets checks message-count and serialized-size
+// admission behavior for the wire-message queue.
+func TestMailBoxAdmissionBudgets(t *testing.T) {
+	t.Parallel()
+
+	t.Run("message count", func(t *testing.T) {
+		mailbox := newMemoryMailBox(&mailBoxConfig{})
+		msg := &lnwire.UpdateFee{}
+
+		for range maxWireMessages {
+			require.NoError(t, mailbox.AddMessage(msg))
+		}
+
+		require.ErrorIs(
+			t, mailbox.AddMessage(msg), errWireMessageQueueFull,
+		)
+		require.Equal(t, maxWireMessages, mailbox.wireMessages.Len())
+		require.LessOrEqual(
+			t, mailbox.wireBytes, uint32(maxWireBytes),
+		)
+	})
+
+	t.Run("encoded bytes", func(t *testing.T) {
+		mailbox := newMemoryMailBox(&mailBoxConfig{})
+		msg := &lnwire.Warning{
+			Data: make([]byte, lnwire.MaxMsgBody-40),
+		}
+
+		for {
+			err := mailbox.AddMessage(msg)
+			if errors.Is(err, errWireMessageQueueFull) {
+				break
+			}
+			require.NoError(t, err)
+		}
+
+		require.Less(t, mailbox.wireMessages.Len(), maxWireMessages)
+		require.LessOrEqual(
+			t, mailbox.wireBytes, uint32(maxWireBytes),
+		)
+	})
+
+	t.Run("commitment message sizes", func(t *testing.T) {
+		_, pubKey := btcec.PrivKeyFromBytes(make([]byte, 32))
+		extraData := lnwire.ExtraOpaqueData{
+			0xfe, 0x00, 0x01, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03,
+		}
+
+		messages := []lnwire.Message{
+			&lnwire.CommitSig{ExtraData: extraData},
+			&lnwire.RevokeAndAck{
+				NextRevocationKey: pubKey,
+				ExtraData:         extraData,
+			},
+			&lnwire.Stfu{ExtraData: extraData},
+		}
+		for _, msg := range messages {
+			mailbox := newMemoryMailBox(&mailBoxConfig{})
+			sizeableMsg, ok := msg.(lnwire.SizeableMessage)
+			require.True(t, ok)
+
+			expectedSize, err := sizeableMsg.SerializedSize()
+			require.NoError(t, err)
+
+			require.NoError(t, mailbox.AddMessage(msg))
+			require.Equal(t, expectedSize, mailbox.wireBytes)
+		}
+	})
+
+	t.Run("reset restores byte budget", func(t *testing.T) {
+		mailbox := newMemoryMailBox(&mailBoxConfig{})
+		mailbox.Start()
+		t.Cleanup(mailbox.Stop)
+
+		msg := &lnwire.Warning{
+			Data: make([]byte, lnwire.MaxMsgBody-40),
+		}
+		for {
+			err := mailbox.AddMessage(msg)
+			if errors.Is(err, errWireMessageQueueFull) {
+				break
+			}
+			require.NoError(t, err)
+		}
+
+		require.NoError(t, mailbox.ResetMessages())
+		require.NoError(t, mailbox.AddMessage(msg))
+	})
+}
+
 // TestMailBoxResetAfterShutdown tests that ResetMessages and ResetPackets
 // return ErrMailBoxShuttingDown after the mailbox has been stopped.
 func TestMailBoxResetAfterShutdown(t *testing.T) {
@@ -277,6 +370,17 @@ func (c *mailboxContext) sendAdds(start, num int) []*htlcPacket {
 				ID: uint64(start + i),
 			},
 		}
+		if i%2 == 0 {
+			pkt.outgoingHop = fn.NewLeft[
+				lnwire.ShortChannelID, [33]byte,
+			](pkt.outgoingChanID)
+		} else {
+			var nodeID [33]byte
+			prand.Read(nodeID[:])
+			pkt.outgoingHop = fn.NewRight[
+				lnwire.ShortChannelID, [33]byte,
+			](nodeID)
+		}
 		sentPackets[i] = pkt
 
 		err := c.mailbox.AddPacket(pkt)
@@ -314,6 +418,14 @@ func (c *mailboxContext) checkFails(adds []*htlcPacket) {
 		select {
 		case fail := <-c.forwards:
 			if add.inKey() == fail.inKey() {
+				require.Equal(
+					c.t, add.outgoingChanID,
+					fail.outgoingChanID,
+				)
+				require.Equal(
+					c.t, add.outgoingHop,
+					fail.outgoingHop,
+				)
 				continue
 			}
 			c.t.Fatalf("inkey mismatch #%d, add: %v vs fail: %v",
@@ -827,5 +939,56 @@ func TestMailOrchestrator(t *testing.T) {
 	if !reflect.DeepEqual(recvdPackets, sentPackets) {
 		t.Fatalf("recvd packets mismatched: expected %v, got %v",
 			spew.Sdump(sentPackets), spew.Sdump(recvdPackets))
+	}
+}
+
+// TestMailBoxFailAddNodeID asserts that FailAdd for a node-ID hop returns a
+// FailUnknownNextPeer failure without a channel update.
+func TestMailBoxFailAddNodeID(t *testing.T) {
+	ctx := newMailboxContext(t, time.Now(), time.Minute)
+
+	var nodeID [33]byte
+	nodeID[0] = 0x02
+
+	pkt := &htlcPacket{
+		incomingChanID: lnwire.NewShortChanIDFromInt(1),
+		incomingHTLCID: 1,
+		outgoingHop: fn.NewRight[lnwire.ShortChannelID, [33]byte](
+			nodeID,
+		),
+		htlc: &lnwire.UpdateAddHTLC{
+			ID: 1,
+		},
+	}
+
+	require.NoError(t, ctx.mailbox.AddPacket(pkt))
+
+	// Pull packet from mailbox to simulate link delivery.
+	select {
+	case <-ctx.mailbox.PacketOutBox():
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("timeout waiting for packet outbox")
+	}
+
+	// Fail the packet via FailAdd.
+	ctx.mailbox.FailAdd(pkt)
+
+	select {
+	case pktResponse := <-ctx.forwards:
+		require.Equal(t, pkt.incomingChanID, pktResponse.incomingChanID)
+		require.Equal(t, pkt.incomingHTLCID, pktResponse.incomingHTLCID)
+		require.Equal(t, pkt.outgoingChanID, pktResponse.outgoingChanID)
+		require.Equal(t, pkt.outgoingHop, pktResponse.outgoingHop)
+		require.NotNil(t, pktResponse.linkFailure)
+
+		var unknownNextPeer *lnwire.FailUnknownNextPeer
+		require.ErrorAs(
+			t, pktResponse.linkFailure.WireMessage(),
+			&unknownNextPeer,
+			"expected FailUnknownNextPeer for node-ID FailAdd",
+		)
+
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("timeout waiting for packet response")
 	}
 }

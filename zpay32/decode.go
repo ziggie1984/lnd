@@ -32,8 +32,8 @@ var (
 	// not valid UTF-8.
 	ErrInvalidUTF8Description = errors.New("description is not valid UTF-8")
 
-	// ErrLengthNotMultipleOfHopHintLength is returned if the length of the
-	// route hint data is not a multiple of the hop hint length.
+	// ErrLengthNotMultipleOfHopHint is returned if the length of the route
+	// hint data is not a multiple of the hop hint length.
 	ErrLengthNotMultipleOfHopHint = errors.New("length is not a multiple " +
 		"of hop hint length")
 
@@ -189,6 +189,15 @@ func Decode(invoice string, net *chaincfg.Params, opts ...DecodeOption) (
 		if !signature.Verify(hash, decodedInvoice.Destination) {
 			return nil, fmt.Errorf("invalid invoice signature")
 		}
+
+		// BOLT 11 only lets a reader accept a high-S signature when it
+		// recovers the public key from it. With an explicit `n` field
+		// the signature must be in low-S form.
+		var sigS btcec.ModNScalar
+		sigS.SetByteSlice(sig.RawBytes()[32:64])
+		if sigS.IsOverHalfOrder() {
+			return nil, ErrHighSSignature
+		}
 	} else {
 		headerByte := recoveryID + 27 + 4
 		compactSign := append([]byte{headerByte}, sig.RawBytes()...)
@@ -265,7 +274,12 @@ func parseTimestamp(data []byte) (uint64, error) {
 // parseTaggedFields takes the base32 encoded tagged fields of the invoice, and
 // fills the Invoice struct accordingly.
 func parseTaggedFields(invoice *Invoice, fields []byte, net *chaincfg.Params) error {
-	index := 0
+	var (
+		index           int
+		paymentHashSeen bool
+		paymentAddrSeen bool
+	)
+
 	for len(fields)-index > 0 {
 		// If there are less than 3 groups to read, there cannot be more
 		// interesting information, as we need the type (1 group) and
@@ -294,28 +308,24 @@ func parseTaggedFields(invoice *Invoice, fields []byte, net *chaincfg.Params) er
 
 		switch typ {
 		case fieldTypeP:
-			if invoice.PaymentHash != nil {
-				// We skip the field if we have already seen a
-				// supported one.
-				continue
+			if paymentHashSeen {
+				return ErrDuplicatePaymentHash
 			}
+			paymentHashSeen = true
 
 			invoice.PaymentHash, err = parse32Bytes(base32Data)
 
 		case fieldTypeS:
-			if invoice.PaymentAddr.IsSome() {
-				// We skip the field if we have already seen a
-				// supported one.
-				continue
+			if paymentAddrSeen {
+				return ErrDuplicatePaymentAddr
 			}
+			paymentAddrSeen = true
 
 			addr, err := parse32Bytes(base32Data)
 			if err != nil {
 				return err
 			}
-			if addr != nil {
-				invoice.PaymentAddr = fn.Some(*addr)
-			}
+			invoice.PaymentAddr = fn.Some(*addr)
 
 		case fieldTypeD:
 			if invoice.Description != nil {
@@ -337,8 +347,9 @@ func parseTaggedFields(invoice *Invoice, fields []byte, net *chaincfg.Params) er
 
 		case fieldTypeN:
 			if invoice.Destination != nil {
-				// We skip the field if we have already seen a
-				// supported one.
+				// BOLT 11 only requires exactly one `p` and
+				// one `s` field, so for a repeated field we
+				// keep the first one we saw.
 				continue
 			}
 
@@ -346,8 +357,9 @@ func parseTaggedFields(invoice *Invoice, fields []byte, net *chaincfg.Params) er
 
 		case fieldTypeH:
 			if invoice.DescriptionHash != nil {
-				// We skip the field if we have already seen a
-				// supported one.
+				// BOLT 11 only requires exactly one `p` and
+				// one `s` field, so for a repeated field we
+				// keep the first one we saw.
 				continue
 			}
 
@@ -446,10 +458,11 @@ func parseFieldDataLength(data []byte) (uint16, error) {
 func parse32Bytes(data []byte) (*[32]byte, error) {
 	var paymentHash [32]byte
 
-	// As BOLT-11 states, a reader must skip over the 32-byte fields if
-	// it does not have a length of 52, so avoid returning an error.
+	// BOLT 11 requires a reader to fail on a fixed length field (p, h, s,
+	// n) with the wrong length, rather than skip it.
 	if len(data) != hashBase32Len {
-		return nil, nil
+		return nil, fmt.Errorf("%w: got %d groups, expected %d",
+			ErrInvalidFixedFieldLength, len(data), hashBase32Len)
 	}
 
 	hash, err := bech32.ConvertBits(data, 5, 8, false)
@@ -488,10 +501,11 @@ func parseMetadata(data []byte) ([]byte, error) {
 // parseDestination converts the data (encoded in base32) into a 33-byte public
 // key of the payee node.
 func parseDestination(data []byte) (*btcec.PublicKey, error) {
-	// As BOLT-11 states, a reader must skip over the destination field
-	// if it does not have a length of 53, so avoid returning an error.
+	// BOLT 11 requires a reader to fail on a destination field that
+	// doesn't have a length of 53, rather than skip it.
 	if len(data) != pubKeyBase32Len {
-		return nil, nil
+		return nil, fmt.Errorf("%w: got %d groups, expected %d",
+			ErrInvalidFixedFieldLength, len(data), pubKeyBase32Len)
 	}
 
 	base256Data, err := bech32.ConvertBits(data, 5, 8, false)

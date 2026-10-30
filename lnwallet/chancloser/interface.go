@@ -18,11 +18,13 @@ import (
 type CoopFeeEstimator interface {
 	// EstimateFee estimates an _absolute_ fee for a co-op close transaction
 	// given the local+remote tx outs (for the co-op close transaction),
+	// any extra (e.g. auxiliary) outputs the close transaction will carry,
 	// channel type, and ideal fee rate. If a passed TxOut is nil, then
 	// that indicates that an output is dust on the co-op close transaction
 	// _before_ fees are accounted for.
 	EstimateFee(chanType channeldb.ChannelType,
 		localTxOut, remoteTxOut *wire.TxOut,
+		extraTxOuts []*wire.TxOut,
 		idealFeeRate chainfee.SatPerKWeight) btcutil.Amount
 }
 
@@ -138,6 +140,8 @@ type MusigSession interface {
 	// InvalidateNonce clears the cached local nonce, forcing a fresh
 	// nonce to be generated on the next call to ClosingNonce. This
 	// must be called after each RBF round completes to prevent nonce
-	// reuse across iterations.
-	InvalidateNonce()
+	// reuse across iterations. Any backing signer session created for
+	// the round is also released; a completed round has no further use
+	// for it, and an aborted round would otherwise leak it.
+	InvalidateNonce() error
 }

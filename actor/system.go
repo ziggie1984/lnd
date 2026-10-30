@@ -55,6 +55,8 @@ type ActorSystem struct {
 	mu sync.RWMutex
 
 	// ctx is the main context for the actor system.
+	//
+	//nolint:containedctx
 	ctx context.Context
 
 	// cancel cancels the main system context.
@@ -66,7 +68,8 @@ func NewActorSystem() *ActorSystem {
 	return NewActorSystemWithConfig(DefaultConfig())
 }
 
-// NewActorSystemWithConfig creates a new actor system with custom configuration
+// NewActorSystemWithConfig creates a new actor system with custom
+// configuration.
 func NewActorSystemWithConfig(config SystemConfig) *ActorSystem {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -231,6 +234,35 @@ func (as *ActorSystem) Shutdown() error {
 	// This signals to any other components observing the system's context
 	// that shutdown has been initiated.
 	as.cancel()
+
+	return nil
+}
+
+// ShutdownAndWait is Shutdown followed by a join: a nil return means every
+// actor that was managed by the system has fully stopped, so no Receive is
+// running and none will start. If ctx is done first, its error is returned and
+// some actors may still be stopping.
+func (as *ActorSystem) ShutdownAndWait(ctx context.Context) error {
+	as.mu.RLock()
+	var dones []<-chan struct{}
+	for _, actor := range as.actors {
+		if j, ok := actor.(interface{ Done() <-chan struct{} }); ok {
+			dones = append(dones, j.Done())
+		}
+	}
+	as.mu.RUnlock()
+
+	if err := as.Shutdown(); err != nil {
+		return err
+	}
+
+	for _, done := range dones {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	return nil
 }
@@ -433,8 +465,9 @@ func FindInReceptionist[M Message, R any](r *Receptionist,
 		typedRefs := make([]ActorRef[M, R], 0, len(refs))
 		for _, ref := range refs {
 			// Make sure that the reference is of the correct type.
-			// This type assertion is crucial for type safety, ensuring
-			// that the returned ActorRefs match the expected M and R.
+			// This type assertion is crucial for type safety,
+			// ensuring that the returned ActorRefs match the
+			// expected M and R.
 			if typedRef, ok := ref.(ActorRef[M, R]); ok {
 				typedRefs = append(typedRefs, typedRef)
 			}
